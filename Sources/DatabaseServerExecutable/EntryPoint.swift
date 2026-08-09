@@ -7,6 +7,206 @@ import Foundation
 import Logging
 import ServiceLifecycle
 
+private enum DatabaseServerStorageBackend: String, ExpressibleByArgument {
+    case sqlite
+    case postgreSQL = "postgresql"
+    case foundationDB = "foundationdb"
+}
+
+private enum DatabaseServerPostgreSQLTLSMode: String, ExpressibleByArgument {
+    case disable
+    case require
+}
+
+private enum DatabaseServerPostgreSQLSchemaManagement:
+    String,
+    ExpressibleByArgument
+{
+    case createIfNeeded = "create-if-needed"
+    case assumeExists = "assume-exists"
+}
+
+private struct DatabaseServerStorageOptions: ParsableArguments {
+    @Option(
+        name: .long,
+        help: "Select sqlite, postgresql, or foundationdb; defaults to sqlite for a new selection."
+    )
+    var storage: DatabaseServerStorageBackend?
+
+    @Option(name: .long, help: "SQLite database file path.")
+    var path: String?
+
+    @Flag(name: .long, help: "Use process-local SQLite memory storage.")
+    var memory = false
+
+    @Option(name: .customLong("postgres-host"), help: "PostgreSQL TCP host.")
+    var postgreSQLHost: String?
+
+    @Option(name: .customLong("postgres-port"), help: "PostgreSQL TCP port.")
+    var postgreSQLPort = 5_432
+
+    @Option(
+        name: .customLong("postgres-unix-socket"),
+        help: "PostgreSQL Unix socket path."
+    )
+    var postgreSQLUnixSocket: String?
+
+    @Option(name: .customLong("postgres-user"), help: "PostgreSQL username.")
+    var postgreSQLUser: String?
+
+    @Option(
+        name: .customLong("postgres-password-file"),
+        help: "Owner-only PostgreSQL password file path."
+    )
+    var postgreSQLPasswordFile: String?
+
+    @Option(
+        name: .customLong("postgres-database"),
+        help: "PostgreSQL database name."
+    )
+    var postgreSQLDatabase: String?
+
+    @Option(
+        name: .customLong("postgres-table"),
+        help: "PostgreSQL key/value table name."
+    )
+    var postgreSQLTable = "kv_store"
+
+    @Option(
+        name: .customLong("postgres-schema-management"),
+        help: "Select create-if-needed or assume-exists."
+    )
+    var postgreSQLSchemaManagement =
+        DatabaseServerPostgreSQLSchemaManagement.createIfNeeded
+
+    @Option(
+        name: .customLong("postgres-tls"),
+        help: "Select disable or require."
+    )
+    var postgreSQLTLS = DatabaseServerPostgreSQLTLSMode.disable
+
+    @Option(
+        name: .customLong("fdb-cluster-file"),
+        help: "Explicit FoundationDB cluster file path."
+    )
+    var foundationDBClusterFile: String?
+
+    func launchStorage(required: Bool) throws
+        -> DatabaseServerLaunchConfiguration.Storage?
+    {
+        guard required || hasExplicitSelection else { return nil }
+        let selectedStorage = storage ?? .sqlite
+        switch selectedStorage {
+        case .sqlite:
+            guard !hasPostgreSQLOptions,
+                  foundationDBClusterFile == nil,
+                  memory != (path != nil) else {
+                throw ValidationError(
+                    "SQLite requires exactly one of --memory or --path and no other backend options."
+                )
+            }
+            if memory {
+                return .init(sqlite: .init(mode: .memory))
+            }
+            let path = URL(fileURLWithPath: try requiredValue(path, "--path"))
+                .standardizedFileURL.path
+            return .init(sqlite: .init(mode: .file, path: path))
+        case .postgreSQL:
+            guard !memory,
+                  path == nil,
+                  foundationDBClusterFile == nil,
+                  (postgreSQLHost != nil) != (postgreSQLUnixSocket != nil),
+                  (1...65_535).contains(postgreSQLPort) else {
+                throw ValidationError(
+                    "PostgreSQL requires exactly one of --postgres-host or --postgres-unix-socket and no SQLite or FoundationDB options."
+                )
+            }
+            let passwordFile = postgreSQLPasswordFile.map {
+                URL(fileURLWithPath: $0).standardizedFileURL.path
+            }
+            return .init(
+                postgreSQL: .init(
+                    host: postgreSQLHost,
+                    port: postgreSQLPort,
+                    unixSocketPath: postgreSQLUnixSocket.map {
+                        URL(fileURLWithPath: $0).standardizedFileURL.path
+                    },
+                    username: try requiredValue(
+                        postgreSQLUser,
+                        "--postgres-user"
+                    ),
+                    passwordFilePath: passwordFile,
+                    database: try requiredValue(
+                        postgreSQLDatabase,
+                        "--postgres-database"
+                    ),
+                    tls: postgreSQLTLS == .disable ? .disable : .require,
+                    tableName: postgreSQLTable,
+                    schemaManagement: postgreSQLSchemaManagement
+                        == .createIfNeeded ? .createIfNeeded : .assumeExists
+                )
+            )
+        case .foundationDB:
+            guard !memory,
+                  path == nil,
+                  !hasPostgreSQLOptions else {
+                throw ValidationError(
+                    "FoundationDB cannot be combined with SQLite or PostgreSQL options."
+                )
+            }
+            let clusterFile = URL(
+                fileURLWithPath: try requiredValue(
+                    foundationDBClusterFile,
+                    "--fdb-cluster-file"
+                )
+            ).standardizedFileURL.path
+            return .init(
+                foundationDB: .init(clusterFilePath: clusterFile)
+            )
+        }
+    }
+
+    func runtimeStorage() throws -> NativeDatabaseStorageConfiguration {
+        guard let storage = try launchStorage(required: true) else {
+            throw ValidationError("Storage configuration is required.")
+        }
+        return try storage.runtimeStorage()
+    }
+
+    private var hasExplicitSelection: Bool {
+        storage != nil
+            || memory
+            || path != nil
+            || hasPostgreSQLOptions
+            || foundationDBClusterFile != nil
+    }
+
+    private var hasPostgreSQLOptions: Bool {
+        postgreSQLHost != nil
+            || postgreSQLUnixSocket != nil
+            || postgreSQLUser != nil
+            || postgreSQLPasswordFile != nil
+            || postgreSQLDatabase != nil
+            || postgreSQLPort != 5_432
+            || postgreSQLTable != "kv_store"
+            || postgreSQLSchemaManagement != .createIfNeeded
+            || postgreSQLTLS != .disable
+    }
+
+    private func requiredValue(
+        _ value: String?,
+        _ option: String
+    ) throws -> String {
+        guard let value,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ValidationError(
+                "\(option) is required for \((storage ?? .sqlite).rawValue)."
+            )
+        }
+        return value
+    }
+}
+
 @main
 struct DatabaseServerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -24,8 +224,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
         @Option(name: .long, help: "Server configuration path.")
         var config: String
 
-        @Option(name: .long, help: "SQLite database path for a new configuration.")
-        var path: String?
+        @OptionGroup fileprivate var storageOptions: DatabaseServerStorageOptions
 
         @Option(name: .long, help: "Listener host for a new configuration or this launch.")
         var host: String?
@@ -54,31 +253,24 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             if FileManager.default.fileExists(atPath: configurationURL.path) {
                 launchConfiguration = try DatabaseServerLaunchConfiguration
                     .load(from: configurationURL)
-                if let path {
-                    let requestedPath = URL(fileURLWithPath: path)
-                        .standardizedFileURL.path
-                    guard case .file(let configuredPath) = try launchConfiguration
-                        .runtimeStorage(),
-                          URL(fileURLWithPath: configuredPath)
-                            .standardizedFileURL.path == requestedPath else {
-                        throw ValidationError(
-                            "The requested database path does not match the existing configuration."
-                        )
-                    }
-                }
-            } else {
-                guard let path, !path.isEmpty else {
+                if let requested = try storageOptions.launchStorage(
+                    required: false
+                ), requested != launchConfiguration.storage {
                     throw ValidationError(
-                        "A new configuration requires --path."
+                        "The requested storage does not match the existing configuration."
                     )
                 }
-                let databaseURL = URL(fileURLWithPath: path)
-                    .standardizedFileURL
+            } else {
+                guard let storage = try storageOptions.launchStorage(
+                    required: true
+                ) else {
+                    throw ValidationError("A new configuration requires storage.")
+                }
                 let registryURL = configurationURL
                     .deletingLastPathComponent()
                     .appendingPathComponent("tokens.json")
                 launchConfiguration = DatabaseServerLaunchConfiguration(
-                    storage: .init(kind: .file, path: databaseURL.path),
+                    storage: storage,
                     host: host ?? "127.0.0.1",
                     port: port ?? 7_878,
                     routing: .init(
@@ -208,6 +400,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 await environment.shutdown()
                 throw error
             }
+            await environment.shutdown()
         }
     }
 
@@ -216,11 +409,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             abstract: "Serve a private length-prefixed DatabaseWire stream."
         )
 
-        @Option(name: .long, help: "SQLite database file path.")
-        var path: String?
-
-        @Flag(name: .long, help: "Use a process-local in-memory database.")
-        var memory = false
+        @OptionGroup fileprivate var storageOptions: DatabaseServerStorageOptions
 
         @Option(
             name: .long,
@@ -228,27 +417,9 @@ struct DatabaseServerCommand: AsyncParsableCommand {
         )
         var maximumFrameBytes = DatabaseWireLimits.default.maximumFrameBytes
 
-        mutating func validate() throws {
-            guard memory != (path != nil) else {
-                throw ValidationError(
-                    "Exactly one of --memory or --path is required."
-                )
-            }
-        }
-
         mutating func run() async throws {
-            let storage: NativeDatabaseRuntimeEnvironment.Storage
-            if memory {
-                storage = .memory
-            } else if let path {
-                storage = .file(path: path)
-            } else {
-                throw ValidationError(
-                    "Exactly one of --memory or --path is required."
-                )
-            }
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
-                storage: storage,
+                storage: try storageOptions.runtimeStorage(),
                 version: DatabaseServerBuild.version
             )
             do {
@@ -276,6 +447,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 await environment.shutdown()
                 throw error
             }
+            await environment.shutdown()
         }
     }
 }
@@ -353,7 +525,7 @@ private func writeBootstrapResponse(
 }
 
 private enum DatabaseServerBuild {
-    static let version = "26.0809.0"
+    static let version = "26.0809.1"
 }
 
 private struct RejectingAuthenticator: DatabaseServerAuthenticator {

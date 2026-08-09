@@ -4,11 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCHEME="database-server-Package"
 DESTINATION="platform=macOS,arch=arm64"
-EXPECTED_TEST_COUNT=20
+EXPECTED_TEST_COUNT=22
 BUILD_TIMEOUT_SECONDS="${XCODE_TEST_BUILD_TIMEOUT_SECONDS:-1200}"
 TEST_TIMEOUT_SECONDS="${XCODE_TEST_TIMEOUT_SECONDS:-300}"
 RESULT_DIRECTORY="${XCODE_TEST_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-server-xcode-results}"
 WORK_ROOT=""
+EXTERNAL_DERIVED_DATA="${XCODE_TEST_DERIVED_DATA_PATH:-}"
 
 timeout_command() {
   local seconds="$1"
@@ -121,7 +122,11 @@ if [[ "${DATABASE_SERVER_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]] \
 fi
 
 WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/database-server-xcode-test.XXXXXX")"
-derived_data="$WORK_ROOT/DerivedData"
+if [[ -n "$EXTERNAL_DERIVED_DATA" ]]; then
+  derived_data="$EXTERNAL_DERIVED_DATA"
+else
+  derived_data="$WORK_ROOT/DerivedData"
+fi
 mkdir -p "$derived_data" "$RESULT_DIRECTORY"
 run_identifier="$(date -u +%Y%m%d-%H%M%S)-$$"
 build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
@@ -152,7 +157,7 @@ if (( build_status != 0 )); then
 fi
 
 xctestrun_paths="$(find "$derived_data/Build/Products" -maxdepth 1 \
-  -type f -name '*.xctestrun' -print)"
+  -type f -name '*.xctestrun' ! -name '.configured-*.xctestrun' -print)"
 xctestrun_count="$(printf '%s\n' "$xctestrun_paths" | sed '/^$/d' | wc -l | tr -d ' ')"
 if [[ "$xctestrun_count" != 1 ]]; then
   echo "error: expected one xctestrun file, found $xctestrun_count" >&2

@@ -61,6 +61,10 @@ let package = Package(
             from: "26.0807.0"
         ),
         .package(
+            url: "https://github.com/1amageek/fdb-swift-bindings.git",
+            exact: "0.3.3"
+        ),
+        .package(
             url: "https://github.com/1amageek/database-kit.git",
             from: "26.0809.4"
         ),
@@ -97,6 +101,10 @@ let package = Package(
             exact: "2.101.3"
         ),
         .package(
+            url: "https://github.com/apple/swift-nio-ssl.git",
+            exact: "2.37.2"
+        ),
+        .package(
             url: "https://github.com/apple/swift-log.git",
             from: "1.7.0"
         ),
@@ -114,7 +122,14 @@ let package = Package(
                 .product(name: "DatabaseServerFoundation", package: "database-framework"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "SQLiteStorage", package: "storage-kit"),
+                .product(name: "PostgreSQLStorage", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit"),
+                .product(
+                    name: "FoundationDB",
+                    package: "fdb-swift-bindings"
+                ),
                 .product(name: "StorageKitSystemClock", package: "storage-kit"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdCore", package: "hummingbird"),
                 .product(name: "HummingbirdTLS", package: "hummingbird"),
@@ -124,6 +139,13 @@ let package = Package(
                 .product(name: "HTTPTypes", package: "swift-http-types"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L/usr/local/lib",
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "/usr/local/lib",
+                ]),
             ]
         ),
         .executableTarget(

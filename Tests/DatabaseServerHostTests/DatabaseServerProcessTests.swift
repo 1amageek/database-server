@@ -53,7 +53,7 @@ struct DatabaseServerProcessTests {
             )
             let payload = try response.get()
 
-            #expect(payload.runtimeVersion == "26.0809.0")
+            #expect(payload.runtimeVersion == "26.0809.1")
             #expect(
                 payload.features.contains {
                     $0.identifier == "schema.execute" && $0.version == 1
@@ -220,7 +220,7 @@ struct DatabaseServerProcessTests {
                 matching: requestID
             )
             let capabilities = try wireResponse.get()
-            #expect(capabilities.runtimeVersion == "26.0809.0")
+            #expect(capabilities.runtimeVersion == "26.0809.1")
 
             process.interrupt()
             let status = try await waitForTermination(

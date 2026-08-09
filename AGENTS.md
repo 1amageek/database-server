@@ -25,12 +25,17 @@ storage behavior, client UX, profiles, or credentials at rest on the client.
 ## Verification
 
 Use `scripts/xcode-test-harness` with the pinned Swift snapshot. Its reviewed
-contract is 20 logical tests, zero failures, skips, expected failures, runtime
+contract is 22 logical tests, zero failures, skips, expected failures, runtime
 warnings, and internal tool errors. Cover HTTP, HTTPS with a real TLS
 handshake, WebSocket, and stdio through real transports, including truncated
 frames, oversized payloads, authentication and routing rejection,
 cancellation, concurrent principals, graceful shutdown, and negative
 readiness.
+
+Use `scripts/storage-test-harness` with exact version-matched `database`,
+`database-server`, and `database-fdb` executables. It must open SQLite,
+PostgreSQL, and FoundationDB through the production CLI/runtime path and prove
+negative service readiness after teardown.
 
 Before release, replace every local package dependency with its URL and verify
 that no `.package(path:)` remains.

@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TIMEOUT_SECONDS="${DATABASE_STORAGE_TEST_TIMEOUT_SECONDS:-120}"
+RESULT_DIRECTORY="${DATABASE_STORAGE_TEST_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-server-storage-results}"
+DATABASE="${DATABASE_CLI_EXECUTABLE:-}"
+SERVER="${DATABASE_SERVER_EXECUTABLE:-}"
+FDB_HELPER="${DATABASE_FDB_EXECUTABLE:-}"
+FDBCLI="${FDBCLI:-/usr/local/bin/fdbcli}"
+WORK_ROOT=""
+POSTGRES_RUNNING=0
+POSTGRES_DATA=""
+POSTGRES_SOCKET=""
+POSTGRES_SOCKET_ROOT=""
+POSTGRES_PORT=""
+FDB_CLUSTER_FILE=""
+
+timeout_command() {
+  local seconds="$1"
+  shift
+  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+require_executable() {
+  local path="$1"
+  local name="$2"
+  if [[ -z "$path" || ! -x "$path" ]]; then
+    echo "error: $name executable is required" >&2
+    exit 2
+  fi
+}
+
+cleanup() {
+  if (( POSTGRES_RUNNING == 1 )) && [[ -n "$POSTGRES_DATA" ]]; then
+    pg_ctl -D "$POSTGRES_DATA" -m immediate -w stop >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$POSTGRES_SOCKET_ROOT" && -d "$POSTGRES_SOCKET_ROOT" ]]; then
+    local socket_prefix="/tmp/database-server-pg."
+    if [[ "$POSTGRES_SOCKET_ROOT" == "$socket_prefix"* ]]; then
+      rm -rf -- "$POSTGRES_SOCKET_ROOT"
+    else
+      echo "error: refusing to remove unexpected PostgreSQL socket path: $POSTGRES_SOCKET_ROOT" >&2
+    fi
+  fi
+  if [[ -n "$FDB_CLUSTER_FILE" && -f "$FDB_CLUSTER_FILE" ]]; then
+    "$FDB_HELPER" cluster stop \
+      --cluster-file "$FDB_CLUSTER_FILE" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$WORK_ROOT" && -d "$WORK_ROOT" ]]; then
+    local expected_prefix="${TMPDIR:-/tmp}/database-server-storage-test."
+    if [[ "$WORK_ROOT" == "$expected_prefix"* ]]; then
+      rm -rf -- "$WORK_ROOT"
+    else
+      echo "error: refusing to remove unexpected path: $WORK_ROOT" >&2
+    fi
+  fi
+}
+
+trap cleanup EXIT
+
+for command in initdb pg_ctl pg_isready createdb psql jq perl ruby tee; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "error: required command not found: $command" >&2
+    exit 2
+  fi
+done
+require_executable "$DATABASE" database
+require_executable "$SERVER" database-server
+require_executable "$FDB_HELPER" database-fdb
+require_executable "$FDBCLI" fdbcli
+
+database_version="$("$DATABASE" --version)"
+server_version="$("$SERVER" --version)"
+helper_version="$("$FDB_HELPER" --version)"
+if [[ "$database_version" != "$server_version"
+    || "$database_version" != "$helper_version" ]]; then
+  echo "error: database executables must have the exact same version" >&2
+  exit 2
+fi
+
+WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/database-server-storage-test.XXXXXX")"
+mkdir -p "$RESULT_DIRECTORY" "$WORK_ROOT/bin"
+ln -s "$DATABASE" "$WORK_ROOT/bin/database"
+ln -s "$SERVER" "$WORK_ROOT/bin/database-server"
+ln -s "$FDB_HELPER" "$WORK_ROOT/bin/database-fdb"
+run_identifier="$(date -u +%Y%m%d-%H%M%S)-$$"
+integration_log="$RESULT_DIRECTORY/Storage-$run_identifier.log"
+postgres_log="$RESULT_DIRECTORY/PostgreSQL-$run_identifier.log"
+
+run_open() {
+  printf '\\quit\n' | timeout_command "$TIMEOUT_SECONDS" \
+    "$WORK_ROOT/bin/database" open "$@"
+}
+
+{
+  echo "databaseVersion=$database_version"
+
+  sqlite_path="$WORK_ROOT/database.sqlite"
+  run_open "$sqlite_path"
+  [[ -f "$sqlite_path" ]]
+  echo "sqlite=passed"
+
+  POSTGRES_DATA="$WORK_ROOT/postgres-data"
+  # PostgreSQL limits Unix-domain socket paths to roughly 100 bytes. macOS's
+  # per-user temporary directory can exceed that before the generated name is
+  # appended, so socket state uses a separately owned short path.
+  POSTGRES_SOCKET_ROOT="$(mktemp -d /tmp/database-server-pg.XXXXXX)"
+  POSTGRES_SOCKET="$POSTGRES_SOCKET_ROOT"
+  POSTGRES_PORT="$(ruby -rsocket -e \
+    'server = TCPServer.new("127.0.0.1", 0); puts server.addr[1]; server.close')"
+  postgres_password="$(ruby -rsecurerandom -e 'print SecureRandom.hex(32)')"
+  postgres_password_file="$WORK_ROOT/postgres.password"
+  (umask 077; printf '%s\n' "$postgres_password" >"$postgres_password_file")
+  initdb -D "$POSTGRES_DATA" -U database \
+    --auth-local=scram-sha-256 --auth-host=scram-sha-256 \
+    --pwfile="$postgres_password_file" \
+    --no-locale --encoding=UTF8 >/dev/null
+  pg_ctl -D "$POSTGRES_DATA" -l "$postgres_log" -w start \
+    -o "-k $POSTGRES_SOCKET -p $POSTGRES_PORT -h ''" >/dev/null
+  POSTGRES_RUNNING=1
+  pg_isready -h "$POSTGRES_SOCKET" -p "$POSTGRES_PORT" \
+    -U database -d postgres
+  PGPASSWORD="$postgres_password" createdb \
+    -h "$POSTGRES_SOCKET" -p "$POSTGRES_PORT" \
+    -U database database_server_test
+  run_open \
+    --storage postgresql \
+    --postgres-unix-socket "$POSTGRES_SOCKET/.s.PGSQL.$POSTGRES_PORT" \
+    --postgres-user database \
+    --postgres-password-file "$postgres_password_file" \
+    --postgres-database database_server_test
+  table_name="$(PGPASSWORD="$postgres_password" psql \
+    -h "$POSTGRES_SOCKET" -p "$POSTGRES_PORT" \
+    -U database -d database_server_test -Atqc \
+    "SELECT to_regclass('public.kv_store')::text")"
+  [[ "$table_name" == "kv_store" ]]
+  pg_ctl -D "$POSTGRES_DATA" -m fast -w stop >/dev/null
+  POSTGRES_RUNNING=0
+  if pg_isready -h "$POSTGRES_SOCKET" -p "$POSTGRES_PORT" \
+      -U database -d database_server_test >/dev/null 2>&1; then
+    echo "error: PostgreSQL remains reachable after stop" >&2
+    exit 1
+  fi
+  echo "postgresql=passed"
+
+  fdb_root="$WORK_ROOT/foundationdb"
+  fdb_port="$(ruby -rsocket -e \
+    'server = TCPServer.new("127.0.0.1", 0); puts server.addr[1]; server.close')"
+  init_json="$(timeout_command "$TIMEOUT_SECONDS" \
+    "$FDB_HELPER" cluster init --path "$fdb_root" --port "$fdb_port")"
+  FDB_CLUSTER_FILE="$(printf '%s' "$init_json" | jq -er '.clusterFile')"
+  start_json="$(timeout_command "$TIMEOUT_SECONDS" \
+    "$FDB_HELPER" cluster start --cluster-file "$FDB_CLUSTER_FILE" \
+      --minimum-available-space-ratio 0.0)"
+  printf '%s' "$start_json" | jq -e '.ready == true' >/dev/null
+  "$FDBCLI" -C "$FDB_CLUSTER_FILE" --exec 'status minimal'
+  run_open \
+    --storage foundationdb \
+    --fdb-cluster-file "$FDB_CLUSTER_FILE"
+  stop_json="$(timeout_command "$TIMEOUT_SECONDS" \
+    "$FDB_HELPER" cluster stop --cluster-file "$FDB_CLUSTER_FILE")"
+  printf '%s' "$stop_json" | jq -e \
+    '.ready == false and .stopped == true' >/dev/null
+  status_json="$(timeout_command "$TIMEOUT_SECONDS" \
+    "$FDB_HELPER" cluster status --cluster-file "$FDB_CLUSTER_FILE")"
+  printf '%s' "$status_json" | jq -e \
+    '.ready == false and .processAlive == false' >/dev/null
+  FDB_CLUSTER_FILE=""
+  echo "foundationdb=passed"
+} 2>&1 | tee "$integration_log"
+
+echo "Native storage integration passed"
+echo "Integration log: $integration_log"
+echo "PostgreSQL log: $postgres_log"

@@ -9,7 +9,7 @@ struct NativeDatabaseRuntimeTests {
     @Test("An empty schema-driven database executes capabilities")
     func emptyDatabaseExecutesCapabilities() async throws {
         let environment = try await NativeDatabaseRuntimeEnvironment.open(
-            storage: .memory,
+            storage: .sqliteMemory,
             version: "native-runtime-test"
         )
         do {

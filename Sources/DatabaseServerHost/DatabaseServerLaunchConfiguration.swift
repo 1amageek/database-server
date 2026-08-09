@@ -2,34 +2,166 @@ import DatabaseWire
 import Foundation
 
 public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
-    public struct Storage: Codable, Sendable {
+    public struct Storage: Codable, Sendable, Equatable {
         public enum Kind: String, Codable, Sendable {
-            case memory
-            case file
+            case sqlite
+            case postgreSQL = "postgresql"
+            case foundationDB = "foundationdb"
+        }
+
+        public struct SQLite: Codable, Sendable, Equatable {
+            public enum Mode: String, Codable, Sendable {
+                case memory
+                case file
+            }
+
+            public let mode: Mode
+            public let path: String?
+
+            public init(mode: Mode, path: String? = nil) {
+                self.mode = mode
+                self.path = path
+            }
+        }
+
+        public struct PostgreSQL: Codable, Sendable, Equatable {
+            public enum TLSMode: String, Codable, Sendable {
+                case disable
+                case require
+            }
+
+            public enum SchemaManagement: String, Codable, Sendable {
+                case createIfNeeded = "create-if-needed"
+                case assumeExists = "assume-exists"
+            }
+
+            public let host: String?
+            public let port: Int
+            public let unixSocketPath: String?
+            public let username: String
+            public let passwordFilePath: String?
+            public let database: String
+            public let tls: TLSMode
+            public let tableName: String
+            public let schemaManagement: SchemaManagement
+
+            public init(
+                host: String? = nil,
+                port: Int = 5_432,
+                unixSocketPath: String? = nil,
+                username: String,
+                passwordFilePath: String? = nil,
+                database: String,
+                tls: TLSMode = .disable,
+                tableName: String = "kv_store",
+                schemaManagement: SchemaManagement = .createIfNeeded
+            ) {
+                self.host = host
+                self.port = port
+                self.unixSocketPath = unixSocketPath
+                self.username = username
+                self.passwordFilePath = passwordFilePath
+                self.database = database
+                self.tls = tls
+                self.tableName = tableName
+                self.schemaManagement = schemaManagement
+            }
+        }
+
+        public struct FoundationDB: Codable, Sendable, Equatable {
+            public let clusterFilePath: String
+
+            public init(clusterFilePath: String) {
+                self.clusterFilePath = clusterFilePath
+            }
         }
 
         public let kind: Kind
-        public let path: String?
+        public let sqlite: SQLite?
+        public let postgreSQL: PostgreSQL?
+        public let foundationDB: FoundationDB?
 
-        public init(kind: Kind, path: String? = nil) {
-            self.kind = kind
-            self.path = path
+        private enum CodingKeys: String, CodingKey {
+            case kind
+            case sqlite
+            case postgreSQL = "postgresql"
+            case foundationDB = "foundationdb"
         }
 
-        func validated() throws -> NativeDatabaseRuntimeEnvironment.Storage {
+        public init(sqlite: SQLite) {
+            self.kind = .sqlite
+            self.sqlite = sqlite
+            self.postgreSQL = nil
+            self.foundationDB = nil
+        }
+
+        public init(postgreSQL: PostgreSQL) {
+            self.kind = .postgreSQL
+            self.sqlite = nil
+            self.postgreSQL = postgreSQL
+            self.foundationDB = nil
+        }
+
+        public init(foundationDB: FoundationDB) {
+            self.kind = .foundationDB
+            self.sqlite = nil
+            self.postgreSQL = nil
+            self.foundationDB = foundationDB
+        }
+
+        public func runtimeStorage() throws
+            -> NativeDatabaseStorageConfiguration
+        {
+            let payloadCount = [
+                sqlite != nil,
+                postgreSQL != nil,
+                foundationDB != nil,
+            ].filter { $0 }.count
+            guard payloadCount == 1 else {
+                throw DatabaseServerLaunchConfigurationError
+                    .storageConfigurationMismatch
+            }
             switch kind {
-            case .memory:
-                guard path == nil else {
+            case .sqlite:
+                guard let sqlite,
+                      postgreSQL == nil,
+                      foundationDB == nil else {
                     throw DatabaseServerLaunchConfigurationError
-                        .memoryStorageHasPath
+                        .storageConfigurationMismatch
                 }
-                return .memory
-            case .file:
-                guard let path, !path.isEmpty else {
+                switch sqlite.mode {
+                case .memory:
+                    guard sqlite.path == nil else {
+                        throw DatabaseServerLaunchConfigurationError
+                            .sqliteMemoryHasPath
+                    }
+                    return .sqliteMemory
+                case .file:
+                    guard let path = sqlite.path, !path.isEmpty else {
+                        throw DatabaseServerLaunchConfigurationError
+                            .sqliteFileMissingPath
+                    }
+                    return .sqliteFile(path: path)
+                }
+            case .postgreSQL:
+                guard sqlite == nil,
+                      let postgreSQL,
+                      foundationDB == nil else {
                     throw DatabaseServerLaunchConfigurationError
-                        .fileStorageMissingPath
+                        .storageConfigurationMismatch
                 }
-                return .file(path: path)
+                return try postgreSQL.validated()
+            case .foundationDB:
+                guard sqlite == nil,
+                      postgreSQL == nil,
+                      let foundationDB,
+                      !foundationDB.clusterFilePath.isEmpty else {
+                    throw DatabaseServerLaunchConfigurationError
+                        .invalidFoundationDBConfiguration
+                }
+                return .foundationDB(
+                    clusterFilePath: foundationDB.clusterFilePath
+                )
             }
         }
     }
@@ -123,9 +255,9 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
 
     public func runtimeStorage()
-        throws -> NativeDatabaseRuntimeEnvironment.Storage
+        throws -> NativeDatabaseStorageConfiguration
     {
-        try storage.validated()
+        try storage.runtimeStorage()
     }
 
     public func routingIdentity() throws -> DatabaseServerRoutingIdentity {
@@ -174,7 +306,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             throw DatabaseServerLaunchConfigurationError
                 .missingTokenRegistryPath
         }
-        _ = try storage.validated()
+        _ = try storage.runtimeStorage()
         _ = try hostConfiguration()
     }
 }
@@ -186,10 +318,56 @@ public enum DatabaseServerLaunchConfigurationError:
 {
     case invalidDocument
     case unsupportedFormatVersion(Int)
-    case memoryStorageHasPath
-    case fileStorageMissingPath
+    case storageConfigurationMismatch
+    case sqliteMemoryHasPath
+    case sqliteFileMissingPath
+    case invalidPostgreSQLConfiguration
+    case postgreSQLTLSRequiresTCP
+    case invalidFoundationDBConfiguration
     case missingTokenRegistryPath
     case configurationAlreadyExists
     case configurationWriteFailed
     case invalidConfigurationPermissions
+}
+
+private extension DatabaseServerLaunchConfiguration.Storage.PostgreSQL {
+    func validated() throws -> NativeDatabaseStorageConfiguration {
+        let hasHost = host.map { !$0.isEmpty } ?? false
+        let hasSocket = unixSocketPath.map { !$0.isEmpty } ?? false
+        guard hasHost != hasSocket,
+              (1...65_535).contains(port),
+              !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !database.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !tableName.isEmpty,
+              passwordFilePath.map({ !$0.isEmpty }) ?? true else {
+            throw DatabaseServerLaunchConfigurationError
+                .invalidPostgreSQLConfiguration
+        }
+        let connection: NativeDatabaseStorageConfiguration.PostgreSQL.Connection
+        if let host, hasHost {
+            connection = .tcp(host: host, port: port)
+        } else if let unixSocketPath, hasSocket {
+            guard tls == .disable else {
+                throw DatabaseServerLaunchConfigurationError
+                    .postgreSQLTLSRequiresTCP
+            }
+            connection = .unixSocket(path: unixSocketPath)
+        } else {
+            throw DatabaseServerLaunchConfigurationError
+                .invalidPostgreSQLConfiguration
+        }
+        return .postgreSQL(
+            NativeDatabaseStorageConfiguration.PostgreSQL(
+                connection: connection,
+                username: username,
+                passwordFilePath: passwordFilePath,
+                database: database,
+                tls: tls == .disable ? .disable : .require,
+                tableName: tableName,
+                schemaManagement: schemaManagement == .createIfNeeded
+                    ? .createIfNeeded
+                    : .assumeExists
+            )
+        )
+    }
 }

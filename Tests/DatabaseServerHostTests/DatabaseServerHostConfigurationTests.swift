@@ -84,8 +84,11 @@ struct DatabaseServerHostConfigurationTests {
         let configurationURL = directory.appendingPathComponent("server.json")
         let configuration = DatabaseServerLaunchConfiguration(
             storage: .init(
-                kind: .file,
-                path: directory.appendingPathComponent("database.sqlite").path
+                sqlite: .init(
+                    mode: .file,
+                    path: directory
+                        .appendingPathComponent("database.sqlite").path
+                )
             ),
             routing: .init(databaseID: "main"),
             tokenRegistryPath: directory
@@ -97,7 +100,7 @@ struct DatabaseServerHostConfigurationTests {
             from: configurationURL
         )
         #expect(loaded.routing.databaseID == "main")
-        #expect(loaded.storage.kind == .file)
+        #expect(loaded.storage.kind == .sqlite)
         let attributes = try FileManager.default.attributesOfItem(
             atPath: configurationURL.path
         )

@@ -12,14 +12,20 @@ flowchart LR
     Client --> Host["database-server<br/>HTTP / WebSocket / stdio"]
     Host --> Runtime["DatabaseServerRuntime<br/>14 operation families"]
     Runtime --> Container["DBContainer<br/>schema generation lease"]
-    Container --> SQLite["SQLiteStorageEngine"]
+    Container --> Factory["Native storage factory"]
+    Factory --> SQLite["SQLiteStorageEngine"]
+    Factory --> PostgreSQL["PostgreSQLStorageEngine"]
+    Factory --> FDB["FDBStorageEngine"]
 ```
 
 ## Requirements
 
 - macOS 26 or later;
 - Swift 6.4 development snapshot `org.swift.64202607231a` for source builds;
-- the version-matched `database` executable for the normal standalone UX.
+- the version-matched `database` executable for the normal standalone UX;
+- PostgreSQL 16 when selecting PostgreSQL;
+- FoundationDB 7.3 client headers and library when building the server, plus
+  an explicit compatible cluster when selecting FoundationDB.
 
 ## Standalone use
 
@@ -29,12 +35,18 @@ user-facing entry points are:
 ```bash
 database open ./local.sqlite
 database open --memory
+database open --storage postgresql \
+  --postgres-host 127.0.0.1 \
+  --postgres-user database \
+  --postgres-database database
+database open --storage foundationdb \
+  --fdb-cluster-file /etc/foundationdb/fdb.cluster
 database serve ./production.sqlite --profile production
 ```
 
 `database open` starts `database-server stdio` as a private child process and
 opens the interactive shell. EOF, cancellation, parent exit, or pipe closure
-shuts down the runtime and SQLite engine before the child exits.
+shuts down the runtime and selected storage engine before the child exits.
 
 `database serve` performs a private bootstrap handshake, stores the raw initial
 administrator token in the client Keychain, commits its digest to the server
@@ -45,10 +57,24 @@ variables, configuration files, history, or logs.
 ## Server commands
 
 ```text
-database-server bootstrap --config <path> --path <sqlite-path> [routing options]
+database-server bootstrap --config <path> [storage options] [routing options]
 database-server serve --config <path> [--host <host>] [--port <port>]
-database-server stdio (--path <sqlite-path> | --memory)
+database-server stdio [storage options]
 ```
+
+Storage selection is explicit at the server boundary:
+
+| Backend | Required selection |
+|---|---|
+| SQLite file | `--storage sqlite --path <path>` |
+| SQLite memory | `--storage sqlite --memory` |
+| PostgreSQL TCP | `--storage postgresql --postgres-host <host> --postgres-user <role> --postgres-database <name>` |
+| PostgreSQL socket | `--storage postgresql --postgres-unix-socket <path> --postgres-user <role> --postgres-database <name>` |
+| FoundationDB | `--storage foundationdb --fdb-cluster-file <path>` |
+
+FoundationDB never falls back to the system default cluster. PostgreSQL never
+accepts a password value through argv or an environment variable;
+`--postgres-password-file` names an owner-owned mode-`0600` regular file.
 
 `bootstrap` is a private framed-pipe protocol used by the CLI. It rejects TTY
 stdin/stdout. A new credential is retained only after the client writes the
@@ -94,14 +120,27 @@ content-type, and body-limit failures remain transport-layer failures.
 export TOOLCHAINS=org.swift.64202607231a
 swift build --product database-server
 scripts/xcode-test-harness
+DATABASE_CLI_EXECUTABLE=/path/to/database \
+DATABASE_SERVER_EXECUTABLE=/path/to/database-server \
+DATABASE_FDB_EXECUTABLE=/path/to/database-fdb \
+scripts/storage-test-harness
 ```
 
-The strict harness requires 20 logical tests, zero failures, zero skips, zero
+After an attributed package build, set `XCODE_TEST_DERIVED_DATA_PATH` to that
+exact DerivedData directory so the harness builds only the missing test
+products before its isolated `test-without-building` run.
+
+The strict harness requires 22 logical tests, zero failures, zero skips, zero
 expected failures, zero runtime warnings, and no internal tool errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap
 commit/rollback, token persistence and revocation, configuration and registry
 symlink rejection, exact routing, body/frame limits, a real `serve` process,
 SIGINT shutdown, and negative readiness.
+
+The storage harness starts disposable SQLite, PostgreSQL 16, and FoundationDB
+7.3 environments, opens each through the real CLI → stdio → runtime path,
+checks PostgreSQL table creation and protocol readiness, then requires negative
+PostgreSQL and FoundationDB readiness after authoritative shutdown.
 
 Release verification rejects local package dependencies. Every dependency must
 resolve by URL, and the released server version must exactly match the adjacent
