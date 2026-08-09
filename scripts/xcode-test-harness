@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCHEME="database-server-Package"
+DESTINATION="platform=macOS,arch=arm64"
+EXPECTED_TEST_COUNT=20
+BUILD_TIMEOUT_SECONDS="${XCODE_TEST_BUILD_TIMEOUT_SECONDS:-1200}"
+TEST_TIMEOUT_SECONDS="${XCODE_TEST_TIMEOUT_SECONDS:-300}"
+RESULT_DIRECTORY="${XCODE_TEST_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-server-xcode-results}"
+WORK_ROOT=""
+
+timeout_command() {
+  local seconds="$1"
+  shift
+  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+cleanup() {
+  if [[ -z "$WORK_ROOT" || ! -d "$WORK_ROOT" ]]; then
+    return
+  fi
+  local expected_prefix="${TMPDIR:-/tmp}/database-server-xcode-test."
+  if [[ "$WORK_ROOT" != "$expected_prefix"* ]]; then
+    echo "error: refusing to remove unexpected harness path: $WORK_ROOT" >&2
+    return
+  fi
+  rm -rf -- "$WORK_ROOT"
+}
+
+trap cleanup EXIT
+
+prepend_library_path() {
+  local plist="$1"
+  local dictionary_path="$2"
+  local library_path="$3"
+  local value_path="$dictionary_path.DYLD_LIBRARY_PATH"
+  local existing_value=""
+
+  if ! plutil -extract "$dictionary_path" xml1 -o /dev/null \
+      "$plist" >/dev/null 2>&1; then
+    plutil -insert "$dictionary_path" -xml '<dict/>' "$plist"
+  fi
+  if existing_value="$(plutil -extract "$value_path" raw "$plist" 2>/dev/null)"; then
+    plutil -replace "$value_path" \
+      -string "$library_path:$existing_value" "$plist"
+  else
+    plutil -insert "$value_path" -string "$library_path" "$plist"
+  fi
+}
+
+inject_testing_runtime() {
+  local plist="$1"
+  local swiftc
+  local toolchain_root
+  local testing_library_path
+  local target_count=0
+  local configuration_index=0
+
+  swiftc="$(xcrun --toolchain "$TOOLCHAINS" --find swiftc)"
+  toolchain_root="$(cd "$(dirname "$swiftc")/../.." && pwd)"
+  testing_library_path="$toolchain_root/usr/lib/swift/macosx/testing"
+  if [[ ! -f "$testing_library_path/libTesting.dylib" ]]; then
+    echo "error: libTesting.dylib is missing from $testing_library_path" >&2
+    return 1
+  fi
+
+  while plutil -extract "TestConfigurations.$configuration_index.Name" raw \
+      "$plist" >/dev/null 2>&1; do
+    local target_index=0
+    while plutil -extract \
+        "TestConfigurations.$configuration_index.TestTargets.$target_index.BlueprintName" \
+        raw "$plist" >/dev/null 2>&1; do
+      local target_path="TestConfigurations.$configuration_index.TestTargets.$target_index"
+      prepend_library_path \
+        "$plist" "$target_path.TestingEnvironmentVariables" "$testing_library_path"
+      target_count=$((target_count + 1))
+      target_index=$((target_index + 1))
+    done
+    configuration_index=$((configuration_index + 1))
+  done
+
+  if (( target_count == 0 )); then
+    echo "error: no test targets found in $plist" >&2
+    return 1
+  fi
+}
+
+reject_internal_tool_errors() {
+  local log_path="$1"
+  if rg -n \
+      'Internal Error:|LLVM Profile Error:|warning: input verification failed' \
+      "$log_path" >&2; then
+    echo "error: internal tool failure detected in $log_path" >&2
+    return 1
+  fi
+}
+
+summary_number() {
+  local summary="$1"
+  local key="$2"
+  printf '%s' "$summary" | jq -er ".${key}"
+}
+
+for command in jq xcodebuild xcrun plutil perl rg tee; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "error: required command not found: $command" >&2
+    exit 1
+  fi
+done
+
+if [[ -z "${TOOLCHAINS:-}" ]]; then
+  echo "error: TOOLCHAINS must identify the pinned Swift snapshot" >&2
+  exit 2
+fi
+
+if [[ "${DATABASE_SERVER_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]] \
+    && rg -n '\.package\(path:' "$ROOT_DIR/Package.swift" >/dev/null; then
+  echo "error: release verification requires URL dependencies" >&2
+  exit 2
+fi
+
+WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/database-server-xcode-test.XXXXXX")"
+derived_data="$WORK_ROOT/DerivedData"
+mkdir -p "$derived_data" "$RESULT_DIRECTORY"
+run_identifier="$(date -u +%Y%m%d-%H%M%S)-$$"
+build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
+test_result="$RESULT_DIRECTORY/Test-$run_identifier.xcresult"
+build_log="$RESULT_DIRECTORY/Build-$run_identifier.log"
+test_log="$RESULT_DIRECTORY/Test-$run_identifier.log"
+
+set +e
+(
+  cd "$ROOT_DIR"
+  timeout_command "$BUILD_TIMEOUT_SECONDS" xcodebuild build-for-testing \
+    -scheme "$SCHEME" \
+    -destination "$DESTINATION" \
+    -derivedDataPath "$derived_data" \
+    -disablePackageRepositoryCache \
+    -resultBundlePath "$build_result" \
+    -enableCodeCoverage NO \
+    -onlyUsePackageVersionsFromResolvedFile \
+    -skipPackageUpdates \
+    2>&1 | tee "$build_log"
+)
+build_status=$?
+set -e
+reject_internal_tool_errors "$build_log"
+if (( build_status != 0 )); then
+  echo "error: build-for-testing exited with status $build_status" >&2
+  exit "$build_status"
+fi
+
+xctestrun_paths="$(find "$derived_data/Build/Products" -maxdepth 1 \
+  -type f -name '*.xctestrun' -print)"
+xctestrun_count="$(printf '%s\n' "$xctestrun_paths" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [[ "$xctestrun_count" != 1 ]]; then
+  echo "error: expected one xctestrun file, found $xctestrun_count" >&2
+  printf '%s\n' "$xctestrun_paths" >&2
+  exit 1
+fi
+
+configured_xctestrun="$(dirname "$xctestrun_paths")/.configured-$run_identifier.xctestrun"
+cp "$xctestrun_paths" "$configured_xctestrun"
+inject_testing_runtime "$configured_xctestrun"
+
+set +e
+timeout_command "$TEST_TIMEOUT_SECONDS" xcodebuild test-without-building \
+  -xctestrun "$configured_xctestrun" \
+  -destination "$DESTINATION" \
+  -resultBundlePath "$test_result" \
+  -enableCodeCoverage NO \
+  2>&1 | tee "$test_log"
+test_status=$?
+set -e
+reject_internal_tool_errors "$test_log"
+if (( test_status != 0 )); then
+  echo "error: tests exited with status $test_status" >&2
+  exit "$test_status"
+fi
+
+summary="$(xcrun xcresulttool get test-results summary \
+  --path "$test_result" --format json)"
+total_count="$(summary_number "$summary" totalTestCount)"
+passed_count="$(summary_number "$summary" passedTests)"
+failed_count="$(summary_number "$summary" failedTests)"
+skipped_count="$(summary_number "$summary" skippedTests)"
+expected_failure_count="$(summary_number "$summary" expectedFailures)"
+runtime_warning_count="$(printf '%s' "$summary" | jq -er '.runtimeWarnings | length')"
+if (( total_count != EXPECTED_TEST_COUNT \
+    || passed_count != EXPECTED_TEST_COUNT \
+    || failed_count != 0 \
+    || skipped_count != 0 \
+    || expected_failure_count != 0 \
+    || runtime_warning_count != 0 )); then
+  printf '%s\n' "$summary" >&2
+  echo "error: database-server result did not meet the strict contract" >&2
+  exit 1
+fi
+
+printf '%s\n' "$summary"
+echo "database-server tests: $passed_count passed"
+echo "Result directory: $RESULT_DIRECTORY"
