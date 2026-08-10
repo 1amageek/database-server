@@ -10,9 +10,12 @@ in `storage-kit`.
 flowchart LR
     CLI["database CLI"] --> Client["database-client"]
     Client --> Host["database-server<br/>HTTP / WebSocket / stdio"]
-    Host --> Runtime["DatabaseServerRuntime<br/>14 operation families"]
+    Host --> Runtime["DatabaseServerRuntime<br/>17 operation identifiers"]
     Runtime --> Container["DBContainer<br/>schema generation lease"]
-    Container --> Factory["Native storage factory"]
+    Container --> Control["Control domain<br/>catalog / jobs / snapshots"]
+    Container --> Data["Data domains<br/>Base roots"]
+    Control --> Factory["Native storage topology"]
+    Data --> Factory
     Factory --> SQLite["SQLiteStorageEngine"]
     Factory --> PostgreSQL["PostgreSQLStorageEngine"]
     Factory --> FDB["FDBStorageEngine"]
@@ -91,8 +94,44 @@ oversized, and truncated frames fail explicitly.
 
 ## Configuration and security
 
-The versioned server configuration contains storage, listener, routing, TLS,
-frame-limit, and token-registry locations. It never contains a raw credential.
+The versioned server configuration contains a control domain, one or more data
+domains, named Base placements, listener, routing, TLS, frame-limit, and
+token-registry locations. It never contains a raw credential. Format version 2
+is strict: unknown keys, duplicate identifiers, missing domain references,
+duplicate persistent backend definitions, empty namespaces, and invalid default
+placements are rejected before any engine is opened.
+
+```json
+{
+  "formatVersion": 2,
+  "controlDomain": "primary",
+  "domains": [
+    {
+      "id": "primary",
+      "namespace": ["database", "main"],
+      "storage": {
+        "kind": "sqlite",
+        "sqlite": { "mode": "file", "path": "/var/lib/database/main.sqlite" }
+      }
+    }
+  ],
+  "placements": [
+    { "id": "default", "domain": "primary", "path": ["bases"] }
+  ],
+  "defaultPlacement": "default",
+  "host": "127.0.0.1",
+  "port": 7878,
+  "routing": { "databaseID": "main" },
+  "tokenRegistryPath": "/var/lib/database/tokens.json"
+}
+```
+
+The host opens each domain exactly once and transfers the complete topology to
+`DBContainer`. FoundationDB's process-global client is initialized once even
+when several domains use it, and is shut down only after every owned engine has
+completed authoritative shutdown. Changing a placement in configuration does
+not move an existing Base; movement is a framework-managed lifecycle operation.
+
 The configuration and registry directories require mode `0700`; files require
 mode `0600`. Symbolic-link files and files owned by another user are rejected.
 Both files are opened with no-follow semantics and validated from their open
@@ -130,7 +169,7 @@ After an attributed package build, set `XCODE_TEST_DERIVED_DATA_PATH` to that
 exact DerivedData directory so the harness builds only the missing test
 products before its isolated `test-without-building` run.
 
-The strict harness requires 22 logical tests, zero failures, zero skips, zero
+The strict harness requires 24 logical tests, zero failures, zero skips, zero
 expected failures, zero runtime warnings, and no internal tool errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap
 commit/rollback, token persistence and revocation, configuration and registry

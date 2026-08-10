@@ -255,7 +255,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                     .load(from: configurationURL)
                 if let requested = try storageOptions.launchStorage(
                     required: false
-                ), requested != launchConfiguration.storage {
+                ), !launchConfiguration.matchesSingleStorage(requested) {
                     throw ValidationError(
                         "The requested storage does not match the existing configuration."
                     )
@@ -270,7 +270,22 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                     .deletingLastPathComponent()
                     .appendingPathComponent("tokens.json")
                 launchConfiguration = DatabaseServerLaunchConfiguration(
-                    storage: storage,
+                    controlDomain: "primary",
+                    domains: [
+                        .init(
+                            id: "primary",
+                            namespace: ["database", "main"],
+                            storage: storage
+                        ),
+                    ],
+                    placements: [
+                        .init(
+                            id: "default",
+                            domain: "primary",
+                            path: ["bases"]
+                        ),
+                    ],
+                    defaultPlacement: "default",
                     host: host ?? "127.0.0.1",
                     port: port ?? 7_878,
                     routing: .init(
@@ -380,7 +395,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             )
             let routingIdentity = try launchConfiguration.routingIdentity()
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
-                storage: launchConfiguration.runtimeStorage(),
+                storageTopology: launchConfiguration.runtimeStorageTopology(),
                 version: DatabaseServerBuild.version
             )
             do {
@@ -419,7 +434,9 @@ struct DatabaseServerCommand: AsyncParsableCommand {
 
         mutating func run() async throws {
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
-                storage: try storageOptions.runtimeStorage(),
+                storageTopology: .single(
+                    storage: try storageOptions.runtimeStorage()
+                ),
                 version: DatabaseServerBuild.version
             )
             do {
@@ -525,7 +542,7 @@ private func writeBootstrapResponse(
 }
 
 private enum DatabaseServerBuild {
-    static let version = "26.0809.1"
+    static let version = "26.0809.2"
 }
 
 private struct RejectingAuthenticator: DatabaseServerAuthenticator {

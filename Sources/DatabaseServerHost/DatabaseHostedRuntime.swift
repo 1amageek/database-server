@@ -72,18 +72,27 @@ public final class DatabaseHostedRuntime: Sendable {
 
     public static func open(
         application: AnyDatabaseServerApplication,
-        storageEngine: any StorageEngine,
+        storageTopology: DatabaseStorageTopology,
         hostServices: DatabaseServerHostServices
     ) async throws -> DatabaseHostedRuntime {
-        let definition = try await application.makeContainerDefinition()
-        let container: DBContainer
+        let definition: DatabaseContainerDefinition
         do {
-            container = try await definition.open(storageEngine: storageEngine)
+            definition = try await application.makeContainerDefinition()
         } catch {
-            storageEngine.requestShutdown()
-            await storageEngine.waitUntilShutdown()
+            for domain in storageTopology.domains {
+                domain.storageEngine.requestShutdown()
+            }
+            for domain in storageTopology.domains {
+                await domain.storageEngine.waitUntilShutdown()
+            }
             throw error
         }
+        // DatabaseContainerDefinition transfers the complete topology into
+        // DBContainer. Its open path owns authoritative cleanup on failure;
+        // the host must not race it with a second engine shutdown.
+        let container = try await definition.open(
+            storageTopology: storageTopology
+        )
         do {
             let configuration = try await application
                 .makeRuntimeConfiguration(for: container)

@@ -1,4 +1,7 @@
 import DatabaseServer
+import DatabaseServerFoundation
+import DatabaseEngine
+import DatabaseKit
 import FDBStorage
 import FoundationDB
 import NIOSSL
@@ -23,19 +26,21 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
     private let backendShutdownState = BackendShutdown()
 
     public static func open(
-        storage: NativeDatabaseStorageConfiguration,
+        storageTopology configuration:
+            NativeDatabaseStorageTopologyConfiguration,
         version: String
     ) async throws -> NativeDatabaseRuntimeEnvironment {
-        let openedStorage = try await openStorage(storage)
-        let engine = openedStorage.engine
+        let application = try NativeDatabaseApplicationFactory
+            .schemaDriven(version: version)
+        let openedStorage = try await openStorageTopology(configuration)
         let scheduler = NativeDatabaseJobScheduler()
         do {
             let runtime = try await DatabaseHostedRuntime.open(
-                application: try NativeDatabaseApplicationFactory
-                    .schemaDriven(version: version),
-                storageEngine: engine,
+                application: application,
+                storageTopology: openedStorage.topology,
                 hostServices: DatabaseServerHostServices(
-                    jobScheduler: scheduler
+                    jobScheduler: scheduler,
+                    identifierGenerator: RandomDatabaseUUIDGenerator()
                 )
             )
             await scheduler.install { [weak runtime] in
@@ -52,8 +57,9 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             )
         } catch {
             await scheduler.shutdown()
-            engine.requestShutdown()
-            await engine.waitUntilShutdown()
+            // DatabaseHostedRuntime transfers the topology to DBContainer;
+            // both its definition-failure and container-open-failure paths
+            // complete authoritative engine shutdown before returning.
             await openedStorage.backendShutdown()
             throw error
         }
@@ -91,52 +97,115 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
 }
 
 private extension NativeDatabaseRuntimeEnvironment {
-    struct OpenedStorage: Sendable {
-        let engine: any StorageEngine
+    struct OpenedStorageTopology: Sendable {
+        let topology: DatabaseStorageTopology
         let backendShutdown: @Sendable () async -> Void
     }
 
-    static func openStorage(
-        _ storage: NativeDatabaseStorageConfiguration
-    ) async throws -> OpenedStorage {
-        switch storage {
-        case .sqliteMemory:
-            return OpenedStorage(
-                engine: try SQLiteStorageEngine(configuration: .inMemory),
-                backendShutdown: {}
-            )
-        case .sqliteFile(let path):
-            return OpenedStorage(
-                engine: try SQLiteStorageEngine(configuration: .file(path)),
-                backendShutdown: {}
-            )
-        case .postgreSQL(let configuration):
-            return OpenedStorage(
-                engine: try await PostgreSQLStorageEngine(
-                    configuration: try postgreSQLConfiguration(configuration)
-                ),
-                backendShutdown: {}
-            )
-        case .foundationDB(let clusterFilePath):
+    static func openStorageTopology(
+        _ configuration: NativeDatabaseStorageTopologyConfiguration
+    ) async throws -> OpenedStorageTopology {
+        try validatePhysicalBackends(configuration.domains)
+        let usesFoundationDB = configuration.domains.contains {
+            if case .foundationDB = $0.storage { return true }
+            return false
+        }
+        if usesFoundationDB {
             guard !FDBClient.isInitialized else {
                 throw NativeDatabaseStorageError
                     .foundationDBClientAlreadyInitialized
             }
             try await FDBClient.initialize()
-            do {
-                let database = try FDBClient.openDatabase(
-                    clusterFilePath: clusterFilePath
+        }
+
+        var openedEngines: [any StorageEngine] = []
+        do {
+            var domains: [DatabaseStorageDomain] = []
+            domains.reserveCapacity(configuration.domains.count)
+            for domain in configuration.domains {
+                let engine = try await openStorage(domain.storage)
+                openedEngines.append(engine)
+                domains.append(
+                    try DatabaseStorageDomain(
+                        id: DatabaseStorageDomain.ID(domain.id),
+                        namespacePath: domain.namespacePath,
+                        storageEngine: engine
+                    )
                 )
-                let engine = try await FDBStorageEngine(
-                    configuration: .init(database: database)
+            }
+            let placements = try configuration.placements.map {
+                placement in
+                try DatabaseStoragePlacement(
+                    id: Base.Placement.ID(placement.id),
+                    domainID: DatabaseStorageDomain.ID(
+                        placement.domainID
+                    ),
+                    path: placement.path
                 )
-                return OpenedStorage(
-                    engine: engine,
-                    backendShutdown: { FDBClient.shutdown() }
+            }
+            let topology = try DatabaseStorageTopology(
+                controlDomainID: DatabaseStorageDomain.ID(
+                    configuration.controlDomainID
+                ),
+                domains: domains,
+                placements: placements,
+                defaultPlacementID: Base.Placement.ID(
+                    configuration.defaultPlacementID
                 )
-            } catch {
-                FDBClient.shutdown()
-                throw error
+            )
+            let backendShutdown: @Sendable () async -> Void
+            if usesFoundationDB {
+                backendShutdown = { FDBClient.shutdown() }
+            } else {
+                backendShutdown = {}
+            }
+            return OpenedStorageTopology(
+                topology: topology,
+                backendShutdown: backendShutdown
+            )
+        } catch {
+            for engine in openedEngines.reversed() {
+                engine.requestShutdown()
+            }
+            for engine in openedEngines.reversed() {
+                await engine.waitUntilShutdown()
+            }
+            if usesFoundationDB { FDBClient.shutdown() }
+            throw error
+        }
+    }
+
+    static func openStorage(
+        _ storage: NativeDatabaseStorageConfiguration
+    ) async throws -> any StorageEngine {
+        switch storage {
+        case .sqliteMemory:
+            return try SQLiteStorageEngine(configuration: .inMemory)
+        case .sqliteFile(let path):
+            return try SQLiteStorageEngine(configuration: .file(path))
+        case .postgreSQL(let configuration):
+            return try await PostgreSQLStorageEngine(
+                configuration: try postgreSQLConfiguration(configuration)
+            )
+        case .foundationDB(let clusterFilePath):
+            let database = try FDBClient.openDatabase(
+                clusterFilePath: clusterFilePath
+            )
+            return try await FDBStorageEngine(
+                configuration: .init(database: database)
+            )
+        }
+    }
+
+    static func validatePhysicalBackends(
+        _ domains: [NativeDatabaseStorageDomainConfiguration]
+    ) throws {
+        var persistentBackends: Set<NativeDatabaseStorageConfiguration> = []
+        for domain in domains {
+            if case .sqliteMemory = domain.storage { continue }
+            guard persistentBackends.insert(domain.storage).inserted else {
+                throw NativeDatabaseStorageError
+                    .duplicatePhysicalBackend
             }
         }
     }
@@ -207,4 +276,5 @@ public enum NativeDatabaseStorageError: Error, Sendable, Equatable {
     case invalidPasswordFile
     case postgreSQLTLSRequiresTCP
     case foundationDBClientAlreadyInitialized
+    case duplicatePhysicalBackend
 }

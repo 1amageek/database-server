@@ -9,13 +9,14 @@ struct NativeDatabaseRuntimeTests {
     @Test("An empty schema-driven database executes capabilities")
     func emptyDatabaseExecutesCapabilities() async throws {
         let environment = try await NativeDatabaseRuntimeEnvironment.open(
-            storage: .sqliteMemory,
+            storageTopology: .single(storage: .sqliteMemory),
             version: "native-runtime-test"
         )
         do {
             let request = try DatabaseWireEncoder().encodeRequest(
                 DatabaseOperations.capabilitiesDescribe,
                 requestID: 1,
+                target: .database,
                 request: EmptyOperationPayload()
             )
             let responseBytes = try await environment.runtime.execute(
@@ -48,6 +49,7 @@ struct NativeDatabaseRuntimeTests {
             let request = try DatabaseWireEncoder().encodeRequest(
                 DatabaseOperations.capabilitiesDescribe,
                 requestID: 2,
+                target: .database,
                 request: EmptyOperationPayload()
             )
             _ = try await environment.runtime.execute(
@@ -57,5 +59,66 @@ struct NativeDatabaseRuntimeTests {
                 )
             )
         }
+    }
+
+    @Test("A native host owns multiple storage domains as one topology")
+    func multipleStorageDomainsOpenAndShutdownTogether() async throws {
+        let environment = try await NativeDatabaseRuntimeEnvironment.open(
+            storageTopology: NativeDatabaseStorageTopologyConfiguration(
+                controlDomainID: "primary",
+                domains: [
+                    .init(
+                        id: "primary",
+                        namespacePath: ["database", "main"],
+                        storage: .sqliteMemory
+                    ),
+                    .init(
+                        id: "secondary",
+                        namespacePath: ["database", "secondary"],
+                        storage: .sqliteMemory
+                    ),
+                ],
+                placements: [
+                    .init(
+                        id: "default",
+                        domainID: "primary",
+                        path: ["bases"]
+                    ),
+                    .init(
+                        id: "secondary",
+                        domainID: "secondary",
+                        path: ["bases"]
+                    ),
+                ],
+                defaultPlacementID: "default"
+            ),
+            version: "multi-domain-runtime-test"
+        )
+        do {
+            let request = try DatabaseWireEncoder().encodeRequest(
+                DatabaseOperations.capabilitiesDescribe,
+                requestID: 3,
+                target: .database,
+                request: EmptyOperationPayload()
+            )
+            let responseBytes = try await environment.runtime.execute(
+                request,
+                authorization: DatabaseRequestExecutionContext(
+                    authorization: .authenticated(
+                        Principal(identifier: "test", roles: ["admin"])
+                    )
+                )
+            )
+            let response = try DatabaseWireDecoder().decodeResponse(
+                DatabaseOperations.capabilitiesDescribe,
+                from: responseBytes,
+                matching: 3
+            )
+            #expect(try response.get().runtimeVersion == "multi-domain-runtime-test")
+        } catch {
+            await environment.shutdown()
+            throw error
+        }
+        await environment.shutdown()
     }
 }

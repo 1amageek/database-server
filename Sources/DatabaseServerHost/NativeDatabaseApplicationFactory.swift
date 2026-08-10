@@ -16,11 +16,6 @@ public enum NativeDatabaseApplicationFactory {
         let operationRegistry = try DatabaseResumableOperationRegistry(
             operations: [
                 AnyDatabaseResumableOperation(
-                    DatabaseSchemaApplyResumableOperation(
-                        runtimeLimits: runtimeLimits
-                    )
-                ),
-                AnyDatabaseResumableOperation(
                     DatabaseMaintenanceResumableOperation(
                         runtimeLimits: runtimeLimits
                     )

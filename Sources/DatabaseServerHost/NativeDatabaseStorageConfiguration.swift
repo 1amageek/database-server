@@ -47,3 +47,83 @@ public enum NativeDatabaseStorageConfiguration: Sendable, Hashable {
     case postgreSQL(PostgreSQL)
     case foundationDB(clusterFilePath: String)
 }
+
+/// Host-owned description of one independently transacted storage domain.
+public struct NativeDatabaseStorageDomainConfiguration: Sendable, Hashable {
+    public let id: String
+    public let namespacePath: [String]
+    public let storage: NativeDatabaseStorageConfiguration
+
+    public init(
+        id: String,
+        namespacePath: [String],
+        storage: NativeDatabaseStorageConfiguration
+    ) {
+        self.id = id
+        self.namespacePath = namespacePath
+        self.storage = storage
+    }
+}
+
+/// Host-owned mapping from a placement name to one domain namespace.
+public struct NativeDatabaseStoragePlacementConfiguration:
+    Sendable,
+    Hashable
+{
+    public let id: String
+    public let domainID: String
+    public let path: [String]
+
+    public init(id: String, domainID: String, path: [String]) {
+        self.id = id
+        self.domainID = domainID
+        self.path = path
+    }
+}
+
+/// Complete native-host topology. Engines are opened only by the host and are
+/// transferred exactly once into the framework container.
+public struct NativeDatabaseStorageTopologyConfiguration:
+    Sendable,
+    Hashable
+{
+    public let controlDomainID: String
+    public let domains: [NativeDatabaseStorageDomainConfiguration]
+    public let placements: [NativeDatabaseStoragePlacementConfiguration]
+    public let defaultPlacementID: String
+
+    public init(
+        controlDomainID: String,
+        domains: [NativeDatabaseStorageDomainConfiguration],
+        placements: [NativeDatabaseStoragePlacementConfiguration],
+        defaultPlacementID: String
+    ) {
+        self.controlDomainID = controlDomainID
+        self.domains = domains
+        self.placements = placements
+        self.defaultPlacementID = defaultPlacementID
+    }
+
+    public static func single(
+        storage: NativeDatabaseStorageConfiguration
+    ) -> Self {
+        Self(
+            controlDomainID: "primary",
+            domains: [
+                NativeDatabaseStorageDomainConfiguration(
+                    id: "primary",
+                    namespacePath: ["database", "main"],
+                    storage: storage
+                ),
+            ],
+            placements: [
+                NativeDatabaseStoragePlacementConfiguration(
+                    id: "default",
+                    domainID: "primary",
+                    path: ["bases"]
+                ),
+            ],
+            defaultPlacementID: "default"
+        )
+    }
+}

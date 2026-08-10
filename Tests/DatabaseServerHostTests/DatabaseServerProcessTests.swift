@@ -26,6 +26,7 @@ struct DatabaseServerProcessTests {
             let request = try DatabaseWireEncoder().encodeRequest(
                 DatabaseOperations.capabilitiesDescribe,
                 requestID: requestID,
+                target: .database,
                 request: EmptyOperationPayload()
             )
             let codec = try DatabaseStdioFrameCodec(
@@ -53,7 +54,7 @@ struct DatabaseServerProcessTests {
             )
             let payload = try response.get()
 
-            #expect(payload.runtimeVersion == "26.0809.1")
+            #expect(payload.runtimeVersion == "26.0809.2")
             #expect(
                 payload.features.contains {
                     $0.identifier == "schema.execute" && $0.version == 1
@@ -207,6 +208,7 @@ struct DatabaseServerProcessTests {
             let requestBytes = try DatabaseWireEncoder().encodeRequest(
                 DatabaseOperations.capabilitiesDescribe,
                 requestID: requestID,
+                target: .database,
                 request: EmptyOperationPayload()
             )
             let responseBytes = try await waitForCapabilities(
@@ -220,7 +222,7 @@ struct DatabaseServerProcessTests {
                 matching: requestID
             )
             let capabilities = try wireResponse.get()
-            #expect(capabilities.runtimeVersion == "26.0809.1")
+            #expect(capabilities.runtimeVersion == "26.0809.2")
 
             process.interrupt()
             let status = try await waitForTermination(

@@ -182,6 +182,30 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
+    public struct Domain: Codable, Sendable, Equatable {
+        public let id: String
+        public let namespace: [String]
+        public let storage: Storage
+
+        public init(id: String, namespace: [String], storage: Storage) {
+            self.id = id
+            self.namespace = namespace
+            self.storage = storage
+        }
+    }
+
+    public struct Placement: Codable, Sendable, Equatable {
+        public let id: String
+        public let domain: String
+        public let path: [String]
+
+        public init(id: String, domain: String, path: [String]) {
+            self.id = id
+            self.domain = domain
+            self.path = path
+        }
+    }
+
     public struct TLS: Codable, Sendable {
         public let certificateChainPath: String
         public let privateKeyPath: String
@@ -193,7 +217,10 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
 
     public let formatVersion: Int
-    public let storage: Storage
+    public let controlDomain: String
+    public let domains: [Domain]
+    public let placements: [Placement]
+    public let defaultPlacement: String
     public let host: String
     public let port: Int
     public let routing: Routing
@@ -202,8 +229,11 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     public let maximumFrameBytes: Int?
 
     public init(
-        formatVersion: Int = 1,
-        storage: Storage,
+        formatVersion: Int = 2,
+        controlDomain: String,
+        domains: [Domain],
+        placements: [Placement],
+        defaultPlacement: String,
         host: String = "127.0.0.1",
         port: Int = 7_878,
         routing: Routing,
@@ -212,7 +242,10 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         maximumFrameBytes: Int? = nil
     ) {
         self.formatVersion = formatVersion
-        self.storage = storage
+        self.controlDomain = controlDomain
+        self.domains = domains
+        self.placements = placements
+        self.defaultPlacement = defaultPlacement
         self.host = host
         self.port = port
         self.routing = routing
@@ -226,9 +259,11 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     ) throws -> DatabaseServerLaunchConfiguration {
         let configuration: DatabaseServerLaunchConfiguration
         do {
+            let data = try DatabaseServerConfigurationFile.read(from: url)
+            try DatabaseServerLaunchConfigurationJSONValidator.validate(data)
             configuration = try JSONDecoder().decode(
                 DatabaseServerLaunchConfiguration.self,
-                from: DatabaseServerConfigurationFile.read(from: url)
+                from: data
             )
         } catch {
             throw DatabaseServerLaunchConfigurationError.invalidDocument
@@ -254,10 +289,30 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
-    public func runtimeStorage()
-        throws -> NativeDatabaseStorageConfiguration
-    {
-        try storage.runtimeStorage()
+    public func runtimeStorageTopology() throws
+        -> NativeDatabaseStorageTopologyConfiguration {
+        try NativeDatabaseStorageTopologyConfiguration(
+            controlDomainID: controlDomain,
+            domains: domains.map { domain in
+                NativeDatabaseStorageDomainConfiguration(
+                    id: domain.id,
+                    namespacePath: domain.namespace,
+                    storage: try domain.storage.runtimeStorage()
+                )
+            },
+            placements: placements.map { placement in
+                NativeDatabaseStoragePlacementConfiguration(
+                    id: placement.id,
+                    domainID: placement.domain,
+                    path: placement.path
+                )
+            },
+            defaultPlacementID: defaultPlacement
+        )
+    }
+
+    public func matchesSingleStorage(_ storage: Storage) -> Bool {
+        domains.count == 1 && domains[0].storage == storage
     }
 
     public func routingIdentity() throws -> DatabaseServerRoutingIdentity {
@@ -298,7 +353,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
 
     private func validate() throws {
-        guard formatVersion == 1 else {
+        guard formatVersion == 2 else {
             throw DatabaseServerLaunchConfigurationError
                 .unsupportedFormatVersion(formatVersion)
         }
@@ -306,7 +361,46 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             throw DatabaseServerLaunchConfigurationError
                 .missingTokenRegistryPath
         }
-        _ = try storage.runtimeStorage()
+        let topology = try runtimeStorageTopology()
+        guard !topology.domains.isEmpty,
+              !topology.placements.isEmpty else {
+            throw DatabaseServerLaunchConfigurationError.emptyTopology
+        }
+        var domainIDs: Set<String> = []
+        var physicalBackends: Set<NativeDatabaseStorageConfiguration> = []
+        for domain in topology.domains {
+            guard domainIDs.insert(domain.id).inserted,
+                  !domain.namespacePath.isEmpty,
+                  !domain.namespacePath.contains(where: \.isEmpty) else {
+                throw DatabaseServerLaunchConfigurationError.invalidTopology
+            }
+            if case .sqliteMemory = domain.storage {
+                continue
+            }
+            guard physicalBackends.insert(domain.storage).inserted else {
+                throw DatabaseServerLaunchConfigurationError
+                    .duplicatePhysicalBackend
+            }
+        }
+        guard domainIDs.contains(topology.controlDomainID) else {
+            throw DatabaseServerLaunchConfigurationError.invalidTopology
+        }
+        var placementIDs: Set<String> = []
+        var destinations: Set<String> = []
+        for placement in topology.placements {
+            let destination = placement.domainID + "\u{0}"
+                + placement.path.joined(separator: "\u{0}")
+            guard placementIDs.insert(placement.id).inserted,
+                  domainIDs.contains(placement.domainID),
+                  !placement.path.isEmpty,
+                  !placement.path.contains(where: \.isEmpty),
+                  destinations.insert(destination).inserted else {
+                throw DatabaseServerLaunchConfigurationError.invalidTopology
+            }
+        }
+        guard placementIDs.contains(topology.defaultPlacementID) else {
+            throw DatabaseServerLaunchConfigurationError.invalidTopology
+        }
         _ = try hostConfiguration()
     }
 }
@@ -328,6 +422,9 @@ public enum DatabaseServerLaunchConfigurationError:
     case configurationAlreadyExists
     case configurationWriteFailed
     case invalidConfigurationPermissions
+    case emptyTopology
+    case invalidTopology
+    case duplicatePhysicalBackend
 }
 
 private extension DatabaseServerLaunchConfiguration.Storage.PostgreSQL {

@@ -53,7 +53,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0809.1",
+            from: "26.0809.3",
             traits: frameworkTraits
         ),
         .package(
@@ -66,7 +66,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0809.4"
+            from: "26.0809.8"
         ),
         .package(
             url: "https://github.com/1amageek/database-types.git",

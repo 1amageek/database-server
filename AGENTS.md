@@ -25,7 +25,7 @@ storage behavior, client UX, profiles, or credentials at rest on the client.
 ## Verification
 
 Use `scripts/xcode-test-harness` with the pinned Swift snapshot. Its reviewed
-contract is 22 logical tests, zero failures, skips, expected failures, runtime
+contract is 24 logical tests, zero failures, skips, expected failures, runtime
 warnings, and internal tool errors. Cover HTTP, HTTPS with a real TLS
 handshake, WebSocket, and stdio through real transports, including truncated
 frames, oversized payloads, authentication and routing rejection,
