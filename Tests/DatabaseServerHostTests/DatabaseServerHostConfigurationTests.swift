@@ -67,14 +67,18 @@ struct DatabaseServerHostConfigurationTests {
 
     @Test("Launch configuration is private, durable, and never follows a symbolic link")
     func secureLaunchConfigurationFile() throws {
-        let directory = FileManager.default.temporaryDirectory
+        let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "database-server-configuration-\(UUID().uuidString)",
                 isDirectory: true
             )
+        let configurationRoot = root
+            .appendingPathComponent("config", isDirectory: true)
+        let directory = configurationRoot
+            .appendingPathComponent("server", isDirectory: true)
         defer {
             do {
-                try FileManager.default.removeItem(at: directory)
+                try FileManager.default.removeItem(at: root)
             } catch where (error as NSError).code
                     == NSFileNoSuchFileError {
             } catch {
@@ -123,6 +127,15 @@ struct DatabaseServerHostConfigurationTests {
         #expect(
             (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600
         )
+        for privateDirectory in [root, configurationRoot, directory] {
+            let attributes = try FileManager.default.attributesOfItem(
+                atPath: privateDirectory.path
+            )
+            #expect(
+                (attributes[.posixPermissions] as? NSNumber)?.intValue
+                    == 0o700
+            )
+        }
 
         let linkURL = directory.appendingPathComponent("linked.json")
         try FileManager.default.createSymbolicLink(

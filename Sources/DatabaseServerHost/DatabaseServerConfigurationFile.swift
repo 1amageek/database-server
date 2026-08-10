@@ -30,12 +30,15 @@ enum DatabaseServerConfigurationFile {
         at url: URL
     ) throws {
         let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        try validateDirectory(directory)
+        do {
+            try DatabasePrivateDirectory.ensure(directory)
+        } catch DatabasePrivateDirectory.Failure.invalidDirectory {
+            throw DatabaseServerLaunchConfigurationError
+                .invalidConfigurationPermissions
+        } catch {
+            throw DatabaseServerLaunchConfigurationError
+                .configurationWriteFailed
+        }
 
         let descriptor = Darwin.open(
             url.path,
@@ -86,17 +89,6 @@ enum DatabaseServerConfigurationFile {
         didCloseDescriptor = true
         try synchronizeDirectory(directory)
         shouldRemove = false
-    }
-
-    private static func validateDirectory(_ url: URL) throws {
-        var metadata = stat()
-        guard Darwin.lstat(url.path, &metadata) == 0,
-              metadata.st_mode & S_IFMT == S_IFDIR,
-              metadata.st_mode & 0o777 == 0o700,
-              metadata.st_uid == geteuid() else {
-            throw DatabaseServerLaunchConfigurationError
-                .invalidConfigurationPermissions
-        }
     }
 
     private static func validateFile(descriptor: Int32) throws -> Int {

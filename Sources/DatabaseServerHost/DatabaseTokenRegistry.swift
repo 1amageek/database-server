@@ -137,11 +137,7 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
     private func persist() throws {
         let directoryURL = fileURL.deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(
-                at: directoryURL,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
+            try DatabasePrivateDirectory.ensure(directoryURL)
             try Self.validateDirectoryPermissions(directoryURL)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
