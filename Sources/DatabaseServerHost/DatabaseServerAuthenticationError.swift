@@ -6,6 +6,8 @@ public enum DatabaseServerAuthenticationError:
     case malformedCredential
     case invalidCredential
     case revokedCredential
+    case claimsNotSupported
+    case invalidPrincipal
     case invalidRegistry
     case invalidRegistryPermissions
     case registryWriteFailed

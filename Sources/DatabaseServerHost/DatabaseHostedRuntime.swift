@@ -1,5 +1,5 @@
 import DatabaseEngine
-import DatabaseServer
+import DatabaseWireRuntime
 import DatabaseTypes
 import StorageKit
 
@@ -67,13 +67,13 @@ public final class DatabaseHostedRuntime: Sendable {
     }
 
     private let container: DBContainer
-    private let runtime: DatabaseServerRuntime
+    private let runtime: DatabaseOperationRuntime
     private let lifecycle = Lifecycle()
 
     public static func open(
-        application: AnyDatabaseServerApplication,
+        application: AnyDatabaseApplication,
         storageTopology: DatabaseStorageTopology,
-        hostServices: DatabaseServerHostServices
+        hostServices: DatabaseHostServices
     ) async throws -> DatabaseHostedRuntime {
         let definition: DatabaseContainerDefinition
         do {
@@ -96,7 +96,7 @@ public final class DatabaseHostedRuntime: Sendable {
         do {
             let configuration = try await application
                 .makeRuntimeConfiguration(for: container)
-            let runtime = try await DatabaseServerRuntime(
+            let runtime = try await DatabaseOperationRuntime(
                 container: container,
                 configuration: configuration,
                 hostServices: hostServices
@@ -111,7 +111,7 @@ public final class DatabaseHostedRuntime: Sendable {
         }
     }
 
-    init(container: DBContainer, runtime: DatabaseServerRuntime) {
+    init(container: DBContainer, runtime: DatabaseOperationRuntime) {
         self.container = container
         self.runtime = runtime
     }

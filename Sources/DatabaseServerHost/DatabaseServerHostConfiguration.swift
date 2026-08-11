@@ -17,6 +17,7 @@ public struct DatabaseServerHostConfiguration: Sendable, Hashable {
     public let routingIdentity: DatabaseServerRoutingIdentity
     public let tls: DatabaseServerTLSConfiguration?
     public let maximumFrameBytes: Int
+    public let maximumConcurrentWebSocketRequests: Int
 
     public init(
         host: String = "127.0.0.1",
@@ -24,6 +25,7 @@ public struct DatabaseServerHostConfiguration: Sendable, Hashable {
         routingIdentity: DatabaseServerRoutingIdentity,
         tls: DatabaseServerTLSConfiguration? = nil,
         maximumFrameBytes: Int = DatabaseWireLimits.default.maximumFrameBytes,
+        maximumConcurrentWebSocketRequests: Int = 8,
         hasAuthenticator: Bool
     ) throws(DatabaseServerHostConfigurationError) {
         guard !host.isEmpty else {
@@ -35,6 +37,9 @@ public struct DatabaseServerHostConfiguration: Sendable, Hashable {
         guard maximumFrameBytes > 0,
               maximumFrameBytes <= Int(UInt32.max) else {
             throw .invalidMaximumFrameBytes
+        }
+        guard (1...64).contains(maximumConcurrentWebSocketRequests) else {
+            throw .invalidMaximumConcurrentWebSocketRequests
         }
         guard hasAuthenticator else {
             throw .missingAuthenticator
@@ -52,6 +57,8 @@ public struct DatabaseServerHostConfiguration: Sendable, Hashable {
         self.routingIdentity = routingIdentity
         self.tls = tls
         self.maximumFrameBytes = maximumFrameBytes
+        self.maximumConcurrentWebSocketRequests =
+            maximumConcurrentWebSocketRequests
     }
 
     public static func isLoopback(_ host: String) -> Bool {
@@ -67,6 +74,7 @@ public enum DatabaseServerHostConfigurationError:
     case invalidHost
     case invalidPort
     case invalidMaximumFrameBytes
+    case invalidMaximumConcurrentWebSocketRequests
     case missingAuthenticator
     case nonLoopbackRequiresTLS
     case nonLoopbackRequiresCompleteRoutingIdentity

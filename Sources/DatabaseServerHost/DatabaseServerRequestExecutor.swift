@@ -1,4 +1,4 @@
-import DatabaseServer
+import DatabaseWireRuntime
 import DatabaseTypes
 
 public protocol DatabaseServerRequestExecuting: Sendable {
@@ -47,7 +47,7 @@ public final class DatabaseServerRequestExecutor:
         workspaceID: String?
     ) async throws -> DatabaseRequestExecutionContext {
         let credential = try Self.parseCredential(authorizationHeader)
-        let authorization = try await authenticator.authenticate(credential)
+        let authentication = try await authenticator.authenticate(credential)
         do {
             try routingIdentity.validate(
                 databaseID: databaseID,
@@ -58,7 +58,9 @@ public final class DatabaseServerRequestExecutor:
             throw DatabaseServerRequestError.routingMismatch
         }
         return DatabaseRequestExecutionContext(
-            authorization: authorization
+            authorization: authentication.authorization,
+            jobAuthorizationReference:
+                authentication.jobAuthorizationReference
         )
     }
 
@@ -66,7 +68,17 @@ public final class DatabaseServerRequestExecutor:
         _ request: ByteString,
         context: DatabaseRequestExecutionContext
     ) async throws -> ByteString {
-        try await runtime.execute(request, authorization: context)
+        guard let reference = context.jobAuthorizationReference else {
+            throw DatabaseJobAuthorizationError.referenceRequired
+        }
+        let authorization = try await authenticator.revalidate(reference)
+        return try await runtime.execute(
+            request,
+            authorization: DatabaseRequestExecutionContext(
+                authorization: authorization,
+                jobAuthorizationReference: reference
+            )
+        )
     }
 
     public func shutdown() async {

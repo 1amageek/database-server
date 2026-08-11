@@ -1,4 +1,4 @@
-import DatabaseServer
+import DatabaseWireRuntime
 import DatabaseTypes
 import Foundation
 import Hummingbird
@@ -63,23 +63,38 @@ public final class DatabaseNetworkService: Service, Sendable {
                 return .dontUpgrade
             }
             return .upgrade([:]) { inbound, outbound, _ in
-                for try await message in inbound.messages(
-                    maxSize: configuration.maximumFrameBytes
-                ) {
-                    guard case .binary(let buffer) = message else {
-                        throw DatabaseNetworkServiceError
-                            .binaryWebSocketMessageRequired
+                let writer = DatabaseWebSocketResponseWriter(outbound)
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    var activeRequestCount = 0
+                    for try await message in inbound.messages(
+                        maxSize: configuration.maximumFrameBytes
+                    ) {
+                        guard case .binary(let buffer) = message else {
+                            throw DatabaseNetworkServiceError
+                                .binaryWebSocketMessageRequired
+                        }
+                        if activeRequestCount
+                                == configuration
+                                    .maximumConcurrentWebSocketRequests {
+                            try await group.next()
+                            activeRequestCount -= 1
+                        }
+                        let requestBytes = ByteString(
+                            retainingReadableBytes: buffer
+                        )
+                        group.addTask {
+                            let response = try await executor.execute(
+                                requestBytes,
+                                context: executionContext
+                            )
+                            try await writer.write(response)
+                        }
+                        activeRequestCount += 1
                     }
-                    let requestBytes = ByteString(
-                        retainingReadableBytes: buffer
-                    )
-                    let response = try await executor.execute(
-                        requestBytes,
-                        context: executionContext
-                    )
-                    try await outbound.write(
-                        .binary(response.makeByteBuffer())
-                    )
+                    while activeRequestCount > 0 {
+                        try await group.next()
+                        activeRequestCount -= 1
+                    }
                 }
             }
         }
@@ -178,6 +193,16 @@ public final class DatabaseNetworkService: Service, Sendable {
                 status: .serviceUnavailable,
                 code: "server_shutting_down"
             )
+        } catch is DatabaseServerAuthenticationError {
+            return errorResponse(
+                status: .unauthorized,
+                code: "authentication_failed"
+            )
+        } catch is DatabaseJobAuthorizationError {
+            return errorResponse(
+                status: .unauthorized,
+                code: "authentication_failed"
+            )
         } catch {
             return errorResponse(
                 status: .badRequest,
@@ -252,6 +277,18 @@ public final class DatabaseNetworkService: Service, Sendable {
             headers: headers,
             body: .init(byteBuffer: body)
         )
+    }
+}
+
+private actor DatabaseWebSocketResponseWriter {
+    private let outbound: WebSocketOutboundWriter
+
+    init(_ outbound: WebSocketOutboundWriter) {
+        self.outbound = outbound
+    }
+
+    func write(_ response: ByteString) async throws {
+        try await outbound.write(.binary(response.makeByteBuffer()))
     }
 }
 

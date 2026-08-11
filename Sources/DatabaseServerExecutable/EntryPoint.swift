@@ -1,5 +1,6 @@
 import ArgumentParser
 import DatabaseKit
+import DatabaseWireRuntime
 import DatabaseServerHost
 import DatabaseWire
 import Darwin
@@ -269,6 +270,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 let registryURL = configurationURL
                     .deletingLastPathComponent()
                     .appendingPathComponent("tokens.json")
+                #if DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES
                 launchConfiguration = DatabaseServerLaunchConfiguration(
                     controlDomain: "primary",
                     domains: [
@@ -295,6 +297,26 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                     ),
                     tokenRegistryPath: registryURL.path
                 )
+                #else
+                launchConfiguration = DatabaseServerLaunchConfiguration(
+                    controlDomain: "primary",
+                    domains: [
+                        .init(
+                            id: "primary",
+                            namespace: ["database", "main"],
+                            storage: storage
+                        ),
+                    ],
+                    host: host ?? "127.0.0.1",
+                    port: port ?? 7_878,
+                    routing: .init(
+                        databaseID: database,
+                        tenantID: tenant,
+                        workspaceID: workspace
+                    ),
+                    tokenRegistryPath: registryURL.path
+                )
+                #endif
                 try launchConfiguration.create(at: configurationURL)
             }
 
@@ -396,11 +418,11 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             let routingIdentity = try launchConfiguration.routingIdentity()
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: launchConfiguration.runtimeStorageTopology(),
+                authenticator: registry,
                 version: DatabaseServerBuild.version
             )
             do {
                 let executor = environment.makeRequestExecutor(
-                    authenticator: registry,
                     routingIdentity: routingIdentity
                 )
                 let network = try DatabaseNetworkService(
@@ -433,15 +455,16 @@ struct DatabaseServerCommand: AsyncParsableCommand {
         var maximumFrameBytes = DatabaseWireLimits.default.maximumFrameBytes
 
         mutating func run() async throws {
+            let authenticator = try LocalProcessAuthenticator()
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: .single(
                     storage: try storageOptions.runtimeStorage()
                 ),
+                authenticator: authenticator,
                 version: DatabaseServerBuild.version
             )
             do {
                 let executor = environment.makeRequestExecutor(
-                    authenticator: RejectingAuthenticator(),
                     routingIdentity: try DatabaseServerRoutingIdentity(
                         databaseID: "main"
                     )
@@ -454,6 +477,8 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                             roles: ["admin"]
                         )
                     ),
+                    jobAuthorizationReference:
+                        authenticator.authorizationReference,
                     maximumFrameBytes: maximumFrameBytes
                 )
                 try await runServiceGroup(
@@ -542,15 +567,34 @@ private func writeBootstrapResponse(
 }
 
 private enum DatabaseServerBuild {
-    static let version = "26.0809.2"
+    static let version = "26.0812.0"
 }
 
-private struct RejectingAuthenticator: DatabaseServerAuthenticator {
+private struct LocalProcessAuthenticator: DatabaseServerAuthenticator {
+    let authorizationReference: DatabaseJobAuthorizationReference
+
+    init() throws {
+        self.authorizationReference = try DatabaseJobAuthorizationReference(
+            "local-process"
+        )
+    }
+
     func authenticate(
         _ credential: DatabaseServerCredential
-    ) async throws -> AuthorizationContext {
+    ) async throws -> DatabaseServerAuthentication {
         _ = credential
         throw DatabaseServerAuthenticationError.invalidCredential
+    }
+
+    func revalidate(
+        _ reference: DatabaseJobAuthorizationReference
+    ) async throws -> AuthorizationContext {
+        guard reference == authorizationReference else {
+            throw DatabaseServerAuthenticationError.invalidCredential
+        }
+        return .authenticated(
+            Principal(identifier: "local-process", roles: ["admin"])
+        )
     }
 }
 

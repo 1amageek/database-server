@@ -1,10 +1,14 @@
 import Crypto
 import DatabaseKit
+import DatabaseWireRuntime
 import Darwin
 import Foundation
 
 public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
     private static let maximumRegistryBytes = 16 * 1_024 * 1_024
+    private static let maximumPrincipalIdentifierBytes = 1_024
+    private static let maximumRoleCount = 256
+    private static let maximumRoleBytes = 256
 
     private struct RegistryDocument: Codable {
         let formatVersion: Int
@@ -32,10 +36,17 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
 
     private let fileURL: URL
     private var document: RegistryDocument
+    private var tokensByIdentifier: [String: StoredToken]
 
     public init(fileURL: URL) throws {
         self.fileURL = fileURL
-        self.document = try Self.load(from: fileURL)
+        let document = try Self.load(from: fileURL)
+        self.document = document
+        self.tokensByIdentifier = Dictionary(
+            uniqueKeysWithValues: document.tokens.map {
+                ($0.identifier, $0)
+            }
+        )
     }
 
     public var isEmpty: Bool {
@@ -46,6 +57,15 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
         principal: Principal,
         now: Date = Date()
     ) throws -> Registration {
+        guard principal.claims.isEmpty else {
+            throw DatabaseServerAuthenticationError.claimsNotSupported
+        }
+        guard Self.isValidPrincipal(
+            identifier: principal.identifier,
+            roles: principal.roles
+        ) else {
+            throw DatabaseServerAuthenticationError.invalidPrincipal
+        }
         let token = DatabaseServerToken.generate()
         let stored = StoredToken(
             identifier: token.identifier,
@@ -56,11 +76,13 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
             revokedAt: nil
         )
         document.tokens.append(stored)
+        tokensByIdentifier[stored.identifier] = stored
         do {
             try persist()
         } catch let failure as RegistryPersistenceFailure {
             if !failure.wasCommitted {
                 document.tokens.removeLast()
+                tokensByIdentifier.removeValue(forKey: stored.identifier)
             }
             throw DatabaseServerAuthenticationError.registryWriteFailed
         }
@@ -78,11 +100,13 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
         }
         let prior = document.tokens[index].revokedAt
         document.tokens[index].revokedAt = now
+        tokensByIdentifier[tokenIdentifier] = document.tokens[index]
         do {
             try persist()
         } catch let failure as RegistryPersistenceFailure {
             if !failure.wasCommitted {
                 document.tokens[index].revokedAt = prior
+                tokensByIdentifier[tokenIdentifier] = document.tokens[index]
             }
             throw DatabaseServerAuthenticationError.registryWriteFailed
         }
@@ -95,11 +119,13 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
             throw DatabaseServerAuthenticationError.invalidCredential
         }
         let removed = document.tokens.remove(at: index)
+        tokensByIdentifier.removeValue(forKey: tokenIdentifier)
         do {
             try persist()
         } catch let failure as RegistryPersistenceFailure {
             if !failure.wasCommitted {
                 document.tokens.insert(removed, at: index)
+                tokensByIdentifier[tokenIdentifier] = removed
             }
             throw DatabaseServerAuthenticationError.registryWriteFailed
         }
@@ -107,16 +133,14 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
 
     public func authenticate(
         _ credential: DatabaseServerCredential
-    ) async throws -> AuthorizationContext {
+    ) async throws -> DatabaseServerAuthentication {
         let rawValue: String
         switch credential {
         case .bearer(let value):
             rawValue = value
         }
         let token = try DatabaseServerToken(parsing: rawValue)
-        guard let stored = document.tokens.first(where: {
-            $0.identifier == token.identifier
-        }) else {
+        guard let stored = tokensByIdentifier[token.identifier] else {
             throw DatabaseServerAuthenticationError.invalidCredential
         }
         guard stored.revokedAt == nil else {
@@ -125,6 +149,26 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
         guard let expected = Data(base64Encoded: stored.digest),
               constantTimeEqual(token.digest, expected) else {
             throw DatabaseServerAuthenticationError.invalidCredential
+        }
+        return DatabaseServerAuthentication(
+            authorization: .authenticated(Principal(
+                identifier: stored.principalIdentifier,
+                roles: Set(stored.roles)
+            )),
+            jobAuthorizationReference: try DatabaseJobAuthorizationReference(
+                stored.identifier
+            )
+        )
+    }
+
+    public func revalidate(
+        _ reference: DatabaseJobAuthorizationReference
+    ) async throws -> AuthorizationContext {
+        guard let stored = tokensByIdentifier[reference.value] else {
+            throw DatabaseServerAuthenticationError.invalidCredential
+        }
+        guard stored.revokedAt == nil else {
+            throw DatabaseServerAuthenticationError.revokedCredential
         }
         return .authenticated(
             Principal(
@@ -143,6 +187,9 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(document)
+            guard data.count <= Self.maximumRegistryBytes else {
+                throw RegistryPersistenceFailure.notCommitted
+            }
             try Self.writeAtomically(data, to: fileURL)
         } catch let failure as RegistryPersistenceFailure {
             throw failure
@@ -189,7 +236,11 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
                     == document.tokens.count,
                   document.tokens.allSatisfy({
                       !$0.identifier.isEmpty
-                          && !$0.principalIdentifier.isEmpty
+                          && Self.isValidPrincipal(
+                              identifier: $0.principalIdentifier,
+                              roles: Set($0.roles)
+                          )
+                          && Set($0.roles).count == $0.roles.count
                           && Data(base64Encoded: $0.digest)?.count
                             == SHA256.Digest.byteCount
                   }) else {
@@ -328,6 +379,22 @@ public actor DatabaseTokenRegistry: DatabaseServerAuthenticator {
             difference |= leftByte ^ rightByte
         }
         return difference == 0
+    }
+
+    private static func isValidPrincipal(
+        identifier: String,
+        roles: Set<String>
+    ) -> Bool {
+        let identifierBytes = identifier.utf8.count
+        guard identifierBytes > 0,
+              identifierBytes <= maximumPrincipalIdentifierBytes,
+              roles.count <= maximumRoleCount else {
+            return false
+        }
+        return roles.allSatisfy {
+            let byteCount = $0.utf8.count
+            return byteCount > 0 && byteCount <= maximumRoleBytes
+        }
     }
 }
 

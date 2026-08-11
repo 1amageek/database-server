@@ -1,6 +1,6 @@
 import DatabaseKit
-import DatabaseServer
-@_spi(DatabaseServer) import DatabaseWire
+import DatabaseWireRuntime
+@_spi(DatabaseWireRuntime) import DatabaseWire
 @testable import DatabaseServerHost
 import Testing
 
@@ -10,6 +10,7 @@ struct NativeDatabaseRuntimeTests {
     func emptyDatabaseExecutesCapabilities() async throws {
         let environment = try await NativeDatabaseRuntimeEnvironment.open(
             storageTopology: .single(storage: .sqliteMemory),
+            authenticator: try NativeRuntimeTestAuthenticator(),
             version: "native-runtime-test"
         )
         do {
@@ -61,37 +62,12 @@ struct NativeDatabaseRuntimeTests {
         }
     }
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     @Test("A native host owns multiple storage domains as one topology")
     func multipleStorageDomainsOpenAndShutdownTogether() async throws {
         let environment = try await NativeDatabaseRuntimeEnvironment.open(
-            storageTopology: NativeDatabaseStorageTopologyConfiguration(
-                controlDomainID: "primary",
-                domains: [
-                    .init(
-                        id: "primary",
-                        namespacePath: ["database", "main"],
-                        storage: .sqliteMemory
-                    ),
-                    .init(
-                        id: "secondary",
-                        namespacePath: ["database", "secondary"],
-                        storage: .sqliteMemory
-                    ),
-                ],
-                placements: [
-                    .init(
-                        id: "default",
-                        domainID: "primary",
-                        path: ["bases"]
-                    ),
-                    .init(
-                        id: "secondary",
-                        domainID: "secondary",
-                        path: ["bases"]
-                    ),
-                ],
-                defaultPlacementID: "default"
-            ),
+            storageTopology: multipleDomainTopology(),
+            authenticator: try NativeRuntimeTestAuthenticator(),
             version: "multi-domain-runtime-test"
         )
         do {
@@ -120,5 +96,164 @@ struct NativeDatabaseRuntimeTests {
             throw error
         }
         await environment.shutdown()
+    }
+    #endif
+
+    @Test("Every request revalidates its credential reference")
+    func requestsObserveCredentialRevocation() async throws {
+        let authenticator = try RevocableNativeRuntimeAuthenticator()
+        let environment = try await NativeDatabaseRuntimeEnvironment.open(
+            storageTopology: .single(storage: .sqliteMemory),
+            authenticator: authenticator,
+            version: "credential-revalidation-test"
+        )
+        let executor = environment.makeRequestExecutor(
+            routingIdentity: try DatabaseServerRoutingIdentity(
+                databaseID: "revalidation-test"
+            )
+        )
+        do {
+            let context = try await executor.authorize(
+                authorizationHeader: "Bearer valid",
+                databaseID: "revalidation-test",
+                tenantID: nil,
+                workspaceID: nil
+            )
+            let request = try DatabaseWireEncoder().encodeRequest(
+                DatabaseOperations.capabilitiesDescribe,
+                requestID: 4,
+                target: .database,
+                request: EmptyOperationPayload()
+            )
+            _ = try await executor.execute(request, context: context)
+            await authenticator.revoke()
+            await #expect(
+                throws: DatabaseServerAuthenticationError.revokedCredential
+            ) {
+                _ = try await executor.execute(request, context: context)
+            }
+        } catch {
+            await environment.shutdown()
+            throw error
+        }
+        await environment.shutdown()
+    }
+}
+
+#if DATABASE_SERVER_HOST_MULTIPLE_BASES
+private func multipleDomainTopology()
+    -> NativeDatabaseStorageTopologyConfiguration
+{
+    let domains = [
+        NativeDatabaseStorageDomainConfiguration(
+            id: "primary",
+            namespacePath: ["database", "main"],
+            storage: .sqliteMemory
+        ),
+        NativeDatabaseStorageDomainConfiguration(
+            id: "secondary",
+            namespacePath: ["database", "secondary"],
+            storage: .sqliteMemory
+        ),
+    ]
+    return NativeDatabaseStorageTopologyConfiguration(
+        controlDomainID: "primary",
+        domains: domains,
+        placements: [
+            .init(
+                id: "default",
+                domainID: "primary",
+                path: ["bases"]
+            ),
+            .init(
+                id: "secondary",
+                domainID: "secondary",
+                path: ["bases"]
+            ),
+        ],
+        defaultPlacementID: "default"
+    )
+}
+#endif
+
+private struct NativeRuntimeTestAuthenticator: DatabaseServerAuthenticator {
+    let reference: DatabaseJobAuthorizationReference
+
+    init() throws {
+        self.reference = try DatabaseJobAuthorizationReference(
+            "native-runtime-test"
+        )
+    }
+
+    func authenticate(
+        _ credential: DatabaseServerCredential
+    ) async throws -> DatabaseServerAuthentication {
+        _ = credential
+        return DatabaseServerAuthentication(
+            authorization: authorization,
+            jobAuthorizationReference: reference
+        )
+    }
+
+    func revalidate(
+        _ reference: DatabaseJobAuthorizationReference
+    ) async throws -> AuthorizationContext {
+        guard reference == self.reference else {
+            throw DatabaseServerAuthenticationError.invalidCredential
+        }
+        return authorization
+    }
+
+    private var authorization: AuthorizationContext {
+        .authenticated(
+            Principal(identifier: "test", roles: ["admin"])
+        )
+    }
+}
+
+private actor RevocableNativeRuntimeAuthenticator:
+    DatabaseServerAuthenticator
+{
+    private let reference: DatabaseJobAuthorizationReference
+    private var isRevoked = false
+
+    init() throws {
+        self.reference = try DatabaseJobAuthorizationReference(
+            "revocable-native-runtime-test"
+        )
+    }
+
+    func authenticate(
+        _ credential: DatabaseServerCredential
+    ) async throws -> DatabaseServerAuthentication {
+        guard credential == .bearer("valid"), !isRevoked else {
+            throw DatabaseServerAuthenticationError.invalidCredential
+        }
+        return DatabaseServerAuthentication(
+            authorization: authorization,
+            jobAuthorizationReference: reference
+        )
+    }
+
+    func revalidate(
+        _ reference: DatabaseJobAuthorizationReference
+    ) async throws -> AuthorizationContext {
+        guard reference == self.reference else {
+            throw DatabaseServerAuthenticationError.invalidCredential
+        }
+        guard !isRevoked else {
+            throw DatabaseServerAuthenticationError.revokedCredential
+        }
+        return authorization
+    }
+
+    func revoke() {
+        isRevoked = true
+    }
+
+    private var authorization: AuthorizationContext {
+        .authenticated(
+            Principal(identifier: "revocable-test", roles: ["admin"])
+        )
     }
 }

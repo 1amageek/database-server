@@ -1,4 +1,4 @@
-import DatabaseServer
+import DatabaseWireRuntime
 import DatabaseTypes
 import Foundation
 import ServiceLifecycle
@@ -12,6 +12,7 @@ public actor NativeDatabaseJobScheduler: DatabaseJobScheduler, Service {
     private var handler: Handler?
     private var scheduledTimestamp: Timestamp?
     private var scheduledTask: Task<Void, Never>?
+    private var isRunningHandler = false
     private var isShutdown = false
 
     public init() {
@@ -40,6 +41,7 @@ public actor NativeDatabaseJobScheduler: DatabaseJobScheduler, Service {
             return
         }
         scheduledTimestamp = timestamp
+        guard !isRunningHandler else { return }
         scheduledTask?.cancel()
         scheduledTask = nil
         scheduleTaskIfPossible()
@@ -66,6 +68,7 @@ public actor NativeDatabaseJobScheduler: DatabaseJobScheduler, Service {
 
     private func scheduleTaskIfPossible() {
         guard !isShutdown,
+              !isRunningHandler,
               scheduledTask == nil,
               let scheduledTimestamp,
               handler != nil else {
@@ -91,10 +94,16 @@ public actor NativeDatabaseJobScheduler: DatabaseJobScheduler, Service {
             return
         }
         scheduledTimestamp = nil
-        scheduledTask = nil
+        isRunningHandler = true
         do {
             try await handler()
+            isRunningHandler = false
+            scheduledTask = nil
+            scheduleTaskIfPossible()
         } catch {
+            isRunningHandler = false
+            scheduledTask = nil
+            guard !isShutdown else { return }
             report(error)
         }
     }

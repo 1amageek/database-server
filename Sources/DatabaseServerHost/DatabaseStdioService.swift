@@ -1,5 +1,5 @@
 import DatabaseKit
-import DatabaseServer
+import DatabaseWireRuntime
 import DatabaseTypes
 import NIOCore
 import NIOPosix
@@ -21,6 +21,7 @@ public final class DatabaseStdioService: Service, Sendable {
     public init(
         executor: any DatabaseServerRequestExecuting,
         authorization: AuthorizationContext,
+        jobAuthorizationReference: DatabaseJobAuthorizationReference,
         maximumFrameBytes: Int,
         inputDescriptor: CInt = STDIN_FILENO,
         outputDescriptor: CInt = STDOUT_FILENO
@@ -30,7 +31,8 @@ public final class DatabaseStdioService: Service, Sendable {
         )
         self.executor = executor
         self.executionContext = DatabaseRequestExecutionContext(
-            authorization: authorization
+            authorization: authorization,
+            jobAuthorizationReference: jobAuthorizationReference
         )
         self.maximumFrameBytes = maximumFrameBytes
         self.inputDescriptor = inputDescriptor

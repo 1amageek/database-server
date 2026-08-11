@@ -1,12 +1,18 @@
-import DatabaseServer
-import DatabaseServerFoundation
+import DatabaseWireRuntime
+import DatabaseFoundation
 import DatabaseEngine
 import DatabaseKit
+#if DATABASE_SERVER_FOUNDATIONDB_BACKEND
 import FDBStorage
 import FoundationDB
+#endif
 import NIOSSL
+#if DATABASE_SERVER_POSTGRESQL_BACKEND
 import PostgreSQLStorage
+#endif
+#if DATABASE_SERVER_SQLITE_BACKEND
 import SQLiteStorage
+#endif
 import StorageKit
 
 public final class NativeDatabaseRuntimeEnvironment: Sendable {
@@ -22,12 +28,14 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
 
     public let runtime: DatabaseHostedRuntime
     public let jobScheduler: NativeDatabaseJobScheduler
+    private let authenticator: any DatabaseServerAuthenticator
     private let backendShutdown: @Sendable () async -> Void
     private let backendShutdownState = BackendShutdown()
 
     public static func open(
         storageTopology configuration:
             NativeDatabaseStorageTopologyConfiguration,
+        authenticator: any DatabaseServerAuthenticator,
         version: String
     ) async throws -> NativeDatabaseRuntimeEnvironment {
         let application = try NativeDatabaseApplicationFactory
@@ -38,9 +46,13 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             let runtime = try await DatabaseHostedRuntime.open(
                 application: application,
                 storageTopology: openedStorage.topology,
-                hostServices: DatabaseServerHostServices(
-                    jobScheduler: scheduler,
-                    identifierGenerator: RandomDatabaseUUIDGenerator()
+                hostServices: DatabaseHostServices(
+                    jobScheduler: AnyDatabaseJobScheduler(scheduler),
+                    identifierGenerator: AnyDatabaseUUIDGenerator(
+                        RandomDatabaseUUIDGenerator()
+                    ),
+                    jobAuthorizationValidator:
+                        AnyDatabaseJobAuthorizationValidator(authenticator)
                 )
             )
             await scheduler.install { [weak runtime] in
@@ -53,6 +65,7 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             return NativeDatabaseRuntimeEnvironment(
                 runtime: runtime,
                 jobScheduler: scheduler,
+                authenticator: authenticator,
                 backendShutdown: openedStorage.backendShutdown
             )
         } catch {
@@ -68,15 +81,16 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
     private init(
         runtime: DatabaseHostedRuntime,
         jobScheduler: NativeDatabaseJobScheduler,
+        authenticator: any DatabaseServerAuthenticator,
         backendShutdown: @escaping @Sendable () async -> Void
     ) {
         self.runtime = runtime
         self.jobScheduler = jobScheduler
+        self.authenticator = authenticator
         self.backendShutdown = backendShutdown
     }
 
     public func makeRequestExecutor(
-        authenticator: any DatabaseServerAuthenticator,
         routingIdentity: DatabaseServerRoutingIdentity
     ) -> DatabaseServerRequestExecutor {
         DatabaseServerRequestExecutor(
@@ -111,11 +125,17 @@ private extension NativeDatabaseRuntimeEnvironment {
             return false
         }
         if usesFoundationDB {
+            #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
             guard !FDBClient.isInitialized else {
                 throw NativeDatabaseStorageError
                     .foundationDBClientAlreadyInitialized
             }
             try await FDBClient.initialize()
+            #else
+            throw NativeDatabaseStorageError.backendUnavailable(
+                "foundationdb"
+            )
+            #endif
         }
 
         var openedEngines: [any StorageEngine] = []
@@ -133,6 +153,7 @@ private extension NativeDatabaseRuntimeEnvironment {
                     )
                 )
             }
+            #if DATABASE_SERVER_HOST_MULTIPLE_BASES
             let placements = try configuration.placements.map {
                 placement in
                 try DatabaseStoragePlacement(
@@ -153,9 +174,20 @@ private extension NativeDatabaseRuntimeEnvironment {
                     configuration.defaultPlacementID
                 )
             )
+            #else
+            let topology = DatabaseStorageTopology(
+                controlDomain: domains[0]
+            )
+            #endif
             let backendShutdown: @Sendable () async -> Void
             if usesFoundationDB {
+                #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
                 backendShutdown = { FDBClient.shutdown() }
+                #else
+                preconditionFailure(
+                    "Unavailable FoundationDB backend passed admission"
+                )
+                #endif
             } else {
                 backendShutdown = {}
             }
@@ -170,7 +202,9 @@ private extension NativeDatabaseRuntimeEnvironment {
             for engine in openedEngines.reversed() {
                 await engine.waitUntilShutdown()
             }
+            #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
             if usesFoundationDB { FDBClient.shutdown() }
+            #endif
             throw error
         }
     }
@@ -180,20 +214,38 @@ private extension NativeDatabaseRuntimeEnvironment {
     ) async throws -> any StorageEngine {
         switch storage {
         case .sqliteMemory:
+            #if DATABASE_SERVER_SQLITE_BACKEND
             return try SQLiteStorageEngine(configuration: .inMemory)
+            #else
+            throw NativeDatabaseStorageError.backendUnavailable("sqlite")
+            #endif
         case .sqliteFile(let path):
+            #if DATABASE_SERVER_SQLITE_BACKEND
             return try SQLiteStorageEngine(configuration: .file(path))
+            #else
+            throw NativeDatabaseStorageError.backendUnavailable("sqlite")
+            #endif
         case .postgreSQL(let configuration):
+            #if DATABASE_SERVER_POSTGRESQL_BACKEND
             return try await PostgreSQLStorageEngine(
                 configuration: try postgreSQLConfiguration(configuration)
             )
+            #else
+            throw NativeDatabaseStorageError.backendUnavailable("postgresql")
+            #endif
         case .foundationDB(let clusterFilePath):
+            #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
             let database = try FDBClient.openDatabase(
                 clusterFilePath: clusterFilePath
             )
             return try await FDBStorageEngine(
                 configuration: .init(database: database)
             )
+            #else
+            throw NativeDatabaseStorageError.backendUnavailable(
+                "foundationdb"
+            )
+            #endif
         }
     }
 
@@ -210,6 +262,7 @@ private extension NativeDatabaseRuntimeEnvironment {
         }
     }
 
+    #if DATABASE_SERVER_POSTGRESQL_BACKEND
     static func postgreSQLConfiguration(
         _ configuration: NativeDatabaseStorageConfiguration.PostgreSQL
     ) throws -> PostgreSQLConfiguration {
@@ -262,6 +315,7 @@ private extension NativeDatabaseRuntimeEnvironment {
             )
         }
     }
+    #endif
 }
 
 public enum NativeDatabaseRuntimeEnvironmentError:
@@ -277,4 +331,5 @@ public enum NativeDatabaseStorageError: Error, Sendable, Equatable {
     case postgreSQLTLSRequiresTCP
     case foundationDBClientAlreadyInitialized
     case duplicatePhysicalBackend
+    case backendUnavailable(String)
 }

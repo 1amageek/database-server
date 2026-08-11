@@ -12,22 +12,21 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
             options: [.fragmentsAllowed]
         )
         let root = try object(value)
-        try requireOnly(
-            root,
-            keys: [
+        var rootKeys: Set<String> = [
                 "formatVersion",
                 "controlDomain",
                 "domains",
-                "placements",
-                "defaultPlacement",
                 "host",
                 "port",
                 "routing",
                 "tokenRegistryPath",
                 "tls",
                 "maximumFrameBytes",
-            ]
-        )
+        ]
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        rootKeys.formUnion(["placements", "defaultPlacement"])
+        #endif
+        try requireOnly(root, keys: rootKeys)
 
         if let domains = root["domains"] as? [Any] {
             for value in domains {
@@ -41,6 +40,7 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
                 }
             }
         }
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         if let placements = root["placements"] as? [Any] {
             for value in placements {
                 try requireOnly(
@@ -49,6 +49,7 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
                 )
             }
         }
+        #endif
         if let routing = root["routing"] {
             try requireOnly(
                 object(routing),

@@ -18,11 +18,23 @@ let runtimeFeatureNames: Set<String> = [
 
 let runtimeTraits = Set(runtimeFeatureNames.map { Trait.trait(name: $0) })
     .union([
+        .trait(name: "SQLiteBackend"),
+        .trait(name: "PostgreSQLBackend"),
+        .trait(name: "FoundationDBBackend"),
+        .trait(
+            name: "AllStorageBackends",
+            enabledTraits: [
+                "SQLiteBackend",
+                "PostgreSQLBackend",
+                "FoundationDBBackend",
+            ]
+        ),
+        .trait(name: "MultipleBases"),
         .trait(
             name: "AllRuntimeFeatures",
             enabledTraits: runtimeFeatureNames
         ),
-        .default(enabledTraits: ["AllRuntimeFeatures"]),
+        .default(enabledTraits: ["AllRuntimeFeatures", "SQLiteBackend"]),
     ])
 
 let frameworkTraits = Set(
@@ -32,7 +44,12 @@ let frameworkTraits = Set(
             condition: .when(traits: [$0])
         )
     }
-)
+).union([
+    .trait(
+        name: "MultipleBases",
+        condition: .when(traits: ["MultipleBases"])
+    ),
+])
 
 let package = Package(
     name: "database-server",
@@ -53,7 +70,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0809.3",
+            from: "26.0812.0",
             traits: frameworkTraits
         ),
         .package(
@@ -66,7 +83,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0809.8"
+            from: "26.0811.0"
         ),
         .package(
             url: "https://github.com/1amageek/database-types.git",
@@ -118,15 +135,28 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
-                .product(name: "DatabaseServer", package: "database-framework"),
-                .product(name: "DatabaseServerFoundation", package: "database-framework"),
+                .product(name: "DatabaseWireRuntime", package: "database-framework"),
+                .product(name: "DatabaseFoundation", package: "database-framework"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "SQLiteStorage", package: "storage-kit"),
-                .product(name: "PostgreSQLStorage", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit"),
+                .product(
+                    name: "SQLiteStorage",
+                    package: "storage-kit",
+                    condition: .when(traits: ["SQLiteBackend"])
+                ),
+                .product(
+                    name: "PostgreSQLStorage",
+                    package: "storage-kit",
+                    condition: .when(traits: ["PostgreSQLBackend"])
+                ),
+                .product(
+                    name: "FDBStorage",
+                    package: "storage-kit",
+                    condition: .when(traits: ["FoundationDBBackend"])
+                ),
                 .product(
                     name: "FoundationDB",
-                    package: "fdb-swift-bindings"
+                    package: "fdb-swift-bindings",
+                    condition: .when(traits: ["FoundationDBBackend"])
                 ),
                 .product(name: "StorageKitSystemClock", package: "storage-kit"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
@@ -139,6 +169,24 @@ let package = Package(
                 .product(name: "HTTPTypes", package: "swift-http-types"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_HOST_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+                .define(
+                    "DATABASE_SERVER_SQLITE_BACKEND",
+                    .when(traits: ["SQLiteBackend"])
+                ),
+                .define(
+                    "DATABASE_SERVER_POSTGRESQL_BACKEND",
+                    .when(traits: ["PostgreSQLBackend"])
+                ),
+                .define(
+                    "DATABASE_SERVER_FOUNDATIONDB_BACKEND",
+                    .when(traits: ["FoundationDBBackend"])
+                ),
             ],
             linkerSettings: [
                 .unsafeFlags([
@@ -155,8 +203,15 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseWireRuntime", package: "database-framework"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
             ]
         ),
         .testTarget(
@@ -168,11 +223,17 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
-                .product(name: "DatabaseServer", package: "database-framework"),
-                .product(name: "DatabaseServerFoundation", package: "database-framework"),
+                .product(name: "DatabaseWireRuntime", package: "database-framework"),
+                .product(name: "DatabaseFoundation", package: "database-framework"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "NIOCore", package: "swift-nio"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_HOST_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
             ]
         ),
     ],

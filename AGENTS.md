@@ -9,10 +9,10 @@ storage behavior, client UX, profiles, or credentials at rest on the client.
 
 ## Required boundaries
 
-- `DatabaseServerHost` consumes `DatabaseServerApplication` and injects a
+- `DatabaseServerHost` consumes `DatabaseApplication` and injects a
   host-selected `StorageEngine`.
 - HTTP, WebSocket, and stdio adapters share one authenticated request executor.
-- A valid DatabaseWire request always reaches `DatabaseServerRuntime`; adapters
+- A valid DatabaseWire request always reaches `DatabaseOperationRuntime`; adapters
   never reinterpret operation payloads.
 - Network authentication and routing failures occur before runtime execution.
 - Non-loopback listeners require TLS, an authenticator, and a complete routing
@@ -25,7 +25,7 @@ storage behavior, client UX, profiles, or credentials at rest on the client.
 ## Verification
 
 Use `scripts/xcode-test-harness` with the pinned Swift snapshot. Its reviewed
-contract is 24 logical tests, zero failures, skips, expected failures, runtime
+contract is 30 logical tests, zero failures, skips, expected failures, runtime
 warnings, and internal tool errors. Cover HTTP, HTTPS with a real TLS
 handshake, WebSocket, and stdio through real transports, including truncated
 frames, oversized payloads, authentication and routing rejection,

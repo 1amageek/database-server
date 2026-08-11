@@ -1,6 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
-@_spi(DatabaseServer) import DatabaseWire
+@_spi(DatabaseWireRuntime) import DatabaseWire
 import Darwin
 import Foundation
 @testable import DatabaseServerHost
@@ -54,7 +54,7 @@ struct DatabaseServerProcessTests {
             )
             let payload = try response.get()
 
-            #expect(payload.runtimeVersion == "26.0809.2")
+            #expect(payload.runtimeVersion == "26.0812.0")
             #expect(
                 payload.features.contains {
                     $0.identifier == "schema.execute" && $0.version == 1
@@ -222,7 +222,7 @@ struct DatabaseServerProcessTests {
                 matching: requestID
             )
             let capabilities = try wireResponse.get()
-            #expect(capabilities.runtimeVersion == "26.0809.2")
+            #expect(capabilities.runtimeVersion == "26.0812.0")
 
             process.interrupt()
             let status = try await waitForTermination(

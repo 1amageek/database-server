@@ -1,4 +1,5 @@
 import DatabaseKit
+import DatabaseWireRuntime
 import Foundation
 @testable import DatabaseServerHost
 import Testing
@@ -16,7 +17,7 @@ struct DatabaseTokenRegistryTests {
             )
 
             let registration = try await registry.register(principal: principal)
-            let context = try await registry.authenticate(
+            let authentication = try await registry.authenticate(
                 .bearer(registration.token.rawValue)
             )
             let storedText = try String(
@@ -24,7 +25,16 @@ struct DatabaseTokenRegistryTests {
                 encoding: .utf8
             )
 
-            #expect(context == .authenticated(principal))
+            #expect(authentication.authorization == .authenticated(principal))
+            #expect(
+                authentication.jobAuthorizationReference.value
+                    == registration.token.identifier
+            )
+            #expect(
+                try await registry.revalidate(
+                    authentication.jobAuthorizationReference
+                ) == .authenticated(principal)
+            )
             #expect(!storedText.contains(registration.token.rawValue))
             #expect(storedText.contains(registration.token.identifier))
             let attributes = try FileManager.default.attributesOfItem(
@@ -59,6 +69,9 @@ struct DatabaseTokenRegistryTests {
             try await registry.revoke(
                 tokenIdentifier: registration.token.identifier
             )
+            let reference = try DatabaseJobAuthorizationReference(
+                registration.token.identifier
+            )
 
             await #expect(
                 throws: DatabaseServerAuthenticationError.revokedCredential
@@ -74,6 +87,11 @@ struct DatabaseTokenRegistryTests {
                 _ = try await reopened.authenticate(
                     .bearer(registration.token.rawValue)
                 )
+            }
+            await #expect(
+                throws: DatabaseServerAuthenticationError.revokedCredential
+            ) {
+                _ = try await reopened.revalidate(reference)
             }
         }
     }
@@ -96,6 +114,37 @@ struct DatabaseTokenRegistryTests {
             ) {
                 _ = try await registry.authenticate(.bearer(unknown.rawValue))
             }
+        }
+    }
+
+    @Test("Claims are rejected instead of being silently discarded")
+    func claimsAreRejected() async throws {
+        try await withTemporaryDirectory { directory in
+            let registry = try DatabaseTokenRegistry(
+                fileURL: directory.appendingPathComponent("tokens.json")
+            )
+            let principal = Principal(
+                identifier: "claims-principal",
+                claims: try FieldObject([
+                    (key: "department", value: .string("engineering")),
+                ])
+            )
+
+            await #expect(
+                throws: DatabaseServerAuthenticationError.claimsNotSupported
+            ) {
+                _ = try await registry.register(principal: principal)
+            }
+            #expect(await registry.isEmpty)
+
+            await #expect(
+                throws: DatabaseServerAuthenticationError.invalidPrincipal
+            ) {
+                _ = try await registry.register(
+                    principal: Principal(identifier: "")
+                )
+            }
+            #expect(await registry.isEmpty)
         }
     }
 

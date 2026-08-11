@@ -194,6 +194,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public struct Placement: Codable, Sendable, Equatable {
         public let id: String
         public let domain: String
@@ -205,6 +206,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             self.path = path
         }
     }
+    #endif
 
     public struct TLS: Codable, Sendable {
         public let certificateChainPath: String
@@ -219,8 +221,10 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     public let formatVersion: Int
     public let controlDomain: String
     public let domains: [Domain]
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public let placements: [Placement]
     public let defaultPlacement: String
+    #endif
     public let host: String
     public let port: Int
     public let routing: Routing
@@ -228,6 +232,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     public let tls: TLS?
     public let maximumFrameBytes: Int?
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public init(
         formatVersion: Int = 2,
         controlDomain: String,
@@ -253,6 +258,29 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         self.tls = tls
         self.maximumFrameBytes = maximumFrameBytes
     }
+    #else
+    public init(
+        formatVersion: Int = 2,
+        controlDomain: String,
+        domains: [Domain],
+        host: String = "127.0.0.1",
+        port: Int = 7_878,
+        routing: Routing,
+        tokenRegistryPath: String,
+        tls: TLS? = nil,
+        maximumFrameBytes: Int? = nil
+    ) {
+        self.formatVersion = formatVersion
+        self.controlDomain = controlDomain
+        self.domains = domains
+        self.host = host
+        self.port = port
+        self.routing = routing
+        self.tokenRegistryPath = tokenRegistryPath
+        self.tls = tls
+        self.maximumFrameBytes = maximumFrameBytes
+    }
+    #endif
 
     public static func load(
         from url: URL
@@ -291,6 +319,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
 
     public func runtimeStorageTopology() throws
         -> NativeDatabaseStorageTopologyConfiguration {
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         try NativeDatabaseStorageTopologyConfiguration(
             controlDomainID: controlDomain,
             domains: domains.map { domain in
@@ -309,6 +338,21 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             },
             defaultPlacementID: defaultPlacement
         )
+        #else
+        guard domains.count == 1,
+              let domain = domains.first,
+              domain.id == controlDomain else {
+            throw DatabaseServerLaunchConfigurationError
+                .multipleBasesTraitRequired
+        }
+        return NativeDatabaseStorageTopologyConfiguration(
+            controlDomain: NativeDatabaseStorageDomainConfiguration(
+                id: domain.id,
+                namespacePath: domain.namespace,
+                storage: try domain.storage.runtimeStorage()
+            )
+        )
+        #endif
     }
 
     public func matchesSingleStorage(_ storage: Storage) -> Bool {
@@ -362,8 +406,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
                 .missingTokenRegistryPath
         }
         let topology = try runtimeStorageTopology()
-        guard !topology.domains.isEmpty,
-              !topology.placements.isEmpty else {
+        guard !topology.domains.isEmpty else {
             throw DatabaseServerLaunchConfigurationError.emptyTopology
         }
         var domainIDs: Set<String> = []
@@ -385,6 +428,10 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         guard domainIDs.contains(topology.controlDomainID) else {
             throw DatabaseServerLaunchConfigurationError.invalidTopology
         }
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        guard !topology.placements.isEmpty else {
+            throw DatabaseServerLaunchConfigurationError.emptyTopology
+        }
         var placementIDs: Set<String> = []
         var destinations: Set<String> = []
         for placement in topology.placements {
@@ -401,6 +448,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         guard placementIDs.contains(topology.defaultPlacementID) else {
             throw DatabaseServerLaunchConfigurationError.invalidTopology
         }
+        #endif
         _ = try hostConfiguration()
     }
 }
@@ -425,6 +473,7 @@ public enum DatabaseServerLaunchConfigurationError:
     case emptyTopology
     case invalidTopology
     case duplicatePhysicalBackend
+    case multipleBasesTraitRequired
 }
 
 private extension DatabaseServerLaunchConfiguration.Storage.PostgreSQL {

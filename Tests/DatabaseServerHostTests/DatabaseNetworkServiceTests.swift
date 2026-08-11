@@ -1,4 +1,4 @@
-import DatabaseServer
+import DatabaseWireRuntime
 import DatabaseKit
 import DatabaseTypes
 import Foundation
@@ -107,6 +107,13 @@ struct DatabaseNetworkServiceTests {
             oversized.httpBody = Data(repeating: 1, count: 9)
             let (_, tooLarge) = try await URLSession.shared.data(for: oversized)
             #expect((tooLarge as? HTTPURLResponse)?.statusCode == 413)
+
+            var revoked = request
+            revoked.httpBody = Data([0xFF])
+            let (_, revokedResponse) = try await URLSession.shared.data(
+                for: revoked
+            )
+            #expect((revokedResponse as? HTTPURLResponse)?.statusCode == 401)
             #expect(await executor.executionCount == 1)
         } catch {
             serviceTask.cancel()
@@ -165,6 +172,65 @@ struct DatabaseNetworkServiceTests {
                 throw NetworkServiceTestError.nonBinaryResponse
             }
             #expect(data == Data([4, 5, 6]))
+            task.cancel(with: .normalClosure, reason: nil)
+        } catch {
+            serviceTask.cancel()
+            _ = await serviceTask.result
+            throw error
+        }
+        serviceTask.cancel()
+        _ = await serviceTask.result
+        #expect(await executor.shutdownCount == 1)
+    }
+
+    @Test("WebSocket requests execute concurrently with serialized writes")
+    func webSocketDoesNotHeadOfLineBlock() async throws {
+        let executor = try OutOfOrderEchoRequestExecutor()
+        let running = AsyncStream.makeStream(of: Int.self)
+        let configuration = try DatabaseServerHostConfiguration(
+            port: 0,
+            routingIdentity: try DatabaseServerRoutingIdentity(
+                databaseID: "world",
+                tenantID: "company-a",
+                workspaceID: "private"
+            ),
+            maximumFrameBytes: 8,
+            maximumConcurrentWebSocketRequests: 2,
+            hasAuthenticator: true
+        )
+        let service = try DatabaseNetworkService(
+            configuration: configuration,
+            executor: executor,
+            onServerRunning: { channel in
+                if let port = channel.localAddress?.port {
+                    running.continuation.yield(port)
+                }
+            }
+        )
+        let serviceTask = Task { try await service.run() }
+        guard let port = await running.stream.first(where: { _ in true }),
+              let endpoint = URL(
+                string: "ws://127.0.0.1:\(port)/v1/database"
+              ) else {
+            serviceTask.cancel()
+            throw NetworkServiceTestError.missingPort
+        }
+        do {
+            var request = authorizedRequest(endpoint: endpoint)
+            request.httpMethod = "GET"
+            request.setValue(nil, forHTTPHeaderField: "Content-Type")
+            let task = URLSession.shared.webSocketTask(with: request)
+            task.resume()
+            try await task.send(.data(Data([1])))
+            try await task.send(.data(Data([2])))
+            let first = try await task.receive()
+            let second = try await task.receive()
+            guard case .data(let firstData) = first,
+                  case .data(let secondData) = second else {
+                throw NetworkServiceTestError.nonBinaryResponse
+            }
+            #expect(firstData == Data([2]))
+            #expect(secondData == Data([1]))
             task.cancel(with: .normalClosure, reason: nil)
         } catch {
             serviceTask.cancel()
@@ -295,7 +361,61 @@ private actor EchoRequestExecutor: DatabaseServerRequestExecuting {
         context: DatabaseRequestExecutionContext
     ) async throws -> ByteString {
         _ = context
+        if request.count == 1, request[request.startIndex] == 0xFF {
+            throw DatabaseServerAuthenticationError.revokedCredential
+        }
         executionCount += 1
+        return request
+    }
+
+    func shutdown() async {
+        shutdownCount += 1
+    }
+}
+
+private actor OutOfOrderEchoRequestExecutor:
+    DatabaseServerRequestExecuting
+{
+    nonisolated let routingIdentity: DatabaseServerRoutingIdentity
+    private(set) var shutdownCount = 0
+
+    init() throws {
+        self.routingIdentity = try DatabaseServerRoutingIdentity(
+            databaseID: "world",
+            tenantID: "company-a",
+            workspaceID: "private"
+        )
+    }
+
+    func authorize(
+        authorizationHeader: String?,
+        databaseID: String?,
+        tenantID: String?,
+        workspaceID: String?
+    ) async throws -> DatabaseRequestExecutionContext {
+        guard authorizationHeader == "Bearer valid" else {
+            throw DatabaseServerRequestError.missingCredential
+        }
+        guard databaseID == "world",
+              tenantID == "company-a",
+              workspaceID == "private" else {
+            throw DatabaseServerRequestError.routingMismatch
+        }
+        return DatabaseRequestExecutionContext(
+            authorization: .authenticated(
+                Principal(identifier: "concurrency-test")
+            )
+        )
+    }
+
+    func execute(
+        _ request: ByteString,
+        context: DatabaseRequestExecutionContext
+    ) async throws -> ByteString {
+        _ = context
+        if request.count == 1, request[request.startIndex] == 1 {
+            try await Task.sleep(for: .milliseconds(200))
+        }
         return request
     }
 

@@ -1,13 +1,13 @@
 import DatabaseEngine
 import DatabaseRuntime
-import DatabaseServer
-import DatabaseServerFoundation
+import DatabaseWireRuntime
+import DatabaseFoundation
 import StorageKitSystemClock
 
 public enum NativeDatabaseApplicationFactory {
     public static func schemaDriven(
         version: String
-    ) throws -> AnyDatabaseServerApplication {
+    ) throws -> AnyDatabaseApplication {
         let schemaRuntimeFactory = AnyDatabaseSchemaRuntimeFactory(
             SchemaDrivenDatabaseRuntimeFactory()
         )
@@ -22,7 +22,7 @@ public enum NativeDatabaseApplicationFactory {
                 ),
             ]
         )
-        let services = CanonicalDatabaseServerServiceFactory(
+        let services = CanonicalDatabaseOperationServiceFactory(
             maintenanceServiceFactory:
                 DatabaseMaintenanceOperationServiceFactory(
                     identifierGenerator: identifierGenerator
@@ -35,9 +35,9 @@ public enum NativeDatabaseApplicationFactory {
                 )
             )
         )
-        let runtimeConfiguration = try DatabaseServerRuntimeConfiguration(
+        let runtimeConfiguration = try DatabaseOperationRuntimeConfiguration(
             identity: DatabaseRuntimeIdentity(version: version),
-            serviceFactory: AnyDatabaseServerServiceFactory(services),
+            serviceFactory: AnyDatabaseOperationServiceFactory(services),
             admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                 UnrestrictedDatabaseOperationAdmissionPolicy()
             ),
@@ -51,8 +51,8 @@ public enum NativeDatabaseApplicationFactory {
             monotonicClock: SystemStorageClock(),
             wallClock: RealtimeDatabaseWallClock()
         )
-        return AnyDatabaseServerApplication(
-            try SchemaDrivenDatabaseApplication(
+        return AnyDatabaseApplication(
+            try StandaloneDatabaseApplication(
                 containerDefinition: definition,
                 runtimeConfiguration: runtimeConfiguration
             )

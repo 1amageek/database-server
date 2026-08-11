@@ -65,6 +65,7 @@ public struct NativeDatabaseStorageDomainConfiguration: Sendable, Hashable {
     }
 }
 
+#if DATABASE_SERVER_HOST_MULTIPLE_BASES
 /// Host-owned mapping from a placement name to one domain namespace.
 public struct NativeDatabaseStoragePlacementConfiguration:
     Sendable,
@@ -80,6 +81,7 @@ public struct NativeDatabaseStoragePlacementConfiguration:
         self.path = path
     }
 }
+#endif
 
 /// Complete native-host topology. Engines are opened only by the host and are
 /// transferred exactly once into the framework container.
@@ -89,9 +91,12 @@ public struct NativeDatabaseStorageTopologyConfiguration:
 {
     public let controlDomainID: String
     public let domains: [NativeDatabaseStorageDomainConfiguration]
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public let placements: [NativeDatabaseStoragePlacementConfiguration]
     public let defaultPlacementID: String
+    #endif
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public init(
         controlDomainID: String,
         domains: [NativeDatabaseStorageDomainConfiguration],
@@ -103,10 +108,19 @@ public struct NativeDatabaseStorageTopologyConfiguration:
         self.placements = placements
         self.defaultPlacementID = defaultPlacementID
     }
+    #else
+    public init(
+        controlDomain: NativeDatabaseStorageDomainConfiguration
+    ) {
+        self.controlDomainID = controlDomain.id
+        self.domains = [controlDomain]
+    }
+    #endif
 
     public static func single(
         storage: NativeDatabaseStorageConfiguration
     ) -> Self {
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         Self(
             controlDomainID: "primary",
             domains: [
@@ -125,5 +139,14 @@ public struct NativeDatabaseStorageTopologyConfiguration:
             ],
             defaultPlacementID: "default"
         )
+        #else
+        Self(
+            controlDomain: NativeDatabaseStorageDomainConfiguration(
+                id: "primary",
+                namespacePath: ["database", "main"],
+                storage: storage
+            )
+        )
+        #endif
     }
 }

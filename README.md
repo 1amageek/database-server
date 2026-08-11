@@ -3,17 +3,45 @@
 `database-server` is the native process host for the canonical DatabaseWire
 runtime. It owns HTTP, WebSocket, and private stdio listeners, authentication,
 routing validation, TLS configuration, signals, and authoritative shutdown.
-Database execution remains in `database-framework`; storage semantics remain
-in `storage-kit`.
+Database execution remains in the optional `DatabaseWireRuntime` product of
+`database-framework`; storage semantics remain in `storage-kit`. The host does
+not reimplement query, graph, schema, security, job, or transaction semantics.
+
+This package is optional. Use `database-framework` and its `Database` umbrella
+directly for a lightweight in-process or Embedded database and for normal
+application-specific customization. Install or depend on `database-server`
+only when that runtime must become a standalone native process or expose HTTP,
+WebSocket, or private stdio endpoints. The server never replaces the framework
+execution API.
+
+| Deployment need | Required package |
+|---|---|
+| In-process application database | `database-framework` |
+| Custom schema, indexes, commands, and policy | `database-framework` |
+| Native standalone process / remote endpoint | `database-server` + `database-framework` |
+| Cloudflare host | `database-framework-cloudflare` + `database-framework` |
+
+The native-only `StandaloneDatabaseApplication` composition lives here. It
+opens a storage-owned schema catalog and requires schema execution support.
+Compiled applications continue to define their own `DatabaseApplication` in
+the framework layer and can run in-process, under this native host, or under a
+different platform host.
+
+| Layer | Owns | Does not own |
+|---|---|---|
+| `database-framework` / `Database` | in-process database execution and selected capabilities | listeners, TLS, credentials, signals |
+| `database-framework` / `DatabaseWireRuntime` | canonical operation dispatch shared by hosts | process or platform lifecycle |
+| `database-server` | native standalone composition and lifecycle | database semantics |
+| `database-framework-cloudflare` | Durable Object/WASI lifecycle | native server process |
 
 ```mermaid
 flowchart LR
     CLI["database CLI"] --> Client["database-client"]
     Client --> Host["database-server<br/>HTTP / WebSocket / stdio"]
-    Host --> Runtime["DatabaseServerRuntime<br/>17 operation identifiers"]
+    Host --> Runtime["DatabaseOperationRuntime<br/>capability-selected operations"]
     Runtime --> Container["DBContainer<br/>schema generation lease"]
     Container --> Control["Control domain<br/>catalog / jobs / snapshots"]
-    Container --> Data["Data domains<br/>Base roots"]
+    Container --> Data["Data domains<br/>database root / optional Base roots"]
     Control --> Factory["Native storage topology"]
     Data --> Factory
     Factory --> SQLite["SQLiteStorageEngine"]
@@ -27,8 +55,12 @@ flowchart LR
 - Swift 6.4 development snapshot `org.swift.64202607231a` for source builds;
 - the version-matched `database` executable for the normal standalone UX;
 - PostgreSQL 16 when selecting PostgreSQL;
-- FoundationDB 7.3 client headers and library when building the server, plus
-  an explicit compatible cluster when selecting FoundationDB.
+- FoundationDB 7.3 client headers and library only when the
+  `FoundationDBBackend` trait is selected, plus an explicit compatible cluster.
+
+The default server build selects SQLite only. PostgreSQL and FoundationDB are
+independent backend traits; a SQLite-only executable does not link
+`libfdb_c`.
 
 ## Standalone use
 
@@ -95,11 +127,13 @@ oversized, and truncated frames fail explicitly.
 ## Configuration and security
 
 The versioned server configuration contains a control domain, one or more data
-domains, named Base placements, listener, routing, TLS, frame-limit, and
-token-registry locations. It never contains a raw credential. Format version 2
+domains, listener, routing, TLS, frame-limit, and token-registry locations.
+The non-default `MultipleBases` trait additionally enables named Base
+placements. It never contains a raw credential. Format version 2
 is strict: unknown keys, duplicate identifiers, missing domain references,
-duplicate persistent backend definitions, empty namespaces, and invalid default
-placements are rejected before any engine is opened.
+duplicate persistent backend definitions, and empty namespaces are rejected
+before any engine is opened. A traitless build rejects placement keys rather
+than ignoring them.
 
 ```json
 {
@@ -115,16 +149,25 @@ placements are rejected before any engine is opened.
       }
     }
   ],
-  "placements": [
-    { "id": "default", "domain": "primary", "path": ["bases"] }
-  ],
-  "defaultPlacement": "default",
   "host": "127.0.0.1",
   "port": 7878,
   "routing": { "databaseID": "main" },
   "tokenRegistryPath": "/var/lib/database/tokens.json"
 }
 ```
+
+With `MultipleBases`, add the placement fields:
+
+```json
+{
+  "placements": [
+    { "id": "default", "domain": "primary", "path": ["bases"] }
+  ],
+  "defaultPlacement": "default"
+}
+```
+
+`AllRuntimeFeatures` does not imply `MultipleBases`.
 
 The host opens each domain exactly once and transfers the complete topology to
 `DBContainer`. FoundationDB's process-global client is initialized once even
@@ -138,6 +181,12 @@ Both files are opened with no-follow semantics and validated from their open
 descriptors. Registry replacement fsyncs the new file and parent directory;
 the in-memory registry never rolls back after a rename that may already have
 committed.
+
+The token registry is the native persistent-job authentication authority. A
+job stores only the token identifier and revalidates revocation, principal, and
+roles before every productive slice. The native registry intentionally does
+not support claims; registration rejects a non-empty claims object instead of
+silently discarding it.
 
 Non-loopback listeners require all of the following before bind:
 
@@ -169,7 +218,7 @@ After an attributed package build, set `XCODE_TEST_DERIVED_DATA_PATH` to that
 exact DerivedData directory so the harness builds only the missing test
 products before its isolated `test-without-building` run.
 
-The strict harness requires 24 logical tests, zero failures, zero skips, zero
+The strict harness requires 30 logical tests, zero failures, zero skips, zero
 expected failures, zero runtime warnings, and no internal tool errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap
 commit/rollback, token persistence and revocation, configuration and registry
