@@ -18,6 +18,7 @@ public struct DatabaseServerHostConfiguration: Sendable, Hashable {
     public let tls: DatabaseServerTLSConfiguration?
     public let maximumFrameBytes: Int
     public let maximumConcurrentWebSocketRequests: Int
+    package let wireLimits: DatabaseWireLimits
 
     public init(
         host: String = "127.0.0.1",
@@ -25,8 +26,7 @@ public struct DatabaseServerHostConfiguration: Sendable, Hashable {
         routingIdentity: DatabaseServerRoutingIdentity,
         tls: DatabaseServerTLSConfiguration? = nil,
         maximumFrameBytes: Int = DatabaseWireLimits.default.maximumFrameBytes,
-        maximumConcurrentWebSocketRequests: Int = 8,
-        hasAuthenticator: Bool
+        maximumConcurrentWebSocketRequests: Int = 8
     ) throws(DatabaseServerHostConfigurationError) {
         guard !host.isEmpty else {
             throw .invalidHost
@@ -40,9 +40,6 @@ public struct DatabaseServerHostConfiguration: Sendable, Hashable {
         }
         guard (1...64).contains(maximumConcurrentWebSocketRequests) else {
             throw .invalidMaximumConcurrentWebSocketRequests
-        }
-        guard hasAuthenticator else {
-            throw .missingAuthenticator
         }
         if !Self.isLoopback(host), tls == nil {
             throw .nonLoopbackRequiresTLS
@@ -59,6 +56,33 @@ public struct DatabaseServerHostConfiguration: Sendable, Hashable {
         self.maximumFrameBytes = maximumFrameBytes
         self.maximumConcurrentWebSocketRequests =
             maximumConcurrentWebSocketRequests
+        do {
+            self.wireLimits = try Self.wireLimits(
+                maximumFrameBytes: maximumFrameBytes
+            )
+        } catch {
+            throw .invalidMaximumFrameBytes
+        }
+    }
+
+    package static func wireLimits(
+        maximumFrameBytes: Int
+    ) throws -> DatabaseWireLimits {
+        let canonical = DatabaseWireLimits.default
+        return try DatabaseWireLimits(
+            maximumFrameBytes: maximumFrameBytes,
+            maximumStringBytes: min(
+                canonical.maximumStringBytes,
+                maximumFrameBytes
+            ),
+            maximumByteStringBytes: min(
+                canonical.maximumByteStringBytes,
+                maximumFrameBytes
+            ),
+            maximumCollectionCount: canonical.maximumCollectionCount,
+            maximumNestingDepth: canonical.maximumNestingDepth,
+            maximumObjectCount: canonical.maximumObjectCount
+        )
     }
 
     public static func isLoopback(_ host: String) -> Bool {
@@ -75,7 +99,6 @@ public enum DatabaseServerHostConfigurationError:
     case invalidPort
     case invalidMaximumFrameBytes
     case invalidMaximumConcurrentWebSocketRequests
-    case missingAuthenticator
     case nonLoopbackRequiresTLS
     case nonLoopbackRequiresCompleteRoutingIdentity
 }

@@ -9,10 +9,10 @@ storage behavior, client UX, profiles, or credentials at rest on the client.
 
 ## Required boundaries
 
-- `DatabaseServerHost` consumes `DatabaseApplication` and injects a
+- `DatabaseServerHost` consumes `DatabaseOperationApplication` and injects a
   host-selected `StorageEngine`.
 - HTTP, WebSocket, and stdio adapters share one authenticated request executor.
-- A valid DatabaseWire request always reaches `DatabaseOperationRuntime`; adapters
+- A valid DatabaseWire request always reaches `DatabaseOperationInstance`; adapters
   never reinterpret operation payloads.
 - Network authentication and routing failures occur before runtime execution.
 - Non-loopback listeners require TLS, an authenticator, and a complete routing

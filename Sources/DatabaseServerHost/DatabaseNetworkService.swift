@@ -1,5 +1,6 @@
-import DatabaseWireRuntime
+import DatabaseOperations
 import DatabaseTypes
+import DatabaseWireAdapter
 import Foundation
 import Hummingbird
 import HummingbirdCore
@@ -87,6 +88,11 @@ public final class DatabaseNetworkService: Service, Sendable {
                                 requestBytes,
                                 context: executionContext
                             )
+                            guard response.count
+                                    <= configuration.maximumFrameBytes else {
+                                throw DatabaseNetworkServiceError
+                                    .responseFrameTooLarge
+                            }
                             try await writer.write(response)
                         }
                         activeRequestCount += 1
@@ -181,6 +187,12 @@ public final class DatabaseNetworkService: Service, Sendable {
                 ByteString(retainingReadableBytes: body),
                 context: executionContext
             )
+            guard response.count <= maximumFrameBytes else {
+                return errorResponse(
+                    status: .internalServerError,
+                    code: "response_too_large"
+                )
+            }
             var headers = HTTPFields()
             headers[.contentType] = wireContentType
             return Response(
@@ -188,7 +200,7 @@ public final class DatabaseNetworkService: Service, Sendable {
                 headers: headers,
                 body: .init(byteBuffer: response.makeByteBuffer())
             )
-        } catch is DatabaseHostedRuntimeError {
+        } catch is DatabaseOperationInstanceError {
             return errorResponse(
                 status: .serviceUnavailable,
                 code: "server_shutting_down"
@@ -203,10 +215,15 @@ public final class DatabaseNetworkService: Service, Sendable {
                 status: .unauthorized,
                 code: "authentication_failed"
             )
-        } catch {
+        } catch DatabaseWireAdapterError.invalidRequestFrame {
             return errorResponse(
                 status: .badRequest,
                 code: "invalid_wire_request"
+            )
+        } catch {
+            return errorResponse(
+                status: .internalServerError,
+                code: "internal_error"
             )
         }
     }
@@ -294,5 +311,6 @@ private actor DatabaseWebSocketResponseWriter {
 
 public enum DatabaseNetworkServiceError: Error, Sendable, Equatable {
     case binaryWebSocketMessageRequired
+    case responseFrameTooLarge
     case routingIdentityMismatch
 }

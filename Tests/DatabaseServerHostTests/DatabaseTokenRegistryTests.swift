@@ -1,5 +1,5 @@
 import DatabaseKit
-import DatabaseWireRuntime
+import DatabaseOperations
 import Foundation
 @testable import DatabaseServerHost
 import Testing

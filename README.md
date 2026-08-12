@@ -1,10 +1,11 @@
 # database-server
 
-`database-server` is the native process host for the canonical DatabaseWire
-runtime. It owns HTTP, WebSocket, and private stdio listeners, authentication,
+`database-server` is the native standalone process host for DatabaseWire. It
+owns HTTP, WebSocket, and private stdio listeners, authentication,
 routing validation, TLS configuration, signals, and authoritative shutdown.
-Database execution remains in the optional `DatabaseWireRuntime` product of
-`database-framework`; storage semantics remain in `storage-kit`. The host does
+Database execution remains in the optional `DatabaseOperations` product of
+`database-framework`; bounded frame adaptation remains in the separate
+`DatabaseWireAdapter` product, and storage semantics remain in `storage-kit`. The host does
 not reimplement query, graph, schema, security, job, or transaction semantics.
 
 This package is optional. Use `database-framework` and its `Database` umbrella
@@ -21,16 +22,17 @@ execution API.
 | Native standalone process / remote endpoint | `database-server` + `database-framework` |
 | Cloudflare host | `database-framework-cloudflare` + `database-framework` |
 
-The native-only `StandaloneDatabaseApplication` composition lives here. It
+The native-only `StandaloneDatabaseOperationApplication` composition lives here. It
 opens a storage-owned schema catalog and requires schema execution support.
-Compiled applications continue to define their own `DatabaseApplication` in
+Compiled applications continue to define their own `DatabaseOperationApplication` in
 the framework layer and can run in-process, under this native host, or under a
 different platform host.
 
 | Layer | Owns | Does not own |
 |---|---|---|
 | `database-framework` / `Database` | in-process database execution and selected capabilities | listeners, TLS, credentials, signals |
-| `database-framework` / `DatabaseWireRuntime` | canonical operation dispatch shared by hosts | process or platform lifecycle |
+| `database-framework` / `DatabaseOperations` | canonical operation execution shared by hosts | Wire framing, process or platform lifecycle |
+| `database-framework` / `DatabaseWireAdapter` | bounded DatabaseWire frame adaptation | listeners, credentials, process lifecycle |
 | `database-server` | native standalone composition and lifecycle | database semantics |
 | `database-framework-cloudflare` | Durable Object/WASI lifecycle | native server process |
 
@@ -38,7 +40,8 @@ different platform host.
 flowchart LR
     CLI["database CLI"] --> Client["database-client"]
     Client --> Host["database-server<br/>HTTP / WebSocket / stdio"]
-    Host --> Runtime["DatabaseOperationRuntime<br/>capability-selected operations"]
+    Host --> Adapter["DatabaseWireAdapter<br/>bounded framing"]
+    Adapter --> Runtime["DatabaseOperationInstance<br/>capability-selected operations"]
     Runtime --> Container["DBContainer<br/>schema generation lease"]
     Container --> Control["Control domain<br/>catalog / jobs / snapshots"]
     Container --> Data["Data domains<br/>database root / optional Base roots"]

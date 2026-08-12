@@ -1,6 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
-@_spi(DatabaseWireRuntime) import DatabaseWire
+@_spi(DatabaseOperations) import DatabaseWire
 import Darwin
 import Foundation
 @testable import DatabaseServerHost
@@ -24,7 +24,7 @@ struct DatabaseServerProcessTests {
         do {
             let requestID: UInt64 = 91
             let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 requestID: requestID,
                 target: .database,
                 request: EmptyOperationPayload()
@@ -48,13 +48,13 @@ struct DatabaseServerProcessTests {
                 from: output.fileHandleForReading
             )
             let response = try DatabaseWireDecoder().decodeResponse(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 from: ByteString(Array(responseData)),
                 matching: requestID
             )
             let payload = try response.get()
 
-            #expect(payload.runtimeVersion == "26.0812.0")
+            #expect(payload.runtimeVersion == "26.0812.1")
             #expect(
                 payload.features.contains {
                     $0.identifier == "schema.execute" && $0.version == 1
@@ -206,7 +206,7 @@ struct DatabaseServerProcessTests {
         do {
             let requestID: UInt64 = 303
             let requestBytes = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 requestID: requestID,
                 target: .database,
                 request: EmptyOperationPayload()
@@ -217,12 +217,12 @@ struct DatabaseServerProcessTests {
                 requestBytes: requestBytes
             )
             let wireResponse = try DatabaseWireDecoder().decodeResponse(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 from: ByteString(Array(responseBytes)),
                 matching: requestID
             )
             let capabilities = try wireResponse.get()
-            #expect(capabilities.runtimeVersion == "26.0812.0")
+            #expect(capabilities.runtimeVersion == "26.0812.1")
 
             process.interrupt()
             let status = try await waitForTermination(

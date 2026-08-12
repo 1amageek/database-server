@@ -29,6 +29,10 @@ extension ByteString {
     }
 
     func makeByteBuffer() -> ByteBuffer {
+        // NIO must own the outbound storage after this synchronous borrow
+        // ends. This is the single required response copy at the native
+        // transport boundary; Wire execution retains ByteString ownership up
+        // to this point without intermediate Data or Array materialization.
         var buffer = ByteBufferAllocator().buffer(capacity: count)
         _ = withUnsafeBytes { bytes in
             buffer.writeBytes(bytes)

@@ -2,13 +2,13 @@ import DatabaseEngine
 import DatabaseFoundation
 import DatabaseKit
 import DatabaseRuntime
-import DatabaseWireRuntime
+import DatabaseOperations
 import StorageKit
 @testable import DatabaseServerHost
 import Testing
 
 @Suite("Standalone database application")
-struct StandaloneDatabaseApplicationTests {
+struct StandaloneDatabaseOperationApplicationTests {
     @Test("Accepts a schema-driven definition with schema execution")
     func acceptsCoherentComposition() async throws {
         let schemaFactory = AnyDatabaseSchemaRuntimeFactory(
@@ -19,18 +19,18 @@ struct StandaloneDatabaseApplicationTests {
             monotonicClock: FixedMonotonicClock(),
             wallClock: RealtimeDatabaseWallClock()
         )
-        let runtimeConfiguration = try makeRuntimeConfiguration(
+        let operationConfiguration = try makeOperationConfiguration(
             schemaFactory: schemaFactory
         )
 
-        let application = try StandaloneDatabaseApplication(
+        let application = try StandaloneDatabaseOperationApplication(
             containerDefinition: definition,
-            runtimeConfiguration: runtimeConfiguration
+            operationConfiguration: operationConfiguration
         )
         let resolvedDefinition = try await application.makeContainerDefinition()
 
         #expect(resolvedDefinition.isSchemaDriven)
-        #expect(runtimeConfiguration.schemaRuntimeFactory != nil)
+        #expect(operationConfiguration.schemaRuntimeFactory != nil)
     }
 
     @Test("Rejects a compiled container definition")
@@ -52,18 +52,18 @@ struct StandaloneDatabaseApplicationTests {
         )
 
         #expect(
-            throws: StandaloneDatabaseApplicationError.compiledContainerDefinition
+            throws: StandaloneDatabaseOperationApplicationError.compiledContainerDefinition
         ) {
-            try StandaloneDatabaseApplication(
+            try StandaloneDatabaseOperationApplication(
                 containerDefinition: definition,
-                runtimeConfiguration: makeRuntimeConfiguration(
+                operationConfiguration: makeOperationConfiguration(
                     schemaFactory: schemaFactory
                 )
             )
         }
     }
 
-    @Test("Rejects a runtime without schema execution")
+    @Test("Rejects an operation configuration without schema execution")
     func rejectsMissingSchemaExecution() throws {
         let schemaFactory = AnyDatabaseSchemaRuntimeFactory(
             SchemaDrivenDatabaseRuntimeFactory()
@@ -75,11 +75,11 @@ struct StandaloneDatabaseApplicationTests {
         )
 
         #expect(
-            throws: StandaloneDatabaseApplicationError.schemaExecutionUnavailable
+            throws: StandaloneDatabaseOperationApplicationError.schemaExecutionUnavailable
         ) {
-            try StandaloneDatabaseApplication(
+            try StandaloneDatabaseOperationApplication(
                 containerDefinition: definition,
-                runtimeConfiguration: makeRuntimeConfiguration(
+                operationConfiguration: makeOperationConfiguration(
                     schemaFactory: nil
                 )
             )
@@ -87,18 +87,17 @@ struct StandaloneDatabaseApplicationTests {
     }
 }
 
-private func makeRuntimeConfiguration(
+private func makeOperationConfiguration(
     schemaFactory: AnyDatabaseSchemaRuntimeFactory?
-) throws -> DatabaseOperationRuntimeConfiguration {
-    try DatabaseOperationRuntimeConfiguration(
-        identity: DatabaseRuntimeIdentity(version: "standalone-application-test"),
+) throws -> DatabaseOperationConfiguration {
+    try DatabaseOperationConfiguration(
+        identity: DatabaseOperationIdentity(version: "standalone-application-test"),
         serviceFactory: AnyDatabaseOperationServiceFactory { _ in
             throw StandaloneApplicationTestError.unusedServiceFactory
         },
         admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
             UnrestrictedDatabaseOperationAdmissionPolicy()
         ),
-        clock: RealtimeDatabaseWallClock(),
         schemaRuntimeFactory: schemaFactory
     )
 }

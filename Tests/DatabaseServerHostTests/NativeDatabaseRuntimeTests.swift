@@ -1,6 +1,6 @@
 import DatabaseKit
-import DatabaseWireRuntime
-@_spi(DatabaseWireRuntime) import DatabaseWire
+import DatabaseOperations
+@_spi(DatabaseOperations) import DatabaseWire
 @testable import DatabaseServerHost
 import Testing
 
@@ -15,7 +15,7 @@ struct NativeDatabaseRuntimeTests {
         )
         do {
             let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 requestID: 1,
                 target: .database,
                 request: EmptyOperationPayload()
@@ -29,7 +29,7 @@ struct NativeDatabaseRuntimeTests {
                 )
             )
             let response = try DatabaseWireDecoder().decodeResponse(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 from: responseBytes,
                 matching: 1
             )
@@ -46,9 +46,9 @@ struct NativeDatabaseRuntimeTests {
             throw error
         }
         await environment.shutdown()
-        await #expect(throws: DatabaseHostedRuntimeError.shuttingDown) {
+        await #expect(throws: DatabaseOperationInstanceError.shuttingDown) {
             let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 requestID: 2,
                 target: .database,
                 request: EmptyOperationPayload()
@@ -72,7 +72,7 @@ struct NativeDatabaseRuntimeTests {
         )
         do {
             let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 requestID: 3,
                 target: .database,
                 request: EmptyOperationPayload()
@@ -86,7 +86,7 @@ struct NativeDatabaseRuntimeTests {
                 )
             )
             let response = try DatabaseWireDecoder().decodeResponse(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 from: responseBytes,
                 matching: 3
             )
@@ -120,7 +120,7 @@ struct NativeDatabaseRuntimeTests {
                 workspaceID: nil
             )
             let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperations.capabilitiesDescribe,
+                DatabaseOperationCatalog.capabilitiesDescribe,
                 requestID: 4,
                 target: .database,
                 request: EmptyOperationPayload()

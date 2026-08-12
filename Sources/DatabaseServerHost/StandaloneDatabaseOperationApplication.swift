@@ -1,24 +1,24 @@
 import DatabaseEngine
-import DatabaseWireRuntime
+import DatabaseOperations
 
 /// Standard application composition for a storage-owned schema catalog.
-public struct StandaloneDatabaseApplication: DatabaseApplication,
+public struct StandaloneDatabaseOperationApplication: DatabaseOperationApplication,
     Sendable {
     private let containerDefinition: DatabaseContainerDefinition
-    private let runtimeConfiguration: DatabaseOperationRuntimeConfiguration
+    private let operationConfiguration: DatabaseOperationConfiguration
 
     public init(
         containerDefinition: DatabaseContainerDefinition,
-        runtimeConfiguration: DatabaseOperationRuntimeConfiguration
-    ) throws(StandaloneDatabaseApplicationError) {
+        operationConfiguration: DatabaseOperationConfiguration
+    ) throws(StandaloneDatabaseOperationApplicationError) {
         guard containerDefinition.isSchemaDriven else {
             throw .compiledContainerDefinition
         }
-        guard runtimeConfiguration.schemaRuntimeFactory != nil else {
+        guard operationConfiguration.schemaRuntimeFactory != nil else {
             throw .schemaExecutionUnavailable
         }
         self.containerDefinition = containerDefinition
-        self.runtimeConfiguration = runtimeConfiguration
+        self.operationConfiguration = operationConfiguration
     }
 
     public func makeContainerDefinition() async throws
@@ -26,10 +26,10 @@ public struct StandaloneDatabaseApplication: DatabaseApplication,
         containerDefinition
     }
 
-    public func makeRuntimeConfiguration(
+    public func makeOperationConfiguration(
         for container: DBContainer
-    ) async throws -> DatabaseOperationRuntimeConfiguration {
+    ) async throws -> DatabaseOperationConfiguration {
         _ = container
-        return runtimeConfiguration
+        return operationConfiguration
     }
 }

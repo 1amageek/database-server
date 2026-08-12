@@ -1,6 +1,6 @@
 import ArgumentParser
 import DatabaseKit
-import DatabaseWireRuntime
+import DatabaseOperations
 import DatabaseServerHost
 import DatabaseWire
 import Darwin
@@ -212,7 +212,7 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
 struct DatabaseServerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "database-server",
-        abstract: "Hosts a canonical DatabaseWire runtime.",
+        abstract: "Hosts a standalone database over DatabaseWire.",
         version: DatabaseServerBuild.version,
         subcommands: [Bootstrap.self, Serve.self, Stdio.self]
     )
@@ -419,7 +419,8 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: launchConfiguration.runtimeStorageTopology(),
                 authenticator: registry,
-                version: DatabaseServerBuild.version
+                version: DatabaseServerBuild.version,
+                wireLimits: hostConfiguration.wireLimits
             )
             do {
                 let executor = environment.makeRequestExecutor(
@@ -456,12 +457,16 @@ struct DatabaseServerCommand: AsyncParsableCommand {
 
         mutating func run() async throws {
             let authenticator = try LocalProcessAuthenticator()
+            let wireLimits = try DatabaseServerHostConfiguration.wireLimits(
+                maximumFrameBytes: maximumFrameBytes
+            )
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: .single(
                     storage: try storageOptions.runtimeStorage()
                 ),
                 authenticator: authenticator,
-                version: DatabaseServerBuild.version
+                version: DatabaseServerBuild.version,
+                wireLimits: wireLimits
             )
             do {
                 let executor = environment.makeRequestExecutor(
@@ -567,7 +572,7 @@ private func writeBootstrapResponse(
 }
 
 private enum DatabaseServerBuild {
-    static let version = "26.0812.0"
+    static let version = "26.0812.1"
 }
 
 private struct LocalProcessAuthenticator: DatabaseServerAuthenticator {

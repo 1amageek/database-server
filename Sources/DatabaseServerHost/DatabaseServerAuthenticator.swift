@@ -1,5 +1,5 @@
 import DatabaseKit
-import DatabaseWireRuntime
+import DatabaseOperations
 
 public struct DatabaseServerAuthentication: Sendable, Hashable {
     public let authorization: AuthorizationContext

@@ -1,17 +1,17 @@
 import DatabaseEngine
 import DatabaseRuntime
-import DatabaseWireRuntime
+import DatabaseOperations
 import DatabaseFoundation
 import StorageKitSystemClock
 
-public enum NativeDatabaseApplicationFactory {
+public enum NativeDatabaseOperationApplicationFactory {
     public static func schemaDriven(
         version: String
-    ) throws -> AnyDatabaseApplication {
+    ) throws -> AnyDatabaseOperationApplication {
         let schemaRuntimeFactory = AnyDatabaseSchemaRuntimeFactory(
             SchemaDrivenDatabaseRuntimeFactory()
         )
-        let runtimeLimits = DatabaseRuntimeLimits.default
+        let runtimeLimits = DatabaseOperationLimits.default
         let identifierGenerator = RandomDatabaseUUIDGenerator()
         let operationRegistry = try DatabaseResumableOperationRegistry(
             operations: [
@@ -35,13 +35,12 @@ public enum NativeDatabaseApplicationFactory {
                 )
             )
         )
-        let runtimeConfiguration = try DatabaseOperationRuntimeConfiguration(
-            identity: DatabaseRuntimeIdentity(version: version),
+        let operationConfiguration = try DatabaseOperationConfiguration(
+            identity: DatabaseOperationIdentity(version: version),
             serviceFactory: AnyDatabaseOperationServiceFactory(services),
             admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                 UnrestrictedDatabaseOperationAdmissionPolicy()
             ),
-            clock: RealtimeDatabaseWallClock(),
             schemaRuntimeFactory: schemaRuntimeFactory,
             runtimeLimits: runtimeLimits
         )
@@ -51,10 +50,10 @@ public enum NativeDatabaseApplicationFactory {
             monotonicClock: SystemStorageClock(),
             wallClock: RealtimeDatabaseWallClock()
         )
-        return AnyDatabaseApplication(
-            try StandaloneDatabaseApplication(
+        return AnyDatabaseOperationApplication(
+            try StandaloneDatabaseOperationApplication(
                 containerDefinition: definition,
-                runtimeConfiguration: runtimeConfiguration
+                operationConfiguration: operationConfiguration
             )
         )
     }

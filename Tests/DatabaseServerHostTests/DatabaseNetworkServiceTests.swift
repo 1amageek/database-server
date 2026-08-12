@@ -1,4 +1,4 @@
-import DatabaseWireRuntime
+import DatabaseOperations
 import DatabaseKit
 import DatabaseTypes
 import Foundation
@@ -19,8 +19,7 @@ struct DatabaseNetworkServiceTests {
             port: 0,
             routingIdentity: DatabaseServerRoutingIdentity(
                 databaseID: "another-database"
-            ),
-            hasAuthenticator: true
+            )
         )
 
         #expect(throws: DatabaseNetworkServiceError.routingIdentityMismatch) {
@@ -42,8 +41,7 @@ struct DatabaseNetworkServiceTests {
                 tenantID: "company-a",
                 workspaceID: "private"
             ),
-            maximumFrameBytes: 8,
-            hasAuthenticator: true
+            maximumFrameBytes: 8
         )
         let service = try DatabaseNetworkService(
             configuration: configuration,
@@ -114,6 +112,25 @@ struct DatabaseNetworkServiceTests {
                 for: revoked
             )
             #expect((revokedResponse as? HTTPURLResponse)?.statusCode == 401)
+
+            var failed = request
+            failed.httpBody = Data([0xFE])
+            let (_, failedResponse) = try await URLSession.shared.data(
+                for: failed
+            )
+            #expect(
+                (failedResponse as? HTTPURLResponse)?.statusCode == 500
+            )
+
+            var oversizedResponse = request
+            oversizedResponse.httpBody = Data([0xFD])
+            let (_, oversizedResponseResult) = try await URLSession.shared.data(
+                for: oversizedResponse
+            )
+            #expect(
+                (oversizedResponseResult as? HTTPURLResponse)?.statusCode
+                    == 500
+            )
             #expect(await executor.executionCount == 1)
         } catch {
             serviceTask.cancel()
@@ -136,8 +153,7 @@ struct DatabaseNetworkServiceTests {
                 tenantID: "company-a",
                 workspaceID: "private"
             ),
-            maximumFrameBytes: 8,
-            hasAuthenticator: true
+            maximumFrameBytes: 8
         )
         let service = try DatabaseNetworkService(
             configuration: configuration,
@@ -195,8 +211,7 @@ struct DatabaseNetworkServiceTests {
                 workspaceID: "private"
             ),
             maximumFrameBytes: 8,
-            maximumConcurrentWebSocketRequests: 2,
-            hasAuthenticator: true
+            maximumConcurrentWebSocketRequests: 2
         )
         let service = try DatabaseNetworkService(
             configuration: configuration,
@@ -263,8 +278,7 @@ struct DatabaseNetworkServiceTests {
                 privateKeyURL: fixtureDirectory
                     .appendingPathComponent("server-key.pem")
             ),
-            maximumFrameBytes: 8,
-            hasAuthenticator: true
+            maximumFrameBytes: 8
         )
         let service = try DatabaseNetworkService(
             configuration: configuration,
@@ -364,6 +378,12 @@ private actor EchoRequestExecutor: DatabaseServerRequestExecuting {
         if request.count == 1, request[request.startIndex] == 0xFF {
             throw DatabaseServerAuthenticationError.revokedCredential
         }
+        if request.count == 1, request[request.startIndex] == 0xFE {
+            throw NetworkServiceTestError.internalFailure
+        }
+        if request.count == 1, request[request.startIndex] == 0xFD {
+            return ByteString(repeating: 0, count: 9)
+        }
         executionCount += 1
         return request
     }
@@ -428,6 +448,7 @@ private enum NetworkServiceTestError: Error {
     case missingPort
     case invalidEndpoint
     case nonBinaryResponse
+    case internalFailure
 }
 
 private final class LocalSelfSignedTLSDelegate:

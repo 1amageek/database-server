@@ -1,4 +1,4 @@
-public enum StandaloneDatabaseApplicationError: Error, Sendable,
+public enum StandaloneDatabaseOperationApplicationError: Error, Sendable,
     Equatable {
     case compiledContainerDefinition
     case schemaExecutionUnavailable

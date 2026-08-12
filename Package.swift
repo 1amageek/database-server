@@ -70,7 +70,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0812.0",
+            from: "26.0812.1",
             traits: frameworkTraits
         ),
         .package(
@@ -83,7 +83,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0811.0"
+            from: "26.0812.1"
         ),
         .package(
             url: "https://github.com/1amageek/database-types.git",
@@ -135,7 +135,8 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
-                .product(name: "DatabaseWireRuntime", package: "database-framework"),
+                .product(name: "DatabaseOperations", package: "database-framework"),
+                .product(name: "DatabaseWireAdapter", package: "database-framework"),
                 .product(name: "DatabaseFoundation", package: "database-framework"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(
@@ -203,7 +204,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseWireRuntime", package: "database-framework"),
+                .product(name: "DatabaseOperations", package: "database-framework"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
             ],
@@ -223,7 +224,7 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
-                .product(name: "DatabaseWireRuntime", package: "database-framework"),
+                .product(name: "DatabaseOperations", package: "database-framework"),
                 .product(name: "DatabaseFoundation", package: "database-framework"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),

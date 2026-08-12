@@ -8,12 +8,15 @@ struct DatabaseServerHostConfigurationTests {
     func loopbackListener() throws {
         let routing = try DatabaseServerRoutingIdentity(databaseID: "main")
         let configuration = try DatabaseServerHostConfiguration(
-            routingIdentity: routing,
-            hasAuthenticator: true
+            routingIdentity: routing
         )
 
         #expect(configuration.host == "127.0.0.1")
         #expect(configuration.port == 7_878)
+        #expect(
+            configuration.wireLimits.maximumFrameBytes
+                == configuration.maximumFrameBytes
+        )
     }
 
     @Test("Non-loopback rejects a listener without TLS before bind")
@@ -25,21 +28,30 @@ struct DatabaseServerHostConfigurationTests {
         ) {
             _ = try DatabaseServerHostConfiguration(
                 host: "0.0.0.0",
-                routingIdentity: routing,
-                hasAuthenticator: true
+                routingIdentity: routing
             )
         }
     }
 
-    @Test("Every network listener requires authentication")
-    func listenerRequiresAuthentication() throws {
+    @Test("WebSocket request concurrency has a strict host bound")
+    func webSocketConcurrencyIsBounded() throws {
         let routing = try DatabaseServerRoutingIdentity(databaseID: "main")
         #expect(
-            throws: DatabaseServerHostConfigurationError.missingAuthenticator
+            throws: DatabaseServerHostConfigurationError
+                .invalidMaximumConcurrentWebSocketRequests
         ) {
             _ = try DatabaseServerHostConfiguration(
                 routingIdentity: routing,
-                hasAuthenticator: false
+                maximumConcurrentWebSocketRequests: 0
+            )
+        }
+        #expect(
+            throws: DatabaseServerHostConfigurationError
+                .invalidMaximumConcurrentWebSocketRequests
+        ) {
+            _ = try DatabaseServerHostConfiguration(
+                routingIdentity: routing,
+                maximumConcurrentWebSocketRequests: 65
             )
         }
     }

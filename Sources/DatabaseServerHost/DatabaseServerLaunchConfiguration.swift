@@ -387,8 +387,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             routingIdentity: routingIdentity(),
             tls: tlsConfiguration,
             maximumFrameBytes: maximumFrameBytes
-                ?? DatabaseWireLimits.default.maximumFrameBytes,
-            hasAuthenticator: true
+                ?? DatabaseWireLimits.default.maximumFrameBytes
         )
     }
 

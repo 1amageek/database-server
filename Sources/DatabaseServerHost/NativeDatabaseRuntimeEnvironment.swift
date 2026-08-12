@@ -1,7 +1,8 @@
-import DatabaseWireRuntime
+import DatabaseOperations
 import DatabaseFoundation
 import DatabaseEngine
 import DatabaseKit
+import DatabaseWire
 #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
 import FDBStorage
 import FoundationDB
@@ -36,9 +37,10 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
         storageTopology configuration:
             NativeDatabaseStorageTopologyConfiguration,
         authenticator: any DatabaseServerAuthenticator,
-        version: String
+        version: String,
+        wireLimits: DatabaseWireLimits = .default
     ) async throws -> NativeDatabaseRuntimeEnvironment {
-        let application = try NativeDatabaseApplicationFactory
+        let application = try NativeDatabaseOperationApplicationFactory
             .schemaDriven(version: version)
         let openedStorage = try await openStorageTopology(configuration)
         let scheduler = NativeDatabaseJobScheduler()
@@ -46,14 +48,16 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             let runtime = try await DatabaseHostedRuntime.open(
                 application: application,
                 storageTopology: openedStorage.topology,
-                hostServices: DatabaseHostServices(
+                hostServices: DatabaseOperationHostServices(
                     jobScheduler: AnyDatabaseJobScheduler(scheduler),
                     identifierGenerator: AnyDatabaseUUIDGenerator(
                         RandomDatabaseUUIDGenerator()
                     ),
                     jobAuthorizationValidator:
                         AnyDatabaseJobAuthorizationValidator(authenticator)
-                )
+                ),
+                requestWireLimits: wireLimits,
+                responseWireLimits: wireLimits
             )
             await scheduler.install { [weak runtime] in
                 guard let runtime else {

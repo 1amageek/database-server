@@ -1,4 +1,4 @@
-import DatabaseWireRuntime
+import DatabaseOperations
 import DatabaseTypes
 import Foundation
 import ServiceLifecycle

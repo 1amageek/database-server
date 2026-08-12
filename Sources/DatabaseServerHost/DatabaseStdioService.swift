@@ -1,5 +1,5 @@
 import DatabaseKit
-import DatabaseWireRuntime
+import DatabaseOperations
 import DatabaseTypes
 import NIOCore
 import NIOPosix
