@@ -274,3 +274,7 @@ PostgreSQL and FoundationDB readiness after authoritative shutdown.
 Release verification rejects local package dependencies. Every dependency must
 resolve by URL, and the released server version must exactly match the adjacent
 CLI version.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
