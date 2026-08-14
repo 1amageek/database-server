@@ -46,10 +46,36 @@ let frameworkTraits = Set(
     }
 ).union([
     .trait(
+        name: "SQLite",
+        condition: .when(traits: ["SQLiteBackend"])
+    ),
+    .trait(
+        name: "PostgreSQL",
+        condition: .when(traits: ["PostgreSQLBackend"])
+    ),
+    .trait(
+        name: "FoundationDB",
+        condition: .when(traits: ["FoundationDBBackend"])
+    ),
+    .trait(
         name: "MultipleBases",
         condition: .when(traits: ["MultipleBases"])
     ),
 ])
+
+let databaseKitTraits: Set<Package.Dependency.Trait> = [
+    .trait(
+        name: "MultipleBases",
+        condition: .when(traits: ["MultipleBases"])
+    ),
+]
+
+let foundationDBClientLinkerSettings: [LinkerSetting] = [
+    .unsafeFlags(
+        ["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"],
+        .when(platforms: [.macOS], traits: ["FoundationDBBackend"])
+    ),
+]
 
 let package = Package(
     name: "database-server",
@@ -58,8 +84,16 @@ let package = Package(
     ],
     products: [
         .library(
+            name: "DatabaseServerRuntime",
+            targets: ["DatabaseServerRuntime"]
+        ),
+        .library(
             name: "DatabaseServerHost",
             targets: ["DatabaseServerHost"]
+        ),
+        .library(
+            name: "DatabaseServerFoundation",
+            targets: ["DatabaseServerFoundation"]
         ),
         .executable(
             name: "database-server",
@@ -70,7 +104,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0812.1",
+            from: "26.0814.0",
             traits: frameworkTraits
         ),
         .package(
@@ -83,7 +117,8 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0812.1"
+            from: "26.0814.0",
+            traits: databaseKitTraits
         ),
         .package(
             url: "https://github.com/1amageek/database-types.git",
@@ -125,8 +160,338 @@ let package = Package(
             url: "https://github.com/apple/swift-log.git",
             from: "1.7.0"
         ),
+        .package(
+            url: "https://github.com/1amageek/swift-testing-heartbeat.git",
+            from: "0.1.0"
+        ),
     ],
     targets: [
+        // DatabaseOperationCore - Shared operation admission and resource contracts
+        .target(
+            name: "DatabaseOperationCore",
+            dependencies: [
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+            ]
+        ),
+        // DatabaseCommandOperations - Application command contracts and registries
+        .target(
+            name: "DatabaseCommandOperations",
+            dependencies: [
+                "DatabaseOperationCore",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+            ]
+        ),
+        // DatabaseQueryOperations - Query admission, evaluation, and paging
+        .target(
+            name: "DatabaseQueryOperations",
+            dependencies: [
+                "DatabaseOperationCore",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "QueryAST", package: "database-framework"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+                .define(
+                    "DATABASE_QUERY_OPERATIONS_GRAPH_INDEXES",
+                    .when(traits: ["GraphIndexes"])
+                ),
+            ]
+        ),
+        // DatabaseMutationOperations - Entity and SPARQL mutation preparation
+        .target(
+            name: "DatabaseMutationOperations",
+            dependencies: [
+                "DatabaseOperationCore",
+                "DatabaseQueryOperations",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(
+                    name: "GraphIndex",
+                    package: "database-framework",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+                .define(
+                    "DATABASE_MUTATION_OPERATIONS_GRAPH_INDEXES",
+                    .when(traits: ["GraphIndexes"])
+                ),
+            ]
+        ),
+        // DatabaseGraphOperations - Graph, ontology, and SHACL processing
+        .target(
+            name: "DatabaseGraphOperations",
+            dependencies: [
+                "DatabaseOperationCore",
+                "DatabaseQueryOperations",
+                "DatabaseMutationOperations",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(
+                    name: "GraphIndex",
+                    package: "database-framework",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
+                .product(
+                    name: "OntologyIndex",
+                    package: "database-framework",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+                .define(
+                    "DATABASE_GRAPH_OPERATIONS_ENABLED",
+                    .when(traits: ["GraphIndexes"])
+                ),
+            ]
+        ),
+        // DatabaseJobRuntime - Durable job state, storage, and scheduling contracts
+        .target(
+            name: "DatabaseJobRuntime",
+            dependencies: [
+                "DatabaseOperationCore",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+            ]
+        ),
+        // DatabaseSchemaOperations - Schema compatibility and runtime assembly
+        .target(
+            name: "DatabaseSchemaOperations",
+            dependencies: [
+                "DatabaseJobRuntime",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseRuntime", package: "database-framework"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+            ]
+        ),
+        // DatabaseMaintenanceOperations - Index and maintenance state/planning
+        .target(
+            name: "DatabaseMaintenanceOperations",
+            dependencies: [
+                "DatabaseJobRuntime",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ]
+        ),
+        // DatabaseAdministrationOperations - Multiple-Base lifecycle state
+        .target(
+            name: "DatabaseAdministrationOperations",
+            dependencies: [
+                "DatabaseJobRuntime",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+                .define(
+                    "DATABASE_ADMINISTRATION_OPERATIONS_ENABLED",
+                    .when(traits: ["MultipleBases"])
+                ),
+            ]
+        ),
+        // DatabaseServerRuntime - Host-independent server operation execution
+        .target(
+            name: "DatabaseServerRuntime",
+            dependencies: [
+                "DatabaseOperationCore",
+                "DatabaseCommandOperations",
+                "DatabaseQueryOperations",
+                "DatabaseMutationOperations",
+                "DatabaseGraphOperations",
+                "DatabaseJobRuntime",
+                "DatabaseSchemaOperations",
+                "DatabaseMaintenanceOperations",
+                .target(
+                    name: "DatabaseAdministrationOperations",
+                    condition: .when(traits: ["MultipleBases"])
+                ),
+                .product(name: "DatabaseMath", package: "database-framework"),
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseRuntime", package: "database-framework"),
+                .product(
+                    name: "GraphIndex",
+                    package: "database-framework",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
+                .product(
+                    name: "OntologyIndex",
+                    package: "database-framework",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
+                .product(
+                    name: "RelationshipIndex",
+                    package: "database-framework",
+                    condition: .when(traits: ["Relationships"])
+                ),
+                .product(name: "QueryAST", package: "database-framework"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+                .define(
+                    "DATABASE_OPERATIONS_GRAPH_INDEXES",
+                    .when(traits: ["GraphIndexes"])
+                ),
+                .define(
+                    "DATABASE_OPERATIONS_RELATIONSHIPS",
+                    .when(traits: ["Relationships"])
+                ),
+                .define(
+                    "DATABASE_OPERATIONS_VECTOR_INDEXES",
+                    .when(traits: ["VectorIndexes"])
+                ),
+            ]
+        ),
+        // Test Support (shared test utilities)
+        .target(
+            name: "TestSupport",
+            dependencies: [
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseRuntime", package: "database-framework"),
+                .product(name: "ScalarIndex", package: "database-framework"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit",
+                         condition: .when(traits: ["FoundationDBBackend"])),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings",
+                         condition: .when(traits: ["FoundationDBBackend"])),
+                .product(name: "PostgreSQLStorage", package: "storage-kit",
+                         condition: .when(traits: ["PostgreSQLBackend"])),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
+            ],
+            path: "Tests/Shared",
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDBBackend"])),
+                .define("POSTGRESQL", .when(traits: ["PostgreSQLBackend"])),
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+            ]
+        ),
+        // DatabaseServerRuntime tests
+        .testTarget(
+            name: "DatabaseServerRuntimeTests",
+            dependencies: [
+                "DatabaseServerRuntime",
+                "DatabaseOperationCore",
+                "DatabaseCommandOperations",
+                "DatabaseQueryOperations",
+                "DatabaseMutationOperations",
+                "DatabaseGraphOperations",
+                "DatabaseJobRuntime",
+                "DatabaseSchemaOperations",
+                "DatabaseMaintenanceOperations",
+                "DatabaseAdministrationOperations",
+                "DatabaseServerFoundation",
+                .product(name: "DatabaseRuntime", package: "database-framework"),
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "GraphIndex", package: "database-framework"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "DatabaseKitFoundation", package: "database-kit"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                "TestSupport",
+                .product(name: "Database", package: "database-framework"),
+                .product(name: "SQLiteStorage", package: "storage-kit", condition: .when(traits: ["SQLiteBackend"])),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
+            ],
+            swiftSettings: [
+                .define("SQLITE", .when(traits: ["SQLiteBackend"])),
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+                .define(
+                    "DATABASE_OPERATIONS_TEST_GRAPH_INDEXES",
+                    .when(traits: ["GraphIndexes"])
+                ),
+                .define(
+                    "DATABASE_OPERATIONS_TEST_VECTOR_INDEXES",
+                    .when(traits: ["VectorIndexes"])
+                ),
+            ],
+            linkerSettings: foundationDBClientLinkerSettings
+        ),
+        .target(
+            name: "DatabaseServerFoundation",
+            dependencies: [
+                "DatabaseOperationCore",
+                .product(name: "DatabaseEngine", package: "database-framework"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(
+                    name: "DatabaseTypesFoundation",
+                    package: "database-types"
+                ),
+            ]
+        ),
         .target(
             name: "DatabaseServerHost",
             dependencies: [
@@ -135,9 +500,8 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
-                .product(name: "DatabaseOperations", package: "database-framework"),
-                .product(name: "DatabaseWireAdapter", package: "database-framework"),
-                .product(name: "DatabaseFoundation", package: "database-framework"),
+                "DatabaseServerRuntime",
+                "DatabaseServerFoundation",
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(
                     name: "SQLiteStorage",
@@ -173,6 +537,10 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
+                .define(
                     "DATABASE_SERVER_HOST_MULTIPLE_BASES",
                     .when(traits: ["MultipleBases"])
                 ),
@@ -201,10 +569,10 @@ let package = Package(
             name: "DatabaseServerExecutable",
             dependencies: [
                 "DatabaseServerHost",
+                "DatabaseServerRuntime",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "DatabaseOperations", package: "database-framework"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
             ],
@@ -224,13 +592,17 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
-                .product(name: "DatabaseOperations", package: "database-framework"),
-                .product(name: "DatabaseFoundation", package: "database-framework"),
+                "DatabaseServerRuntime",
+                "DatabaseServerFoundation",
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "NIOCore", package: "swift-nio"),
             ],
             swiftSettings: [
+                .define(
+                    "DATABASE_SERVER_MULTIPLE_BASES",
+                    .when(traits: ["MultipleBases"])
+                ),
                 .define(
                     "DATABASE_SERVER_HOST_MULTIPLE_BASES",
                     .when(traits: ["MultipleBases"])

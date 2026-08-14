@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCHEME="database-server-Package"
 DESTINATION="platform=macOS,arch=arm64"
-EXPECTED_TEST_COUNT=30
+EXPECTED_TEST_COUNT="${DATABASE_SERVER_EXPECTED_TEST_COUNT:-308}"
 BUILD_TIMEOUT_SECONDS="${XCODE_TEST_BUILD_TIMEOUT_SECONDS:-1200}"
 TEST_TIMEOUT_SECONDS="${XCODE_TEST_TIMEOUT_SECONDS:-300}"
 RESULT_DIRECTORY="${XCODE_TEST_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-server-xcode-results}"
@@ -112,6 +112,11 @@ done
 
 if [[ -z "${TOOLCHAINS:-}" ]]; then
   echo "error: TOOLCHAINS must identify the pinned Swift snapshot" >&2
+  exit 2
+fi
+
+if ! [[ "$EXPECTED_TEST_COUNT" =~ ^[0-9]+$ ]]; then
+  echo "error: DATABASE_SERVER_EXPECTED_TEST_COUNT must be a non-negative integer" >&2
   exit 2
 fi
 

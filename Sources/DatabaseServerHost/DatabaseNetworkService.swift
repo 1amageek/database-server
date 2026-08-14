@@ -1,6 +1,5 @@
-import DatabaseOperations
+import DatabaseServerRuntime
 import DatabaseTypes
-import DatabaseWireAdapter
 import Foundation
 import Hummingbird
 import HummingbirdCore
@@ -215,7 +214,7 @@ public final class DatabaseNetworkService: Service, Sendable {
                 status: .unauthorized,
                 code: "authentication_failed"
             )
-        } catch DatabaseWireAdapterError.invalidRequestFrame {
+        } catch DatabaseServerFrameError.invalidRequestFrame {
             return errorResponse(
                 status: .badRequest,
                 code: "invalid_wire_request"

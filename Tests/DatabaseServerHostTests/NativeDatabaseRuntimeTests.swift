@@ -1,6 +1,6 @@
 import DatabaseKit
-import DatabaseOperations
-@_spi(DatabaseOperations) import DatabaseWire
+import DatabaseServerRuntime
+@_spi(DatabaseExecution) import DatabaseWire
 @testable import DatabaseServerHost
 import Testing
 
@@ -8,17 +8,13 @@ import Testing
 struct NativeDatabaseRuntimeTests {
     @Test("An empty schema-driven database executes capabilities")
     func emptyDatabaseExecutesCapabilities() async throws {
-        let environment = try await NativeDatabaseRuntimeEnvironment.open(
-            storageTopology: .single(storage: .sqliteMemory),
+        let environment = try await openNativeRuntime(
             authenticator: try NativeRuntimeTestAuthenticator(),
             version: "native-runtime-test"
         )
         do {
-            let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperationCatalog.capabilitiesDescribe,
-                requestID: 1,
-                target: .database,
-                request: EmptyOperationPayload()
+            let request = try databaseServerHostCapabilitiesRequest(
+                requestID: 1
             )
             let responseBytes = try await environment.runtime.execute(
                 request,
@@ -47,11 +43,8 @@ struct NativeDatabaseRuntimeTests {
         }
         await environment.shutdown()
         await #expect(throws: DatabaseOperationInstanceError.shuttingDown) {
-            let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperationCatalog.capabilitiesDescribe,
-                requestID: 2,
-                target: .database,
-                request: EmptyOperationPayload()
+            let request = try databaseServerHostCapabilitiesRequest(
+                requestID: 2
             )
             _ = try await environment.runtime.execute(
                 request,
@@ -71,11 +64,8 @@ struct NativeDatabaseRuntimeTests {
             version: "multi-domain-runtime-test"
         )
         do {
-            let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperationCatalog.capabilitiesDescribe,
-                requestID: 3,
-                target: .database,
-                request: EmptyOperationPayload()
+            let request = try databaseServerHostCapabilitiesRequest(
+                requestID: 3
             )
             let responseBytes = try await environment.runtime.execute(
                 request,
@@ -102,8 +92,7 @@ struct NativeDatabaseRuntimeTests {
     @Test("Every request revalidates its credential reference")
     func requestsObserveCredentialRevocation() async throws {
         let authenticator = try RevocableNativeRuntimeAuthenticator()
-        let environment = try await NativeDatabaseRuntimeEnvironment.open(
-            storageTopology: .single(storage: .sqliteMemory),
+        let environment = try await openNativeRuntime(
             authenticator: authenticator,
             version: "credential-revalidation-test"
         )
@@ -119,11 +108,8 @@ struct NativeDatabaseRuntimeTests {
                 tenantID: nil,
                 workspaceID: nil
             )
-            let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperationCatalog.capabilitiesDescribe,
-                requestID: 4,
-                target: .database,
-                request: EmptyOperationPayload()
+            let request = try databaseServerHostCapabilitiesRequest(
+                requestID: 4
             )
             _ = try await executor.execute(request, context: context)
             await authenticator.revoke()
@@ -138,6 +124,29 @@ struct NativeDatabaseRuntimeTests {
         }
         await environment.shutdown()
     }
+}
+
+private func openNativeRuntime(
+    authenticator: any DatabaseServerAuthenticator,
+    version: String
+) async throws -> NativeDatabaseRuntimeEnvironment {
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    try await NativeDatabaseRuntimeEnvironment.open(
+        storageTopology: .single(
+            storage: .sqliteMemory,
+            namespacePath: ["database", "test"]
+        ),
+        authenticator: authenticator,
+        version: version
+    )
+    #else
+    try await NativeDatabaseRuntimeEnvironment.open(
+        storage: .sqliteMemory,
+        databaseRoot: .engine,
+        authenticator: authenticator,
+        version: version
+    )
+    #endif
 }
 
 #if DATABASE_SERVER_HOST_MULTIPLE_BASES

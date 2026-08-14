@@ -182,6 +182,58 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
+    #if !DATABASE_SERVER_HOST_MULTIPLE_BASES
+    public struct DatabaseRoot: Codable, Sendable, Equatable {
+        public enum Kind: String, Codable, Sendable {
+            case engine
+            case directory
+        }
+
+        public let kind: Kind
+        public let path: [String]?
+
+        public static var engine: Self {
+            Self(kind: .engine, path: nil)
+        }
+
+        public static func directory(path: [String]) -> Self {
+            Self(kind: .directory, path: path)
+        }
+
+        private init(kind: Kind, path: [String]?) {
+            self.kind = kind
+            self.path = path
+        }
+
+        public func runtimeRoot(
+            for storage: Storage
+        ) throws -> NativeDatabaseRootConfiguration {
+            switch (kind, storage.kind) {
+            case (.engine, .sqlite), (.engine, .postgreSQL):
+                guard path == nil else {
+                    throw DatabaseServerLaunchConfigurationError
+                        .invalidDatabaseRoot
+                }
+                return .engine
+            case (.directory, .foundationDB):
+                guard let path,
+                      !path.isEmpty,
+                      !path.contains(where: \.isEmpty) else {
+                    throw DatabaseServerLaunchConfigurationError
+                        .invalidDatabaseRoot
+                }
+                return .namespace(path: path)
+            case (.engine, .foundationDB),
+                 (.directory, .sqlite),
+                 (.directory, .postgreSQL):
+                throw DatabaseServerLaunchConfigurationError
+                    .databaseRootMismatch
+            }
+        }
+    }
+    #endif
+
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public struct Domain: Codable, Sendable, Equatable {
         public let id: String
         public let namespace: [String]
@@ -194,7 +246,6 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public struct Placement: Codable, Sendable, Equatable {
         public let id: String
         public let domain: String
@@ -219,11 +270,14 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
 
     public let formatVersion: Int
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public let controlDomain: String
     public let domains: [Domain]
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public let placements: [Placement]
     public let defaultPlacement: String
+    #else
+    public let storage: Storage
+    public let databaseRoot: DatabaseRoot
     #endif
     public let host: String
     public let port: Int
@@ -260,9 +314,9 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
     #else
     public init(
-        formatVersion: Int = 2,
-        controlDomain: String,
-        domains: [Domain],
+        formatVersion: Int = 3,
+        storage: Storage,
+        databaseRoot: DatabaseRoot,
         host: String = "127.0.0.1",
         port: Int = 7_878,
         routing: Routing,
@@ -271,8 +325,8 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         maximumFrameBytes: Int? = nil
     ) {
         self.formatVersion = formatVersion
-        self.controlDomain = controlDomain
-        self.domains = domains
+        self.storage = storage
+        self.databaseRoot = databaseRoot
         self.host = host
         self.port = port
         self.routing = routing
@@ -317,9 +371,9 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public func runtimeStorageTopology() throws
         -> NativeDatabaseStorageTopologyConfiguration {
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         try NativeDatabaseStorageTopologyConfiguration(
             controlDomainID: controlDomain,
             domains: domains.map { domain in
@@ -338,26 +392,33 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             },
             defaultPlacementID: defaultPlacement
         )
-        #else
-        guard domains.count == 1,
-              let domain = domains.first,
-              domain.id == controlDomain else {
-            throw DatabaseServerLaunchConfigurationError
-                .multipleBasesTraitRequired
-        }
-        return NativeDatabaseStorageTopologyConfiguration(
-            controlDomain: NativeDatabaseStorageDomainConfiguration(
-                id: domain.id,
-                namespacePath: domain.namespace,
-                storage: try domain.storage.runtimeStorage()
-            )
-        )
-        #endif
     }
 
-    public func matchesSingleStorage(_ storage: Storage) -> Bool {
-        domains.count == 1 && domains[0].storage == storage
+    public func matchesSingleStorage(
+        _ storage: Storage,
+        namespace: [String]
+    ) -> Bool {
+        domains.count == 1
+            && domains[0].storage == storage
+            && domains[0].namespace == namespace
     }
+    #else
+    public func runtimeStorage() throws -> NativeDatabaseStorageConfiguration {
+        try storage.runtimeStorage()
+    }
+
+    public func runtimeDatabaseRoot() throws
+        -> NativeDatabaseRootConfiguration {
+        try databaseRoot.runtimeRoot(for: storage)
+    }
+
+    public func matchesSingleStorage(
+        _ storage: Storage,
+        databaseRoot: DatabaseRoot
+    ) -> Bool {
+        self.storage == storage && self.databaseRoot == databaseRoot
+    }
+    #endif
 
     public func routingIdentity() throws -> DatabaseServerRoutingIdentity {
         try DatabaseServerRoutingIdentity(
@@ -396,7 +457,12 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
 
     private func validate() throws {
-        guard formatVersion == 2 else {
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        let expectedFormatVersion = 2
+        #else
+        let expectedFormatVersion = 3
+        #endif
+        guard formatVersion == expectedFormatVersion else {
             throw DatabaseServerLaunchConfigurationError
                 .unsupportedFormatVersion(formatVersion)
         }
@@ -404,6 +470,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             throw DatabaseServerLaunchConfigurationError
                 .missingTokenRegistryPath
         }
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         let topology = try runtimeStorageTopology()
         guard !topology.domains.isEmpty else {
             throw DatabaseServerLaunchConfigurationError.emptyTopology
@@ -427,7 +494,6 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         guard domainIDs.contains(topology.controlDomainID) else {
             throw DatabaseServerLaunchConfigurationError.invalidTopology
         }
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         guard !topology.placements.isEmpty else {
             throw DatabaseServerLaunchConfigurationError.emptyTopology
         }
@@ -447,6 +513,9 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         guard placementIDs.contains(topology.defaultPlacementID) else {
             throw DatabaseServerLaunchConfigurationError.invalidTopology
         }
+        #else
+        _ = try storage.runtimeStorage()
+        _ = try databaseRoot.runtimeRoot(for: storage)
         #endif
         _ = try hostConfiguration()
     }
@@ -465,6 +534,8 @@ public enum DatabaseServerLaunchConfigurationError:
     case invalidPostgreSQLConfiguration
     case postgreSQLTLSRequiresTCP
     case invalidFoundationDBConfiguration
+    case invalidDatabaseRoot
+    case databaseRootMismatch
     case missingTokenRegistryPath
     case configurationAlreadyExists
     case configurationWriteFailed
@@ -472,7 +543,6 @@ public enum DatabaseServerLaunchConfigurationError:
     case emptyTopology
     case invalidTopology
     case duplicatePhysicalBackend
-    case multipleBasesTraitRequired
 }
 
 private extension DatabaseServerLaunchConfiguration.Storage.PostgreSQL {

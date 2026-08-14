@@ -1,4 +1,4 @@
-import DatabaseOperations
+import DatabaseServerRuntime
 import DatabaseTypes
 
 public protocol DatabaseServerRequestExecuting: Sendable {

@@ -1,7 +1,7 @@
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseRuntime
-import DatabaseOperations
-import DatabaseFoundation
+import DatabaseServerRuntime
+import DatabaseServerFoundation
 import StorageKitSystemClock
 
 public enum NativeDatabaseOperationApplicationFactory {

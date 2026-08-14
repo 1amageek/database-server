@@ -2,15 +2,20 @@
 
 ## Ownership
 
-This package owns native process hosting for the canonical database runtime:
-listener configuration, TLS, authentication, routing validation, stdio framing,
-signals, and authoritative shutdown. It does not own database semantics,
-storage behavior, client UX, profiles, or credentials at rest on the client.
+This package owns two distinct layers. `DatabaseServerRuntime` owns canonical
+DatabaseWire frame execution, operation dispatch, remote command composition,
+durable server jobs, schema administration, admission, and typed remote errors.
+`DatabaseServerHost` owns native listener configuration, TLS, authentication,
+routing validation, stdio process framing, backend startup, signals, and
+authoritative shutdown. Neither owns framework query/index/transaction
+semantics, storage behavior, client UX, profiles, or client credentials.
 
 ## Required boundaries
 
-- `DatabaseServerHost` consumes `DatabaseOperationApplication` and injects a
-  host-selected `StorageEngine`.
+- `DatabaseServerRuntime` consumes framework execution APIs through
+  `DatabaseOperationApplication`; it must remain Foundation-independent.
+- `DatabaseServerHost` composes `DatabaseServerRuntime` with a host-selected
+  StorageEngine and native lifecycle dependencies.
 - HTTP, WebSocket, and stdio adapters share one authenticated request executor.
 - A valid DatabaseWire request always reaches `DatabaseOperationInstance`; adapters
   never reinterpret operation payloads.
@@ -25,8 +30,10 @@ storage behavior, client UX, profiles, or credentials at rest on the client.
 ## Verification
 
 Use `scripts/xcode-test-harness` with the pinned Swift snapshot. Its reviewed
-contract is 30 logical tests, zero failures, skips, expected failures, runtime
-warnings, and internal tool errors. Cover HTTP, HTTPS with a real TLS
+standard contract is 308 logical tests. An isolated `MultipleBases` graph uses
+`DATABASE_SERVER_EXPECTED_TEST_COUNT=331` and requires 331 tests. Both runs
+require zero failures, skips, expected failures, runtime warnings, and internal
+tool errors. Cover HTTP, HTTPS with a real TLS
 handshake, WebSocket, and stdio through real transports, including truncated
 frames, oversized payloads, authentication and routing rejection,
 cancellation, concurrent principals, graceful shutdown, and negative
@@ -36,6 +43,11 @@ Use `scripts/storage-test-harness` with exact version-matched `database`,
 `database-server`, and `database-fdb` executables. It must open SQLite,
 PostgreSQL, and FoundationDB through the production CLI/runtime path and prove
 negative service readiness after teardown.
+
+Build the distributable standalone executable with `scripts/release-build`.
+The package default is the lightweight SQLite host; it is not the distribution
+artifact. The release gate must select `AllRuntimeFeatures,AllStorageBackends`
+and then pass the storage harness with all three backends.
 
 Before release, replace every local package dependency with its URL and verify
 that no `.package(path:)` remains.

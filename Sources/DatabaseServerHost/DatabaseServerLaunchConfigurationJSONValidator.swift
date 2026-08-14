@@ -12,10 +12,13 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
             options: [.fragmentsAllowed]
         )
         let root = try object(value)
-        var rootKeys: Set<String> = [
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        let rootKeys: Set<String> = [
                 "formatVersion",
                 "controlDomain",
                 "domains",
+                "placements",
+                "defaultPlacement",
                 "host",
                 "port",
                 "routing",
@@ -23,11 +26,22 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
                 "tls",
                 "maximumFrameBytes",
         ]
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
-        rootKeys.formUnion(["placements", "defaultPlacement"])
+        #else
+        let rootKeys: Set<String> = [
+            "formatVersion",
+            "storage",
+            "databaseRoot",
+            "host",
+            "port",
+            "routing",
+            "tokenRegistryPath",
+            "tls",
+            "maximumFrameBytes",
+        ]
         #endif
         try requireOnly(root, keys: rootKeys)
 
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         if let domains = root["domains"] as? [Any] {
             for value in domains {
                 let domain = try object(value)
@@ -40,7 +54,6 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
                 }
             }
         }
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         if let placements = root["placements"] as? [Any] {
             for value in placements {
                 try requireOnly(
@@ -48,6 +61,16 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
                     keys: ["id", "domain", "path"]
                 )
             }
+        }
+        #else
+        if let storage = root["storage"] {
+            try validateStorage(storage)
+        }
+        if let databaseRoot = root["databaseRoot"] {
+            try requireOnly(
+                object(databaseRoot),
+                keys: ["kind", "path"]
+            )
         }
         #endif
         if let routing = root["routing"] {

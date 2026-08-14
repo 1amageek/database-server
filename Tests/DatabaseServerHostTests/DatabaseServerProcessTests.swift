@@ -1,6 +1,6 @@
 import DatabaseKit
 import DatabaseTypes
-@_spi(DatabaseOperations) import DatabaseWire
+@_spi(DatabaseExecution) import DatabaseWire
 import Darwin
 import Foundation
 @testable import DatabaseServerHost
@@ -16,6 +16,11 @@ struct DatabaseServerProcessTests {
         let errorOutput = Pipe()
         process.executableURL = try serverExecutableURL()
         process.arguments = ["stdio", "--memory"]
+        #if MultipleBases
+        process.arguments?.append(
+            contentsOf: ["--domain-namespace", "process-test"]
+        )
+        #endif
         process.standardInput = input
         process.standardOutput = output
         process.standardError = errorOutput
@@ -23,11 +28,8 @@ struct DatabaseServerProcessTests {
         try process.run()
         do {
             let requestID: UInt64 = 91
-            let request = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperationCatalog.capabilitiesDescribe,
-                requestID: requestID,
-                target: .database,
-                request: EmptyOperationPayload()
+            let request = try databaseServerHostCapabilitiesRequest(
+                requestID: requestID
             )
             let codec = try DatabaseStdioFrameCodec(
                 maximumFrameBytes: DatabaseWireLimits.default.maximumFrameBytes
@@ -54,7 +56,7 @@ struct DatabaseServerProcessTests {
             )
             let payload = try response.get()
 
-            #expect(payload.runtimeVersion == "26.0812.1")
+            #expect(payload.runtimeVersion == "26.0814.0")
             #expect(
                 payload.features.contains {
                     $0.identifier == "schema.execute" && $0.version == 1
@@ -205,11 +207,8 @@ struct DatabaseServerProcessTests {
         )
         do {
             let requestID: UInt64 = 303
-            let requestBytes = try DatabaseWireEncoder().encodeRequest(
-                DatabaseOperationCatalog.capabilitiesDescribe,
-                requestID: requestID,
-                target: .database,
-                request: EmptyOperationPayload()
+            let requestBytes = try databaseServerHostCapabilitiesRequest(
+                requestID: requestID
             )
             let responseBytes = try await waitForCapabilities(
                 endpoint: endpoint,
@@ -222,7 +221,7 @@ struct DatabaseServerProcessTests {
                 matching: requestID
             )
             let capabilities = try wireResponse.get()
-            #expect(capabilities.runtimeVersion == "26.0812.1")
+            #expect(capabilities.runtimeVersion == "26.0814.0")
 
             process.interrupt()
             let status = try await waitForTermination(
@@ -292,6 +291,11 @@ struct DatabaseServerProcessTests {
             "--config", configURL.path,
             "--path", databaseURL.path,
         ]
+        #if MultipleBases
+        process.arguments?.append(
+            contentsOf: ["--domain-namespace", "process-test"]
+        )
+        #endif
         if let port {
             process.arguments?.append(contentsOf: ["--port", String(port)])
         }

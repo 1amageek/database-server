@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RESULT_DIRECTORY="${DATABASE_SERVER_RELEASE_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-server-release-results}"
+
+for command in rg swift tee; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "error: required command not found: $command" >&2
+    exit 2
+  fi
+done
+
+if [[ -z "${TOOLCHAINS:-}" ]]; then
+  echo "error: TOOLCHAINS must identify the pinned Swift snapshot" >&2
+  exit 2
+fi
+
+if [[ "${DATABASE_SERVER_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]] \
+    && rg -U -n '\.package\s*\(\s*path\s*:' \
+      "$ROOT_DIR/Package.swift" >/dev/null; then
+  echo "error: release builds require URL dependencies" >&2
+  exit 2
+fi
+
+mkdir -p "$RESULT_DIRECTORY"
+run_identifier="$(date -u +%Y%m%d-%H%M%S)-$$"
+build_log="$RESULT_DIRECTORY/Build-$run_identifier.log"
+
+set +e
+(
+  cd "$ROOT_DIR"
+  swift build \
+    --disable-default-traits \
+    --traits AllRuntimeFeatures,AllStorageBackends \
+    --configuration release \
+    --disable-index-store \
+    -debug-info-format none \
+    --product database-server \
+    2>&1 | tee "$build_log"
+)
+build_status=${PIPESTATUS[0]}
+set -e
+
+if (( build_status != 0 )); then
+  echo "error: release build exited with status $build_status" >&2
+  exit "$build_status"
+fi
+
+if rg -n \
+    'Internal Error:|LLVM Profile Error:|warning: input verification failed' \
+    "$build_log" >&2; then
+  echo "error: internal tool failure detected in $build_log" >&2
+  exit 1
+fi
+
+binary="$ROOT_DIR/.build/out/Products/Release/database-server"
+if [[ ! -x "$binary" ]]; then
+  echo "error: release executable was not produced at $binary" >&2
+  exit 1
+fi
+
+version="$($binary --version)"
+if [[ -z "$version" ]]; then
+  echo "error: release executable returned an empty version" >&2
+  exit 1
+fi
+
+echo "database-server release build: $version"
+echo "Executable: $binary"
+echo "Log: $build_log"

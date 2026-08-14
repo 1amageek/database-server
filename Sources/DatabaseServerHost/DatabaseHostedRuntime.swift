@@ -1,14 +1,14 @@
-import DatabaseEngine
-import DatabaseOperations
+@_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
-import DatabaseWireAdapter
 import StorageKit
 
 public final class DatabaseHostedRuntime: Sendable {
     private let operationInstance: DatabaseOperationInstance
     private let wireEndpoint: DatabaseWireEndpoint
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public static func open(
         application: AnyDatabaseOperationApplication,
         storageTopology: DatabaseStorageTopology,
@@ -57,6 +57,51 @@ public final class DatabaseHostedRuntime: Sendable {
             )
         )
     }
+    #else
+    public static func open(
+        application: AnyDatabaseOperationApplication,
+        storageEngine: any StorageEngine,
+        databaseRoot: Subspace,
+        hostServices: DatabaseOperationHostServices,
+        requestWireLimits: DatabaseWireLimits = .default,
+        responseWireLimits: DatabaseWireLimits = .default
+    ) async throws -> DatabaseHostedRuntime {
+        let definition: DatabaseContainerDefinition
+        do {
+            definition = try await application.makeContainerDefinition()
+        } catch {
+            storageEngine.requestShutdown()
+            await storageEngine.waitUntilShutdown()
+            throw error
+        }
+        let container = try await definition.open(
+            storageEngine: storageEngine,
+            databaseRoot: databaseRoot
+        )
+        let configuration: DatabaseOperationConfiguration
+        do {
+            configuration = try await application.makeOperationConfiguration(
+                for: container
+            )
+        } catch {
+            await container.shutdown()
+            throw error
+        }
+        let operationInstance = try await DatabaseOperationInstance.open(
+            container: container,
+            configuration: configuration,
+            hostServices: hostServices
+        )
+        return DatabaseHostedRuntime(
+            operationInstance: operationInstance,
+            wireEndpoint: DatabaseWireEndpoint(
+                instance: operationInstance,
+                requestLimits: requestWireLimits,
+                responseLimits: responseWireLimits
+            )
+        )
+    }
+    #endif
 
     init(
         operationInstance: DatabaseOperationInstance,

@@ -1,6 +1,6 @@
-import DatabaseOperations
-import DatabaseFoundation
-import DatabaseEngine
+import DatabaseServerRuntime
+import DatabaseServerFoundation
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseWire
 #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
@@ -33,6 +33,7 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
     private let backendShutdown: @Sendable () async -> Void
     private let backendShutdownState = BackendShutdown()
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     public static func open(
         storageTopology configuration:
             NativeDatabaseStorageTopologyConfiguration,
@@ -40,25 +41,71 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
         version: String,
         wireLimits: DatabaseWireLimits = .default
     ) async throws -> NativeDatabaseRuntimeEnvironment {
+        let openedStorage = try await openStorageTopology(configuration)
+        return try await open(
+            openedStorage: openedStorage,
+            authenticator: authenticator,
+            version: version,
+            wireLimits: wireLimits
+        )
+    }
+    #else
+    public static func open(
+        storage: NativeDatabaseStorageConfiguration,
+        databaseRoot: NativeDatabaseRootConfiguration,
+        authenticator: any DatabaseServerAuthenticator,
+        version: String,
+        wireLimits: DatabaseWireLimits = .default
+    ) async throws -> NativeDatabaseRuntimeEnvironment {
+        let openedStorage = try await openSingleStorage(
+            storage,
+            databaseRoot: databaseRoot
+        )
+        return try await open(
+            openedStorage: openedStorage,
+            authenticator: authenticator,
+            version: version,
+            wireLimits: wireLimits
+        )
+    }
+    #endif
+
+    private static func open(
+        openedStorage: OpenedStorage,
+        authenticator: any DatabaseServerAuthenticator,
+        version: String,
+        wireLimits: DatabaseWireLimits
+    ) async throws -> NativeDatabaseRuntimeEnvironment {
         let application = try NativeDatabaseOperationApplicationFactory
             .schemaDriven(version: version)
-        let openedStorage = try await openStorageTopology(configuration)
         let scheduler = NativeDatabaseJobScheduler()
         do {
+            let hostServices = DatabaseOperationHostServices(
+                jobScheduler: AnyDatabaseJobScheduler(scheduler),
+                identifierGenerator: AnyDatabaseUUIDGenerator(
+                    RandomDatabaseUUIDGenerator()
+                ),
+                jobAuthorizationValidator:
+                    AnyDatabaseJobAuthorizationValidator(authenticator)
+            )
+            #if DATABASE_SERVER_HOST_MULTIPLE_BASES
             let runtime = try await DatabaseHostedRuntime.open(
                 application: application,
                 storageTopology: openedStorage.topology,
-                hostServices: DatabaseOperationHostServices(
-                    jobScheduler: AnyDatabaseJobScheduler(scheduler),
-                    identifierGenerator: AnyDatabaseUUIDGenerator(
-                        RandomDatabaseUUIDGenerator()
-                    ),
-                    jobAuthorizationValidator:
-                        AnyDatabaseJobAuthorizationValidator(authenticator)
-                ),
+                hostServices: hostServices,
                 requestWireLimits: wireLimits,
                 responseWireLimits: wireLimits
             )
+            #else
+            let runtime = try await DatabaseHostedRuntime.open(
+                application: application,
+                storageEngine: openedStorage.engine,
+                databaseRoot: openedStorage.databaseRoot,
+                hostServices: hostServices,
+                requestWireLimits: wireLimits,
+                responseWireLimits: wireLimits
+            )
+            #endif
             await scheduler.install { [weak runtime] in
                 guard let runtime else {
                     throw NativeDatabaseRuntimeEnvironmentError
@@ -74,9 +121,9 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             )
         } catch {
             await scheduler.shutdown()
-            // DatabaseHostedRuntime transfers the topology to DBContainer;
-            // both its definition-failure and container-open-failure paths
-            // complete authoritative engine shutdown before returning.
+            // DatabaseHostedRuntime transfers the single engine, or the
+            // MultipleBases topology, to DBContainer. Definition and open
+            // failures complete authoritative engine shutdown before return.
             await openedStorage.backendShutdown()
             throw error
         }
@@ -115,14 +162,20 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
 }
 
 private extension NativeDatabaseRuntimeEnvironment {
-    struct OpenedStorageTopology: Sendable {
+    struct OpenedStorage: Sendable {
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         let topology: DatabaseStorageTopology
+        #else
+        let engine: any StorageEngine
+        let databaseRoot: StorageKit.Subspace
+        #endif
         let backendShutdown: @Sendable () async -> Void
     }
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     static func openStorageTopology(
         _ configuration: NativeDatabaseStorageTopologyConfiguration
-    ) async throws -> OpenedStorageTopology {
+    ) async throws -> OpenedStorage {
         try validatePhysicalBackends(configuration.domains)
         let usesFoundationDB = configuration.domains.contains {
             if case .foundationDB = $0.storage { return true }
@@ -157,7 +210,6 @@ private extension NativeDatabaseRuntimeEnvironment {
                     )
                 )
             }
-            #if DATABASE_SERVER_HOST_MULTIPLE_BASES
             let placements = try configuration.placements.map {
                 placement in
                 try DatabaseStoragePlacement(
@@ -178,11 +230,6 @@ private extension NativeDatabaseRuntimeEnvironment {
                     configuration.defaultPlacementID
                 )
             )
-            #else
-            let topology = DatabaseStorageTopology(
-                controlDomain: domains[0]
-            )
-            #endif
             let backendShutdown: @Sendable () async -> Void
             if usesFoundationDB {
                 #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
@@ -195,7 +242,7 @@ private extension NativeDatabaseRuntimeEnvironment {
             } else {
                 backendShutdown = {}
             }
-            return OpenedStorageTopology(
+            return OpenedStorage(
                 topology: topology,
                 backendShutdown: backendShutdown
             )
@@ -212,6 +259,88 @@ private extension NativeDatabaseRuntimeEnvironment {
             throw error
         }
     }
+    #else
+    static func openSingleStorage(
+        _ storage: NativeDatabaseStorageConfiguration,
+        databaseRoot configuration: NativeDatabaseRootConfiguration
+    ) async throws -> OpenedStorage {
+        let usesFoundationDB: Bool
+        if case .foundationDB = storage {
+            usesFoundationDB = true
+        } else {
+            usesFoundationDB = false
+        }
+        switch (usesFoundationDB, configuration) {
+        case (true, .namespace(let path)):
+            guard !path.isEmpty,
+                  !path.contains(where: \.isEmpty) else {
+                throw NativeDatabaseStorageError.invalidDatabaseRoot
+            }
+        case (false, .engine):
+            break
+        case (true, .engine), (false, .namespace):
+            throw NativeDatabaseStorageError.databaseRootMismatch
+        }
+        if usesFoundationDB {
+            #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
+            guard !FDBClient.isInitialized else {
+                throw NativeDatabaseStorageError
+                    .foundationDBClientAlreadyInitialized
+            }
+            try await FDBClient.initialize()
+            #else
+            throw NativeDatabaseStorageError.backendUnavailable(
+                "foundationdb"
+            )
+            #endif
+        }
+
+        let engine: any StorageEngine
+        do {
+            engine = try await openStorage(storage)
+        } catch {
+            #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
+            if usesFoundationDB { FDBClient.shutdown() }
+            #endif
+            throw error
+        }
+        do {
+            let databaseRoot: StorageKit.Subspace
+            switch configuration {
+            case .engine:
+                databaseRoot = StorageKit.Subspace()
+            case .namespace(let path):
+                databaseRoot = try await engine.resolveOrCreateNamespace(
+                    path: path
+                )
+            }
+            let backendShutdown: @Sendable () async -> Void
+            if usesFoundationDB {
+                #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
+                backendShutdown = { FDBClient.shutdown() }
+                #else
+                preconditionFailure(
+                    "Unavailable FoundationDB backend passed admission"
+                )
+                #endif
+            } else {
+                backendShutdown = {}
+            }
+            return OpenedStorage(
+                engine: engine,
+                databaseRoot: databaseRoot,
+                backendShutdown: backendShutdown
+            )
+        } catch {
+            engine.requestShutdown()
+            await engine.waitUntilShutdown()
+            #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
+            if usesFoundationDB { FDBClient.shutdown() }
+            #endif
+            throw error
+        }
+    }
+    #endif
 
     static func openStorage(
         _ storage: NativeDatabaseStorageConfiguration
@@ -253,6 +382,7 @@ private extension NativeDatabaseRuntimeEnvironment {
         }
     }
 
+    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
     static func validatePhysicalBackends(
         _ domains: [NativeDatabaseStorageDomainConfiguration]
     ) throws {
@@ -265,6 +395,7 @@ private extension NativeDatabaseRuntimeEnvironment {
             }
         }
     }
+    #endif
 
     #if DATABASE_SERVER_POSTGRESQL_BACKEND
     static func postgreSQLConfiguration(
@@ -335,5 +466,7 @@ public enum NativeDatabaseStorageError: Error, Sendable, Equatable {
     case postgreSQLTLSRequiresTCP
     case foundationDBClientAlreadyInitialized
     case duplicatePhysicalBackend
+    case invalidDatabaseRoot
+    case databaseRootMismatch
     case backendUnavailable(String)
 }

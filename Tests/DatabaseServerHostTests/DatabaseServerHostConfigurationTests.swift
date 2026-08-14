@@ -77,6 +77,49 @@ struct DatabaseServerHostConfigurationTests {
         }
     }
 
+    #if !DATABASE_SERVER_HOST_MULTIPLE_BASES
+    @Test("Standard database roots are explicit and backend-specific")
+    func standardDatabaseRootsAreBackendSpecific() throws {
+        let sqlite = DatabaseServerLaunchConfiguration.Storage(
+            sqlite: .init(mode: .memory)
+        )
+        let foundationDB = DatabaseServerLaunchConfiguration.Storage(
+            foundationDB: .init(clusterFilePath: "/tmp/fdb.cluster")
+        )
+        let directory = DatabaseServerLaunchConfiguration.DatabaseRoot
+            .directory(path: ["applications", "main"])
+
+        #expect(
+            try DatabaseServerLaunchConfiguration.DatabaseRoot.engine
+                .runtimeRoot(for: sqlite) == .engine
+        )
+        #expect(
+            try directory.runtimeRoot(for: foundationDB)
+                == .namespace(path: ["applications", "main"])
+        )
+        #expect(
+            throws: DatabaseServerLaunchConfigurationError
+                .databaseRootMismatch
+        ) {
+            _ = try directory.runtimeRoot(for: sqlite)
+        }
+        #expect(
+            throws: DatabaseServerLaunchConfigurationError
+                .databaseRootMismatch
+        ) {
+            _ = try DatabaseServerLaunchConfiguration.DatabaseRoot.engine
+                .runtimeRoot(for: foundationDB)
+        }
+        #expect(
+            throws: DatabaseServerLaunchConfigurationError.invalidDatabaseRoot
+        ) {
+            _ = try DatabaseServerLaunchConfiguration.DatabaseRoot
+                .directory(path: [])
+                .runtimeRoot(for: foundationDB)
+        }
+    }
+    #endif
+
     @Test("Launch configuration is private, durable, and never follows a symbolic link")
     func secureLaunchConfigurationFile() throws {
         let root = FileManager.default.temporaryDirectory
@@ -115,8 +158,14 @@ struct DatabaseServerHostConfigurationTests {
             from: configurationURL
         )
         #expect(loaded.routing.databaseID == "main")
+        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
         #expect(loaded.formatVersion == 2)
         #expect(loaded.domains.first?.storage.kind == .sqlite)
+        #else
+        #expect(loaded.formatVersion == 3)
+        #expect(loaded.storage.kind == .sqlite)
+        #expect(loaded.databaseRoot == .engine)
+        #endif
         let attributes = try FileManager.default.attributesOfItem(
             atPath: configurationURL.path
         )
@@ -194,7 +243,7 @@ struct DatabaseServerHostConfigurationTests {
             DatabaseServerLaunchConfigurationError.invalidTopology
         #else
         let duplicateDomainError =
-            DatabaseServerLaunchConfigurationError.multipleBasesTraitRequired
+            DatabaseServerLaunchConfigurationError.invalidDocument
         #endif
         #expect(throws: duplicateDomainError) {
             _ = try DatabaseServerLaunchConfiguration.load(
@@ -240,7 +289,7 @@ struct DatabaseServerHostConfigurationTests {
             .duplicatePhysicalBackend
         #else
         let duplicateBackendError = DatabaseServerLaunchConfigurationError
-            .multipleBasesTraitRequired
+            .invalidDocument
         #endif
         #expect(throws: duplicateBackendError) {
             _ = try DatabaseServerLaunchConfiguration.load(
@@ -285,14 +334,8 @@ private func launchConfiguration(
     )
     #else
     DatabaseServerLaunchConfiguration(
-        controlDomain: "primary",
-        domains: [
-            .init(
-                id: "primary",
-                namespace: ["database", "main"],
-                storage: storage
-            ),
-        ],
+        storage: storage,
+        databaseRoot: .engine,
         routing: .init(databaseID: "main"),
         tokenRegistryPath: tokenRegistryPath
     )

@@ -1,5 +1,5 @@
-import DatabaseEngine
-import DatabaseOperations
+@_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseServerRuntime
 
 /// Standard application composition for a storage-owned schema catalog.
 public struct StandaloneDatabaseOperationApplication: DatabaseOperationApplication,

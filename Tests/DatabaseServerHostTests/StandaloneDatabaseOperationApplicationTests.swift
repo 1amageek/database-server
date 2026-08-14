@@ -1,8 +1,8 @@
 import DatabaseEngine
-import DatabaseFoundation
+import DatabaseServerFoundation
 import DatabaseKit
 import DatabaseRuntime
-import DatabaseOperations
+import DatabaseServerRuntime
 import StorageKit
 @testable import DatabaseServerHost
 import Testing

@@ -1,6 +1,6 @@
 import ArgumentParser
 import DatabaseKit
-import DatabaseOperations
+import DatabaseServerRuntime
 import DatabaseServerHost
 import DatabaseWire
 import Darwin
@@ -92,6 +92,20 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
     )
     var foundationDBClusterFile: String?
 
+    @Option(
+        name: .customLong("fdb-directory"),
+        help: "One FoundationDB Directory component; repeat for nested paths."
+    )
+    var foundationDBDirectory: [String] = []
+
+    #if DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES
+    @Option(
+        name: .customLong("domain-namespace"),
+        help: "One non-FoundationDB domain namespace component; repeat for nested paths."
+    )
+    var domainNamespace: [String] = []
+    #endif
+
     func launchStorage(required: Bool) throws
         -> DatabaseServerLaunchConfiguration.Storage?
     {
@@ -101,6 +115,7 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
         case .sqlite:
             guard !hasPostgreSQLOptions,
                   foundationDBClusterFile == nil,
+                  foundationDBDirectory.isEmpty,
                   memory != (path != nil) else {
                 throw ValidationError(
                     "SQLite requires exactly one of --memory or --path and no other backend options."
@@ -116,6 +131,7 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
             guard !memory,
                   path == nil,
                   foundationDBClusterFile == nil,
+                  foundationDBDirectory.isEmpty,
                   (postgreSQLHost != nil) != (postgreSQLUnixSocket != nil),
                   (1...65_535).contains(postgreSQLPort) else {
                 throw ValidationError(
@@ -150,9 +166,11 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
         case .foundationDB:
             guard !memory,
                   path == nil,
-                  !hasPostgreSQLOptions else {
+                  !hasPostgreSQLOptions,
+                  !foundationDBDirectory.isEmpty,
+                  !foundationDBDirectory.contains(where: \.isEmpty) else {
                 throw ValidationError(
-                    "FoundationDB cannot be combined with SQLite or PostgreSQL options."
+                    "FoundationDB requires at least one --fdb-directory component and cannot be combined with SQLite or PostgreSQL options."
                 )
             }
             let clusterFile = URL(
@@ -174,12 +192,73 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
         return try storage.runtimeStorage()
     }
 
+    #if !DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES
+    func launchDatabaseRoot(
+        for storage: DatabaseServerLaunchConfiguration.Storage
+    ) throws -> DatabaseServerLaunchConfiguration.DatabaseRoot {
+        switch storage.kind {
+        case .sqlite, .postgreSQL:
+            return .engine
+        case .foundationDB:
+            guard !foundationDBDirectory.isEmpty,
+                  !foundationDBDirectory.contains(where: \.isEmpty) else {
+                throw ValidationError(
+                    "FoundationDB requires at least one --fdb-directory component."
+                )
+            }
+            return .directory(path: foundationDBDirectory)
+        }
+    }
+
+    func runtimeDatabaseRoot() throws -> NativeDatabaseRootConfiguration {
+        guard let storage = try launchStorage(required: true) else {
+            throw ValidationError("Storage configuration is required.")
+        }
+        return try launchDatabaseRoot(for: storage).runtimeRoot(for: storage)
+    }
+    #else
+    func multipleBasesNamespace(
+        for storage: DatabaseServerLaunchConfiguration.Storage
+    ) throws -> [String] {
+        let components: [String]
+        switch storage.kind {
+        case .foundationDB:
+            guard domainNamespace.isEmpty else {
+                throw ValidationError(
+                    "FoundationDB uses --fdb-directory, not --domain-namespace."
+                )
+            }
+            components = foundationDBDirectory
+        case .sqlite, .postgreSQL:
+            components = domainNamespace
+        }
+        guard !components.isEmpty,
+              !components.contains(where: \.isEmpty) else {
+            throw ValidationError(
+                "MultipleBases requires an explicit storage namespace."
+            )
+        }
+        return components
+    }
+    #endif
+
     private var hasExplicitSelection: Bool {
+        #if DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES
         storage != nil
             || memory
             || path != nil
             || hasPostgreSQLOptions
             || foundationDBClusterFile != nil
+            || !foundationDBDirectory.isEmpty
+            || !domainNamespace.isEmpty
+        #else
+        storage != nil
+            || memory
+            || path != nil
+            || hasPostgreSQLOptions
+            || foundationDBClusterFile != nil
+            || !foundationDBDirectory.isEmpty
+        #endif
     }
 
     private var hasPostgreSQLOptions: Bool {
@@ -256,10 +335,28 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                     .load(from: configurationURL)
                 if let requested = try storageOptions.launchStorage(
                     required: false
-                ), !launchConfiguration.matchesSingleStorage(requested) {
-                    throw ValidationError(
-                        "The requested storage does not match the existing configuration."
+                ) {
+                    #if DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES
+                    let matches = launchConfiguration.matchesSingleStorage(
+                        requested,
+                        namespace: try storageOptions.multipleBasesNamespace(
+                            for: requested
+                        )
                     )
+                    #else
+                    let requestedRoot = try storageOptions.launchDatabaseRoot(
+                        for: requested
+                    )
+                    let matches = launchConfiguration.matchesSingleStorage(
+                        requested,
+                        databaseRoot: requestedRoot
+                    )
+                    #endif
+                    guard matches else {
+                        throw ValidationError(
+                            "The requested storage does not match the existing configuration."
+                        )
+                    }
                 }
             } else {
                 guard let storage = try storageOptions.launchStorage(
@@ -276,7 +373,9 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                     domains: [
                         .init(
                             id: "primary",
-                            namespace: ["database", "main"],
+                            namespace: try storageOptions.multipleBasesNamespace(
+                                for: storage
+                            ),
                             storage: storage
                         ),
                     ],
@@ -299,14 +398,10 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 )
                 #else
                 launchConfiguration = DatabaseServerLaunchConfiguration(
-                    controlDomain: "primary",
-                    domains: [
-                        .init(
-                            id: "primary",
-                            namespace: ["database", "main"],
-                            storage: storage
-                        ),
-                    ],
+                    storage: storage,
+                    databaseRoot: try storageOptions.launchDatabaseRoot(
+                        for: storage
+                    ),
                     host: host ?? "127.0.0.1",
                     port: port ?? 7_878,
                     routing: .init(
@@ -416,12 +511,22 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 port: port
             )
             let routingIdentity = try launchConfiguration.routingIdentity()
+            #if DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: launchConfiguration.runtimeStorageTopology(),
                 authenticator: registry,
                 version: DatabaseServerBuild.version,
                 wireLimits: hostConfiguration.wireLimits
             )
+            #else
+            let environment = try await NativeDatabaseRuntimeEnvironment.open(
+                storage: launchConfiguration.runtimeStorage(),
+                databaseRoot: launchConfiguration.runtimeDatabaseRoot(),
+                authenticator: registry,
+                version: DatabaseServerBuild.version,
+                wireLimits: hostConfiguration.wireLimits
+            )
+            #endif
             do {
                 let executor = environment.makeRequestExecutor(
                     routingIdentity: routingIdentity
@@ -460,14 +565,32 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             let wireLimits = try DatabaseServerHostConfiguration.wireLimits(
                 maximumFrameBytes: maximumFrameBytes
             )
+            #if DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES
+            guard let selectedStorage = try storageOptions.launchStorage(
+                required: true
+            ) else {
+                throw ValidationError("Storage configuration is required.")
+            }
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: .single(
-                    storage: try storageOptions.runtimeStorage()
+                    storage: try selectedStorage.runtimeStorage(),
+                    namespacePath: try storageOptions.multipleBasesNamespace(
+                        for: selectedStorage
+                    )
                 ),
                 authenticator: authenticator,
                 version: DatabaseServerBuild.version,
                 wireLimits: wireLimits
             )
+            #else
+            let environment = try await NativeDatabaseRuntimeEnvironment.open(
+                storage: try storageOptions.runtimeStorage(),
+                databaseRoot: try storageOptions.runtimeDatabaseRoot(),
+                authenticator: authenticator,
+                version: DatabaseServerBuild.version,
+                wireLimits: wireLimits
+            )
+            #endif
             do {
                 let executor = environment.makeRequestExecutor(
                     routingIdentity: try DatabaseServerRoutingIdentity(
@@ -572,7 +695,7 @@ private func writeBootstrapResponse(
 }
 
 private enum DatabaseServerBuild {
-    static let version = "26.0812.1"
+    static let version = "26.0814.0"
 }
 
 private struct LocalProcessAuthenticator: DatabaseServerAuthenticator {

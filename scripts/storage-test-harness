@@ -92,7 +92,8 @@ run_open() {
     "$WORK_ROOT/bin/database" open "$@"
 }
 
-{
+exec > >(tee "$integration_log") 2>&1
+
   echo "databaseVersion=$database_version"
 
   sqlite_path="$WORK_ROOT/database.sqlite"
@@ -156,7 +157,9 @@ run_open() {
   "$FDBCLI" -C "$FDB_CLUSTER_FILE" --exec 'status minimal'
   run_open \
     --storage foundationdb \
-    --fdb-cluster-file "$FDB_CLUSTER_FILE"
+    --fdb-cluster-file "$FDB_CLUSTER_FILE" \
+    --fdb-directory integration \
+    --fdb-directory database-server
   stop_json="$(timeout_command "$TIMEOUT_SECONDS" \
     "$FDB_HELPER" cluster stop --cluster-file "$FDB_CLUSTER_FILE")"
   printf '%s' "$stop_json" | jq -e \
@@ -167,8 +170,6 @@ run_open() {
     '.ready == false and .processAlive == false' >/dev/null
   FDB_CLUSTER_FILE=""
   echo "foundationdb=passed"
-} 2>&1 | tee "$integration_log"
-
 echo "Native storage integration passed"
 echo "Integration log: $integration_log"
 echo "PostgreSQL log: $postgres_log"
