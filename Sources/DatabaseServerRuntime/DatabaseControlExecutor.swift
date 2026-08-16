@@ -115,7 +115,7 @@ package final class DatabaseControlExecutor: Sendable {
         ) {
             transaction in
             try await self.container.executionLoadBaseRecords(
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
     }
@@ -124,7 +124,7 @@ package final class DatabaseControlExecutor: Sendable {
         transaction: DatabaseTransaction
     ) async throws -> [DatabaseBaseRecord] {
         try await container.executionLoadBaseRecords(
-            transaction: transaction.serverStorageAccess
+            transaction: transaction.executionStorageAccess
         )
     }
     #endif
@@ -137,7 +137,7 @@ package final class DatabaseControlExecutor: Sendable {
             controlRoot: container.controlStorage().root
         ).load(
             idempotencyKey: idempotencyKey,
-            transaction: transaction.serverStorageAccess
+            transaction: transaction.executionStorageAccess
         )
     }
 
@@ -147,7 +147,7 @@ package final class DatabaseControlExecutor: Sendable {
     ) async throws {
         try await DatabaseSchemaApplicationStore(
             controlRoot: container.controlStorage().root
-        ).insert(record, transaction: transaction.serverStorageAccess)
+        ).insert(record, transaction: transaction.executionStorageAccess)
     }
 
     package func finishSchemaApplication(
@@ -156,7 +156,7 @@ package final class DatabaseControlExecutor: Sendable {
     ) async throws {
         try await DatabaseSchemaApplicationStore(
             controlRoot: container.controlStorage().root
-        ).finish(job: job, transaction: transaction.serverStorageAccess)
+        ).finish(job: job, transaction: transaction.executionStorageAccess)
     }
 
     package func makeSchemaTransitionExecutor(
@@ -175,7 +175,7 @@ package final class DatabaseControlExecutor: Sendable {
             transaction in
             try await self.container.executionLoadBaseRecord(
                 id,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
     }
@@ -201,7 +201,7 @@ package final class DatabaseControlExecutor: Sendable {
             configuration: .readOnly
         ) { transaction in
             try await self.container.executionLoadCompositionRecords(
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
         var visible: [DatabaseCompositionRecord] = []
@@ -227,7 +227,7 @@ package final class DatabaseControlExecutor: Sendable {
         return try await container.executionCreateCompositionRecord(
             composition,
             expectedRevision: expectedRevision,
-            transaction: transaction.serverStorageAccess
+            transaction: transaction.executionStorageAccess
         )
     }
 
@@ -241,7 +241,7 @@ package final class DatabaseControlExecutor: Sendable {
             id: id,
             bases: bases,
             expectedRevision: expectedRevision,
-            transaction: transaction.serverStorageAccess
+            transaction: transaction.executionStorageAccess
         )
     }
 
@@ -253,7 +253,7 @@ package final class DatabaseControlExecutor: Sendable {
         try await container.executionDeleteCompositionRecord(
             id,
             expectedRevision: expectedRevision,
-            transaction: transaction.serverStorageAccess
+            transaction: transaction.executionStorageAccess
         )
     }
 

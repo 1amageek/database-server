@@ -1,6 +1,7 @@
 import DatabaseKit
 import TestSupport
 import DatabaseRuntime
+import GraphIndex
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseServerRuntime
 import DatabaseServerFoundation

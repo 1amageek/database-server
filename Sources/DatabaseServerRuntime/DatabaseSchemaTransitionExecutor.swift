@@ -109,7 +109,7 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
                 _ = try await self.container.initializeNewSchemaIndexStates(
                     from: previousSchema,
                     to: targetSchema,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         }
@@ -126,7 +126,7 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
             ) { transaction in
                 try executor.installSchemaSnapshot(
                     schema,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         }
@@ -164,7 +164,7 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
                 controlRoot: self.container.controlStorage().root
             ).finish(
                 job: job,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
     }

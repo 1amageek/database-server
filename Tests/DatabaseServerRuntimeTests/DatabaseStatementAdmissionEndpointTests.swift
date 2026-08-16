@@ -127,7 +127,7 @@ private struct UnreachableStatementMutationExecutor:
 
     func execute(
         _ prepared: Prepared,
-        preconditions: [MutationExecuteOperation.Precondition],
+        preconditions: [EntityMutationPrecondition],
         graphPartitions: FieldObject,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction

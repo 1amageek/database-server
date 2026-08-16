@@ -8,6 +8,7 @@ import DatabaseCommandOperations
 import DatabaseOperationCore
 #if DATABASE_OPERATIONS_GRAPH_INDEXES
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseWire
 
 public struct GraphAlgorithmHandler: DatabaseOperationHandler {

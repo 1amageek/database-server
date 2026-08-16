@@ -19,14 +19,16 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     }
 
     private let stateStore: DatabaseMutationStateStore
+    private let stateAccess: DatabaseMutationStateAccess
     private let controlContainer: DBContainer
     private let runtimeLimits: DatabaseOperationLimits
 
-    public init(
+    package init(
         stateStore: DatabaseMutationStateStore,
         runtimeLimits: DatabaseOperationLimits = .default
     ) {
         self.stateStore = stateStore
+        self.stateAccess = DatabaseMutationStateAccess(stateStore)
         self.controlContainer = stateStore.boundContainer
         self.runtimeLimits = runtimeLimits
     }
@@ -205,7 +207,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         )
         guard context.executor.containerIdentity
                 == stateStore.containerIdentity else {
-            throw DatabaseMutationError.stateStoreContainerMismatch
+            throw DatabaseMutationStateError.containerMismatch
         }
         let idempotencyKey = try validatedIdempotencyKey(
             context.metadata.idempotencyKey
@@ -264,7 +266,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     ) async throws -> DatabaseCoordinatedOperationResponse {
         guard context.executor.containerIdentity
                 == stateStore.containerIdentity else {
-            throw DatabaseMutationError.stateStoreContainerMismatch
+            throw DatabaseMutationStateError.containerMismatch
         }
         let wireLimits = context.wireLimits
         let idempotencyKey = try validatedIdempotencyKey(
@@ -295,21 +297,19 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 configuration: configuration,
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
-                let transaction = transactionContext.serverStorageAccess
+                let transaction = transactionContext.executionStorageAccess
                 let stateBinding = try stateBinding(
                     for: transactionScope,
                     context: context
                 )
-                if let stored = try await stateStore.idempotencyEntry(
+                if let stored = try await stateAccess.replayEntry(
                     for: idempotencyKey,
+                    operation: operation,
+                    requestDigest: requestDigest,
                     in: stateBinding,
                     transaction: transaction,
                     limits: wireLimits
                 ) {
-                    guard stored.operation == operation,
-                          stored.requestDigest == requestDigest else {
-                        throw DatabaseMutationError.idempotencyKeyConflict
-                    }
                     do {
                         let successPayload = try DatabaseSuccessPayload(
                             operation: operation,
@@ -372,7 +372,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 } catch {
                     throw error
                 }
-                try stateStore.store(
+                try stateAccess.store(
                     DatabaseIdempotencyEntry(
                         operation: operation,
                         requestDigest: requestDigest,
@@ -410,17 +410,10 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
     }
 
     private func validatedIdempotencyKey(_ key: String?) throws -> String {
-        guard let key, !key.isEmpty else {
-            throw DatabaseMutationError.idempotencyKeyRequired
-        }
-        let count = key.utf8.count
-        guard count <= runtimeLimits.maximumIdempotencyKeyBytes else {
-            throw DatabaseMutationError.idempotencyKeyTooLarge(
-                actual: count,
-                maximum: runtimeLimits.maximumIdempotencyKeyBytes
-            )
-        }
-        return key
+        try stateStore.validateIdempotencyKey(
+            key,
+            maximumKeyBytes: runtimeLimits.maximumIdempotencyKeyBytes
+        )
     }
 
     private func stateBinding(
@@ -430,14 +423,14 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         #if DATABASE_SERVER_MULTIPLE_BASES
         switch transactionScope {
         case .requestTarget:
-            return try stateStore.binding(for: context.target)
+            return try stateAccess.binding(for: context.target)
         case .controlMetadata, .authorizedControlMetadata:
-            return try stateStore.binding(for: .database)
+            return try stateAccess.binding(for: .database)
         }
         #else
         _ = context
         _ = transactionScope
-        return stateStore.binding()
+        return stateAccess.binding()
         #endif
     }
 
@@ -457,22 +450,20 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 configuration: .readOnly.replacing(timeout: nil),
                 executionDeadline: deadline.transactionExecutionDeadline
             ) { transactionContext in
-                let transaction = transactionContext.serverStorageAccess
+                let transaction = transactionContext.executionStorageAccess
                 let stateBinding = try stateBinding(
                     for: transactionScope,
                     context: context
                 )
-                guard let stored = try await stateStore.idempotencyEntry(
+                guard let stored = try await stateAccess.replayEntry(
                     for: idempotencyKey,
+                    operation: operation,
+                    requestDigest: requestDigest,
                     in: stateBinding,
                     transaction: transaction,
                     limits: wireLimits
                 ) else {
                     return nil
-                }
-                guard stored.operation == operation,
-                      stored.requestDigest == requestDigest else {
-                    throw DatabaseMutationError.idempotencyKeyConflict
                 }
                 do {
                     let successPayload = try DatabaseSuccessPayload(

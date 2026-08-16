@@ -9,6 +9,9 @@ import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
 @_spi(DatabaseExecution) import DatabaseWire
 import DatabaseKit
+#if DATABASE_OPERATIONS_GRAPH_INDEXES
+@_spi(DatabaseExecution) import GraphIndex
+#endif
 
 public struct CanonicalPreparedStatementMutation: Sendable {
     enum Payload: Sendable {

@@ -358,7 +358,7 @@ public final class DatabasePersistentJobService:
             specification: prepared.specification,
             plan: prepared.plan,
             state: prepared.state,
-            transaction: transaction.serverStorageAccess
+            transaction: transaction.executionStorageAccess
         )
         return prepared.identity
     }
@@ -462,7 +462,7 @@ public final class DatabasePersistentJobService:
         try await authorizeTarget(context, snapshot: requestedSnapshot)
         let mutation: @Sendable (DatabaseTransaction) async throws
             -> JobCancelOperation.Response = { transactionContext in
-            let transaction = transactionContext.serverStorageAccess
+            let transaction = transactionContext.executionStorageAccess
             guard let snapshot = try await store.load(
                 request.jobID,
                 transaction: transaction

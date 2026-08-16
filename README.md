@@ -1,59 +1,45 @@
 # database-server
 
-`database-server` owns server-side DatabaseWire execution and the optional
-native standalone host. These are separate products:
+`database-server` is the standalone native database daemon. The package has
+one supported product: the `database-server` executable launched by the
+version-matched `database` command.
 
-- `DatabaseServerRuntime` is Foundation-independent and owns frame execution,
-  operation dispatch, remote commands, durable jobs, schema administration,
-  admission, and typed remote errors.
-- `DatabaseServerHost` owns HTTP, WebSocket, and private stdio listeners,
-  native authentication, routing, TLS, signals, backend startup, and
-  authoritative process shutdown.
+The executable owns DatabaseWire frame execution, operation dispatch, remote
+commands, durable jobs, schema administration, HTTP, WebSocket, private stdio,
+native authentication, routing, TLS, backend startup, signals, and process
+shutdown. Internal SwiftPM targets separate those responsibilities for source
+organization and testing; they are not exported library products.
 
 Database semantics remain in `database-framework`; storage semantics and
 backend implementations remain in `storage-kit`. The server invokes those
 layers and does not duplicate query planning, index behavior, or transactions.
 
-This package is optional. Use `database-framework` and its `Database` umbrella
-directly for a lightweight in-process or Embedded database and for normal
-application-specific customization. Install or depend on `database-server`
-only when that runtime must become a standalone native process or expose HTTP,
-WebSocket, or private stdio endpoints. The server never replaces the framework
-execution API.
+Use `database-framework` directly for an in-process or Embedded database and
+for application-specific customization. Install `database-server` when a
+standalone process or a native HTTP, WebSocket, or stdio endpoint is required.
+Applications and platform adapters do not depend on this package as a library.
 
 | Deployment need | Required package |
 |---|---|
 | In-process application database | `database-framework` |
 | Custom schema, indexes, and entity policy | `database-framework` |
-| Remote command registry and DatabaseWire execution | `DatabaseServerRuntime` |
-| Native standalone process / remote endpoint | `database-server` + `database-framework` |
-| Cloudflare host | `database-framework-cloudflare` + `DatabaseServerRuntime` + `database-framework` |
-
-The native-only `StandaloneDatabaseOperationApplication` composition lives in
-`DatabaseServerHost`. It opens a storage-owned schema catalog and requires
-schema execution support. Compiled remote applications define their
-`DatabaseOperationApplication` against `DatabaseServerRuntime`; local-only
-applications use database-framework directly and need no server application.
+| Native DatabaseWire process / remote endpoint | `database-server` executable |
 
 | Layer | Owns | Does not own |
 |---|---|---|
 | `database-framework` / `Database` | in-process database execution and selected capabilities | listeners, TLS, credentials, signals |
-| `database-server` / `DatabaseServerRuntime` | frame execution, operation dispatch, remote commands, jobs, schema administration | storage and query/index semantics; native process lifecycle |
-| `database-server` / `DatabaseServerHost` | native composition, listener, auth, TLS, signals, process lifecycle | database execution semantics |
-| `database-framework-cloudflare` | Durable Object/WASI lifecycle around `DatabaseServerRuntime` | native server process |
+| `database-server` executable | DatabaseWire dispatch, remote commands, jobs, schema administration, native host lifecycle | reusable database execution semantics |
 
 ```mermaid
 flowchart LR
     CLI["database CLI"] --> Client["database-client"]
-    Client --> Host["DatabaseServerHost<br/>HTTP / WebSocket / stdio"]
-    Host --> Runtime["DatabaseServerRuntime<br/>frame + operation + jobs"]
-    Runtime --> Container["DBContainer<br/>in-process execution"]
+    Client --> Server["database-server executable<br/>HTTP / WebSocket / stdio"]
+    Server --> Dispatch["internal DatabaseWire dispatch<br/>operations + jobs"]
+    Dispatch --> Container["DBContainer<br/>in-process execution"]
     Container --> Factory["Native storage composition"]
     Factory --> SQLite["SQLiteStorageEngine"]
     Factory --> PostgreSQL["PostgreSQLStorageEngine"]
     Factory --> FDB["FDBStorageEngine"]
-
-    Cloudflare["Cloudflare host"] --> Runtime
 ```
 
 ## Requirements
@@ -142,8 +128,8 @@ explicit database-root selection, listener, routing, TLS, frame-limit, and
 token-registry locations by default. SQLite and PostgreSQL require the engine
 root. FoundationDB requires a non-empty application-selected Directory; the
 host resolves it once and passes the resulting `Subspace` to the framework.
-Cloudflare Durable Objects use their already-isolated engine root and do not
-carry native host root configuration.
+Platform adapters own their platform-specific storage configuration and do not
+consume this native server configuration.
 The non-default `MultipleBases` trait replaces the single storage field with a
 control domain, data domains, and named Base placements. It never contains a
 raw credential. Standard format version 3 and `MultipleBases` format version 2
@@ -256,11 +242,11 @@ After an attributed package build, set `XCODE_TEST_DERIVED_DATA_PATH` to that
 exact DerivedData directory so the harness builds only the missing test
 products before its isolated `test-without-building` run.
 
-The strict harness requires 308 logical tests for the standard graph. An
-isolated `MultipleBases` graph uses
-`DATABASE_SERVER_EXPECTED_TEST_COUNT=331` and requires 331 tests. Both require
-zero failures, zero skips, zero expected failures, zero runtime warnings, and
-no internal tool errors. Coverage
+The strict harness requires 279 logical tests for the standard graph. Set
+`DATABASE_SERVER_TEST_TRAITS=MultipleBases` to select that trait in an isolated
+source copy and require 302 tests. Both graphs require zero failures, zero
+skips, zero expected failures, zero runtime warnings, and no internal tool
+errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap
 commit/rollback, token persistence and revocation, configuration and registry
 symlink rejection, exact routing, body/frame limits, a real `serve` process,

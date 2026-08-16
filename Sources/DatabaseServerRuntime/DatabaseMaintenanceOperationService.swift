@@ -183,7 +183,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                         entity: entity,
                         index: index,
                         partitions: partitions,
-                        transaction: transactionContext.serverStorageAccess
+                        transaction: transactionContext.executionStorageAccess
                     )
                 }
                 return try await runtime.runRebuildSlice(
@@ -197,7 +197,7 @@ public struct DatabaseMaintenanceOperationService: DatabaseMaintenanceService {
                         UInt64(batchSize),
                         DatabaseIndexMaintenanceRuntime.maximumSliceWorkUnits
                     ),
-                    transaction: transactionContext.serverStorageAccess
+                    transaction: transactionContext.executionStorageAccess
                 )
             } makeResponse: {
                 (

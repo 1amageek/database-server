@@ -172,7 +172,7 @@ actor DatabaseCompositionDistinctSpill {
                 let collisionSpace = self.identityRecords.subspace(fingerprint)
                 let range = collisionSpace.range()
                 let entries = try await TransactionRangeCollection.collect(
-                    using: transaction.serverStorageAccess,
+                    using: transaction.executionStorageAccess,
                     from: .firstGreaterOrEqual(range.begin),
                     to: .firstGreaterOrEqual(range.end),
                     limit: Self.maximumDigestCollisionRecords + 1,
@@ -209,7 +209,7 @@ actor DatabaseCompositionDistinctSpill {
                         requested: UInt64(additional),
                         maximum: self.maximumPayloadBytes
                     )
-                    try transaction.serverStorageAccess.setValue(encoded, for: key)
+                    try transaction.executionStorageAccess.setValue(encoded, for: key)
                     return next
                 }
 
@@ -249,11 +249,11 @@ actor DatabaseCompositionDistinctSpill {
                     requested: requested,
                     maximum: self.maximumPayloadBytes
                 )
-                try transaction.serverStorageAccess.setValue(
+                try transaction.executionStorageAccess.setValue(
                     record,
                     for: collisionSpace.pack(Tuple(collisionOrdinal))
                 )
-                try transaction.serverStorageAccess.setValue(
+                try transaction.executionStorageAccess.setValue(
                     pointer,
                     for: self.sequenceRecords.pack(Tuple(sequence))
                 )
@@ -277,7 +277,7 @@ actor DatabaseCompositionDistinctSpill {
                 .withControlMetadataTransaction(configuration: .readOnly) {
                     transaction in
                     let pointers = try await TransactionRangeCollection.collect(
-                        using: transaction.serverStorageAccess,
+                        using: transaction.executionStorageAccess,
                         from: currentBegin,
                         to: .firstGreaterOrEqual(range.end),
                         limit: batchSize,
@@ -290,7 +290,7 @@ actor DatabaseCompositionDistinctSpill {
                     for (key, pointerBytes) in pointers {
                         let pointer = try Self.decodePointer(pointerBytes)
                         guard let recordBytes = try await transaction
-                            .serverStorageAccess.getValue(
+                            .executionStorageAccess.getValue(
                                 for: self.identityRecords
                                     .subspace(pointer.fingerprint)
                                     .pack(Tuple(pointer.collisionOrdinal)),

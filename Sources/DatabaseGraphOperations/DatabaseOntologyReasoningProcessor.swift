@@ -6,6 +6,7 @@ import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseTypes
 import DatabaseKit
+import GraphIndex
 import OntologyIndex
 import StorageKit
 

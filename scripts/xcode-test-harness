@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCHEME="database-server-Package"
+SCHEME="database-server"
 DESTINATION="platform=macOS,arch=arm64"
-EXPECTED_TEST_COUNT="${DATABASE_SERVER_EXPECTED_TEST_COUNT:-308}"
+TEST_TRAITS="${DATABASE_SERVER_TEST_TRAITS:-}"
 BUILD_TIMEOUT_SECONDS="${XCODE_TEST_BUILD_TIMEOUT_SECONDS:-1200}"
 TEST_TIMEOUT_SECONDS="${XCODE_TEST_TIMEOUT_SECONDS:-300}"
 RESULT_DIRECTORY="${XCODE_TEST_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-server-xcode-results}"
@@ -103,7 +103,21 @@ summary_number() {
   printf '%s' "$summary" | jq -er ".${key}"
 }
 
-for command in jq xcodebuild xcrun plutil perl rg tee; do
+case "$TEST_TRAITS" in
+  "")
+    default_expected_test_count=279
+    ;;
+  "MultipleBases")
+    default_expected_test_count=302
+    ;;
+  *)
+    echo "error: DATABASE_SERVER_TEST_TRAITS must be empty or MultipleBases" >&2
+    exit 2
+    ;;
+esac
+EXPECTED_TEST_COUNT="${DATABASE_SERVER_EXPECTED_TEST_COUNT:-$default_expected_test_count}"
+
+for command in jq xcodebuild xcrun plutil perl rg rsync tee; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 1
@@ -120,9 +134,16 @@ if ! [[ "$EXPECTED_TEST_COUNT" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-if [[ "${DATABASE_SERVER_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]] \
-    && rg -n '\.package\(path:' "$ROOT_DIR/Package.swift" >/dev/null; then
-  echo "error: release verification requires URL dependencies" >&2
+has_local_dependencies=false
+if rg -n '\.package\(path:' "$ROOT_DIR/Package.swift" >/dev/null; then
+  has_local_dependencies=true
+  if [[ "${DATABASE_SERVER_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]]; then
+    echo "error: release verification requires URL dependencies" >&2
+    exit 2
+  fi
+fi
+if [[ -n "$TEST_TRAITS" && "$has_local_dependencies" == true ]]; then
+  echo "error: isolated trait verification requires URL dependencies" >&2
   exit 2
 fi
 
@@ -133,6 +154,23 @@ else
   derived_data="$WORK_ROOT/DerivedData"
 fi
 mkdir -p "$derived_data" "$RESULT_DIRECTORY"
+build_root="$ROOT_DIR"
+if [[ -n "$TEST_TRAITS" ]]; then
+  source_root="$WORK_ROOT/source"
+  mkdir -p "$source_root"
+  rsync -a --delete \
+    --exclude '.git' \
+    --exclude '.build' \
+    --exclude '.swiftpm' \
+    --exclude '*.xcresult' \
+    "$ROOT_DIR/" "$source_root/"
+  perl -0pi -e '
+    my $replacement = q{.default(enabledTraits: ["AllRuntimeFeatures", "SQLiteBackend", "MultipleBases"])};
+    my $count = s/\.default\(enabledTraits:\s*\[[^\]]*\]\)/$replacement/s;
+    die "expected one default trait declaration\n" unless $count == 1;
+  ' "$source_root/Package.swift"
+  build_root="$source_root"
+fi
 run_identifier="$(date -u +%Y%m%d-%H%M%S)-$$"
 build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
 test_result="$RESULT_DIRECTORY/Test-$run_identifier.xcresult"
@@ -141,7 +179,7 @@ test_log="$RESULT_DIRECTORY/Test-$run_identifier.log"
 
 set +e
 (
-  cd "$ROOT_DIR"
+  cd "$build_root"
   timeout_command "$BUILD_TIMEOUT_SECONDS" xcodebuild build-for-testing \
     -scheme "$SCHEME" \
     -destination "$DESTINATION" \
@@ -210,4 +248,5 @@ fi
 
 printf '%s\n' "$summary"
 echo "database-server tests: $passed_count passed"
+echo "Additional traits: ${TEST_TRAITS:-none}"
 echo "Result directory: $RESULT_DIRECTORY"

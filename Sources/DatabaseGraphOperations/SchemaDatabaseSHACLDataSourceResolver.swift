@@ -15,7 +15,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
     private let container: DBContainer
     private let stateStore: DatabaseMutationStateStore
 
-    public init(
+    package init(
         container: DBContainer,
         stateStore: DatabaseMutationStateStore
     ) {
@@ -69,9 +69,11 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         case .base(let id):
             target = .base(id)
         }
-        let stateBinding = try stateStore.binding(for: target)
+        let stateBinding = try DatabaseMutationStateAccess(stateStore).binding(
+            for: target
+        )
         #else
-        let stateBinding = stateStore.binding()
+        let stateBinding = stateStore.controlBinding()
         #endif
         let logicalVersion = try await stateStore.currentLogicalVersion(
             in: stateBinding,

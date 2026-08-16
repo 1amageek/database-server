@@ -46,7 +46,7 @@ struct DatabaseErrorMapperTests {
         let context = try await makeContext()
 
         let remote = CanonicalDatabaseErrorMapper().remoteError(
-            for: DatabaseMutationError.emptyMutation,
+            for: DatabaseEntityMutationError.emptyMutation,
             context: context
         )
 
@@ -327,22 +327,22 @@ struct DatabaseErrorMapperTests {
         expectMappings(
             [
                 (
-                    DatabaseMutationError.idempotencyKeyRequired,
+                    SPARQLUpdateError.idempotencyKeyRequired,
                     .invalidRequest,
                     "IDEMPOTENCY_KEY_REQUIRED"
                 ),
                 (
-                    DatabaseMutationError.entityAlreadyExists(identity),
+                    DatabaseEntityMutationError.entityAlreadyExists(identity),
                     .conflict,
                     "MUTATION_CONFLICT"
                 ),
                 (
-                    DatabaseMutationError.entityNotFound(identity),
+                    DatabaseEntityMutationError.entityNotFound(identity),
                     .notFound,
                     "ENTITY_NOT_FOUND"
                 ),
                 (
-                    DatabaseMutationError.fieldValueNotRepresentable(
+                    DatabaseEntityMutationError.fieldValueNotRepresentable(
                         entity: "Event",
                         type: "Decimal",
                         reason: "precision exceeds the canonical range"
@@ -351,7 +351,7 @@ struct DatabaseErrorMapperTests {
                     "INVALID_ENTITY"
                 ),
                 (
-                    DatabaseMutationError.invalidCompiledSchema(
+                    DatabaseEntityMutationError.invalidCompiledSchema(
                         entity: "Event",
                         reason: "missing field"
                     ),
@@ -701,11 +701,44 @@ struct DatabaseErrorMapperTests {
         )
     }
 
-    @Test("Unknown failures remain explicit internal failures")
-    func unknownFailure() async throws {
+    @Test("Schema fingerprint limits and unknown failures remain explicit")
+    func schemaFingerprintAndUnknownFailures() async throws {
         let context = try await makeContext()
+        let mapper = CanonicalDatabaseErrorMapper()
 
-        let remote = CanonicalDatabaseErrorMapper().remoteError(
+        let fingerprint = mapper.remoteError(
+            for: SchemaFingerprintError.canonicalRepresentationUnavailable,
+            context: context
+        )
+        expect(
+            fingerprint,
+            category: .resourceLimit,
+            code: "SCHEMA_FINGERPRINT_UNAVAILABLE"
+        )
+        let invalidFingerprint = mapper.remoteError(
+            for: SchemaFingerprintError.invalidByteCount(
+                actual: 1,
+                expected: SchemaFingerprint.byteCount
+            ),
+            context: context
+        )
+        expect(
+            invalidFingerprint,
+            category: .invalidRequest,
+            code: "INVALID_SCHEMA_FINGERPRINT"
+        )
+        let footprint = mapper.remoteError(
+            for: DatabaseIntermediateFootprintError
+                .canonicalValueByteCountUnavailable,
+            context: context
+        )
+        expect(
+            footprint,
+            category: .resourceLimit,
+            code: "INTERMEDIATE_FOOTPRINT_LIMIT"
+        )
+
+        let remote = mapper.remoteError(
             for: UnknownFailure(),
             context: context
         )

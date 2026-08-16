@@ -7,6 +7,7 @@ import DatabaseQueryOperations
 import DatabaseCommandOperations
 import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 

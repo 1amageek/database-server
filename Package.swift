@@ -83,28 +83,16 @@ let package = Package(
         .macOS(.v26),
     ],
     products: [
-        .library(
-            name: "DatabaseServerRuntime",
-            targets: ["DatabaseServerRuntime"]
-        ),
-        .library(
-            name: "DatabaseServerHost",
-            targets: ["DatabaseServerHost"]
-        ),
-        .library(
-            name: "DatabaseServerFoundation",
-            targets: ["DatabaseServerFoundation"]
-        ),
         .executable(
             name: "database-server",
-            targets: ["DatabaseServerExecutable"]
+            targets: ["DatabaseServer"]
         ),
     ],
     traits: runtimeTraits,
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0814.0",
+            from: "26.0817.0",
             traits: frameworkTraits
         ),
         .package(
@@ -117,7 +105,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0814.0",
+            from: "26.0817.0",
             traits: databaseKitTraits
         ),
         .package(
@@ -194,7 +182,7 @@ let package = Package(
                 .product(name: "DatabaseKit", package: "database-kit"),
             ]
         ),
-        // DatabaseQueryOperations - Query admission, evaluation, and paging
+        // DatabaseQueryOperations - Wire query admission and paging
         .target(
             name: "DatabaseQueryOperations",
             dependencies: [
@@ -204,7 +192,11 @@ let package = Package(
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseKit", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
+                .product(
+                    name: "GraphIndex",
+                    package: "database-framework",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
             ],
             swiftSettings: [
                 .define(
@@ -217,18 +209,13 @@ let package = Package(
                 ),
             ]
         ),
-        // DatabaseMutationOperations - Entity and SPARQL mutation preparation
+        // DatabaseMutationOperations - Wire mutation state and admission adapters
         .target(
             name: "DatabaseMutationOperations",
             dependencies: [
                 "DatabaseOperationCore",
                 "DatabaseQueryOperations",
                 .product(name: "DatabaseEngine", package: "database-framework"),
-                .product(
-                    name: "GraphIndex",
-                    package: "database-framework",
-                    condition: .when(traits: ["GraphIndexes"])
-                ),
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseKit", package: "database-kit"),
@@ -245,7 +232,7 @@ let package = Package(
                 ),
             ]
         ),
-        // DatabaseGraphOperations - Graph, ontology, and SHACL processing
+        // DatabaseGraphOperations - Graph wire paging and execution adapters
         .target(
             name: "DatabaseGraphOperations",
             dependencies: [
@@ -348,7 +335,7 @@ let package = Package(
                 ),
             ]
         ),
-        // DatabaseServerRuntime - Host-independent server operation execution
+        // DatabaseServerRuntime - Standalone server operation dispatch
         .target(
             name: "DatabaseServerRuntime",
             dependencies: [
@@ -364,7 +351,11 @@ let package = Package(
                     name: "DatabaseAdministrationOperations",
                     condition: .when(traits: ["MultipleBases"])
                 ),
-                .product(name: "DatabaseMath", package: "database-framework"),
+                .product(
+                    name: "DatabaseMath",
+                    package: "database-framework",
+                    condition: .when(traits: ["GraphIndexes"])
+                ),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
                 .product(
@@ -566,7 +557,7 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "DatabaseServerExecutable",
+            name: "DatabaseServer",
             dependencies: [
                 "DatabaseServerHost",
                 "DatabaseServerRuntime",
@@ -578,7 +569,7 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_EXECUTABLE_MULTIPLE_BASES",
+                    "DATABASE_SERVER_MULTIPLE_BASES",
                     .when(traits: ["MultipleBases"])
                 ),
             ]

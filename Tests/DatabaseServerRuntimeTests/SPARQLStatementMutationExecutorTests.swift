@@ -241,7 +241,7 @@ struct SPARQLStatementMutationExecutorTests {
                 context: context(container, idempotencyKey: "limited-insert")
             )
             Issue.record("Expected the mutation limit to reject the update")
-        } catch DatabaseMutationError.mutationLimitExceeded(
+        } catch SPARQLUpdateError.mutationLimitExceeded(
             let actual,
             let maximum
         ) {
@@ -751,7 +751,7 @@ struct SPARQLStatementMutationExecutorTests {
                 context: context(container, idempotencyKey: "limited-sequence")
             )
             Issue.record("Expected the shared mutation limit to fail")
-        } catch DatabaseMutationError.mutationLimitExceeded(
+        } catch SPARQLUpdateError.mutationLimitExceeded(
             let actual,
             let maximum
         ) {
@@ -928,7 +928,7 @@ struct SPARQLStatementMutationExecutorTests {
             ),
             context: context(container, idempotencyKey: "load-silent-missing")
         )
-        #expect(silentEffect == MutationExecuteOperation.RDFEffect())
+        #expect(silentEffect == RDFMutationEffect())
 
         let deniedSource = RecordingSPARQLLoadSource { request in
             throw SPARQLLoadSourceError.accessDenied(request.sourceIRI)
@@ -1291,7 +1291,7 @@ struct SPARQLStatementMutationExecutorTests {
         context: DatabaseOperationContext,
         budget: ExecutionBudget = ExecutionBudget(),
         structuralLimits: QueryStructuralLimits = .default
-    ) async throws -> MutationExecuteOperation.RDFEffect {
+    ) async throws -> RDFMutationEffect {
         try await executeRDF(
             SPARQLUpdateRequest(firstOperation: operation),
             executor: executor,
@@ -1307,7 +1307,7 @@ struct SPARQLStatementMutationExecutorTests {
         context: DatabaseOperationContext,
         budget: ExecutionBudget = ExecutionBudget(),
         structuralLimits: QueryStructuralLimits = .default
-    ) async throws -> MutationExecuteOperation.RDFEffect {
+    ) async throws -> RDFMutationEffect {
         let statement = try DatabaseStatementAdmission(
             structuralLimits: structuralLimits
         ).admit(
@@ -1332,9 +1332,7 @@ struct SPARQLStatementMutationExecutorTests {
             )
         }
         guard case .rdf(let effect) = result else {
-            throw DatabaseMutationError.unsupportedStatement(
-                "Expected an RDF mutation result"
-            )
+            throw TestFailure.unexpectedMutationResult
         }
         return effect
     }
@@ -1442,6 +1440,10 @@ struct SPARQLStatementMutationExecutorTests {
             )
         )
     }
+}
+
+private enum TestFailure: Error {
+    case unexpectedMutationResult
 }
 
 private final class RecordingSPARQLLoadSource: SPARQLLoadSource, Sendable {

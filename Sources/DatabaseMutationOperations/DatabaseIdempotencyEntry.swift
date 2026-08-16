@@ -1,4 +1,5 @@
 import DatabaseOperationCore
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 
@@ -20,43 +21,52 @@ package struct DatabaseIdempotencyEntry: Sendable, Hashable {
         self.responsePayload = responsePayload
     }
 
-    func manifest(limits: DatabaseWireLimits) throws -> DatabaseIdempotencyManifest {
-        guard responsePayload.count <= limits.maximumFrameBytes,
-              let totalResponseBytes = UInt64(exactly: responsePayload.count),
-              let chunkCount = DatabaseIdempotencyManifest.expectedChunkCount(
-                  totalResponseBytes: totalResponseBytes
-              ) else {
-            throw DatabaseMutationError.idempotencyEntryCorrupted
-        }
-        let manifest = DatabaseIdempotencyManifest(
-            operation: operation,
-            requestDigest: requestDigest,
-            responseDigest: responseDigest,
-            totalResponseBytes: totalResponseBytes,
-            chunkCount: chunkCount
+    var replayRecord: DatabaseMutationReplayRecord {
+        DatabaseMutationReplayRecord(
+            discriminator: Self.discriminator(for: operation),
+            requestFingerprint: requestDigest,
+            outcomeFingerprint: responseDigest,
+            outcome: responsePayload
         )
-        try manifest.validate(limits: limits)
-        return manifest
     }
 
     static func reconstruct(
-        manifest: DatabaseIdempotencyManifest,
-        responsePayload: ByteString,
+        record: DatabaseMutationReplayRecord,
         limits: DatabaseWireLimits
     ) throws -> Self {
-        try manifest.validate(limits: limits)
-        guard UInt64(responsePayload.count) == manifest.totalResponseBytes,
-              manifest.responseDigest == DatabaseRequestDigest.compute(
-                  operation: manifest.operation,
-                  payload: responsePayload
+        guard record.outcome.count <= limits.maximumFrameBytes,
+              record.requestFingerprint.count == DatabaseRequestDigest.byteCount,
+              record.outcomeFingerprint.count == DatabaseRequestDigest.byteCount,
+              let operation = operation(from: record.discriminator),
+              record.outcomeFingerprint == DatabaseRequestDigest.compute(
+                  operation: operation,
+                  payload: record.outcome
               ) else {
             throw DatabaseMutationError.idempotencyEntryCorrupted
         }
         return Self(
-            operation: manifest.operation,
-            requestDigest: manifest.requestDigest,
-            responseDigest: manifest.responseDigest,
-            responsePayload: responsePayload
+            operation: operation,
+            requestDigest: record.requestFingerprint,
+            responseDigest: record.outcomeFingerprint,
+            responsePayload: record.outcome
         )
+    }
+
+    package static func discriminator(
+        for operation: DatabaseOperationIdentifier
+    ) -> ByteString {
+        ByteString([
+            UInt8(truncatingIfNeeded: operation.rawValue),
+            UInt8(truncatingIfNeeded: operation.rawValue >> 8),
+        ])
+    }
+
+    private static func operation(
+        from discriminator: ByteString
+    ) -> DatabaseOperationIdentifier? {
+        guard discriminator.count == 2 else { return nil }
+        let rawValue = UInt16(discriminator[discriminator.startIndex])
+            | UInt16(discriminator[discriminator.startIndex + 1]) << 8
+        return DatabaseOperationIdentifier(rawValue: rawValue)
     }
 }

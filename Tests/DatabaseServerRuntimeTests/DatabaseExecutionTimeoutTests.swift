@@ -1,4 +1,5 @@
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseWire
 import Synchronization
 import StorageKit

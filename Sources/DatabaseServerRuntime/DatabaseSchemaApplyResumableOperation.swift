@@ -336,7 +336,7 @@ public struct DatabaseSchemaApplyResumableOperation:
                     partitions: partitions,
                     generation: context.jobID,
                     detail: detail,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         }
@@ -420,7 +420,7 @@ public struct DatabaseSchemaApplyResumableOperation:
                     maximumWorkUnits: maximumWorkUnits,
                     executor: executor,
                     jobID: jobID,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         }

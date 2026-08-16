@@ -1,5 +1,6 @@
 import DatabaseOperationCore
 #if DATABASE_QUERY_OPERATIONS_GRAPH_INDEXES
+import GraphIndex
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 

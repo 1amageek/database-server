@@ -256,7 +256,7 @@ public struct DatabaseBaseLifecycleResumableOperation:
             try await context.operationContext.requireBaseExecutor()
                 .finalizeSuccessfulDeletion(
                     owner: owner,
-                    controlTransaction: context.databaseTransaction.serverStorageAccess
+                    controlTransaction: context.databaseTransaction.executionStorageAccess
                 )
         case .move:
             guard state.phase == .moveCleanup else {
@@ -266,7 +266,7 @@ public struct DatabaseBaseLifecycleResumableOperation:
                 .finalizeSuccessfulPlacementMove(
                     try Self.requireDescriptor(state),
                     owner: owner,
-                    controlTransaction: context.databaseTransaction.serverStorageAccess
+                    controlTransaction: context.databaseTransaction.executionStorageAccess
                 )
         }
     }
@@ -290,7 +290,7 @@ public struct DatabaseBaseLifecycleResumableOperation:
                     .finalizeUnsuccessfulDeletion(
                         owner: ByteString(context.jobID.bytes),
                         controlTransaction:
-                            context.databaseTransaction.serverStorageAccess
+                            context.databaseTransaction.executionStorageAccess
                     )
             case .simple, .movePrepare, .moveCopy, .moveVerifySource,
                  .moveVerifyDestination, .moveCutover, .moveCleanup:
@@ -308,7 +308,7 @@ public struct DatabaseBaseLifecycleResumableOperation:
                         descriptor,
                         owner: ByteString(context.jobID.bytes),
                         controlTransaction:
-                            context.databaseTransaction.serverStorageAccess
+                            context.databaseTransaction.executionStorageAccess
                     )
             case .deletePrepare, .deleteClear, .deleteFinish:
                 throw DatabaseJobRuntimeError.corruptedState

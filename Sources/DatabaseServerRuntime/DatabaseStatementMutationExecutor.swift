@@ -6,6 +6,7 @@ import DatabaseMutationOperations
 import DatabaseQueryOperations
 import DatabaseCommandOperations
 import DatabaseOperationCore
+import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
@@ -21,7 +22,7 @@ public protocol DatabaseStatementMutationExecutor: Sendable {
 
     func execute(
         _ prepared: PreparedStatementMutation,
-        preconditions: [MutationExecuteOperation.Precondition],
+        preconditions: [EntityMutationPrecondition],
         graphPartitions: FieldObject,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction

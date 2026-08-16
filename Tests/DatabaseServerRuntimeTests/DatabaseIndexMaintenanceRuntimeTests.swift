@@ -54,7 +54,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
         #expect(preparedPartitions == partitions)
@@ -68,7 +68,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 generation: generation,
                 mode: .start,
                 maximumWorkUnits: 1,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
         #expect(firstSlice.completedWorkUnits == 1)
@@ -110,7 +110,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 generation: generation,
                 mode: .resume,
                 maximumWorkUnits: 1,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
         #expect(finalSlice.completedWorkUnits == 1)
@@ -139,7 +139,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
         #expect(preparedPartitions == partitions)
@@ -155,7 +155,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 generation: firstGeneration,
                 mode: .start,
                 maximumWorkUnits: 1,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
         let decodedSecondGeneration = DatabaseTypes.UUID(
@@ -177,7 +177,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                     generation: secondGeneration,
                     mode: .start,
                     maximumWorkUnits: 1,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         }
@@ -194,7 +194,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
         let generation = DatabaseTypes.UUID(high: 3, low: 1)
@@ -208,7 +208,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                     generation: generation,
                     mode: .resume,
                     maximumWorkUnits: 1,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         }
@@ -224,7 +224,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
                 entity: CatalogPartitionedEntity.persistableType,
                 index: "catalog_value",
                 partitions: partitions,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
     }

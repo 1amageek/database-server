@@ -157,7 +157,7 @@ struct DatabaseCompositionQueryTests {
                     fixture.secondaryBaseID,
                 ],
                 expectedRevision: 1,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
 
@@ -1247,7 +1247,7 @@ struct DatabaseCompositionQueryTests {
                     bases: [primaryBaseID, secondaryBaseID]
                 ),
                 expectedRevision: 0,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
         let clock = Clock()

@@ -143,7 +143,7 @@ struct DatabaseBaseLifecycleEndpointTests {
                     collection: "intents"
                 ).load(
                     fixture.baseID,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         #expect(remainingIntent == nil)
@@ -299,7 +299,7 @@ struct DatabaseBaseLifecycleEndpointTests {
             try #require(
                 try await fixture.container.baseCatalog.load(
                     fixture.baseID,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             )
         }

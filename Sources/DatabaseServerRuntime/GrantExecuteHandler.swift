@@ -73,7 +73,7 @@ public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
             ) { store, transaction in
                 try await store.direct(
                     subject: subject,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
             return DatabaseOperationResult(
@@ -97,7 +97,7 @@ public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
             ) { store, transaction in
                 try await store.effective(
                     principal: principal,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
             return DatabaseOperationResult(
@@ -126,7 +126,7 @@ public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
                 try await store(context: context).grant(
                     grant,
                     expectedRevision: expectedRevision,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             } makeResponse: { revision, _ in
                 DatabaseOperationResponseEncoder(
@@ -151,7 +151,7 @@ public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
                 try await store(context: context).revoke(
                     grant,
                     expectedRevision: expectedRevision,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             } makeResponse: { revision, _ in
                 DatabaseOperationResponseEncoder(

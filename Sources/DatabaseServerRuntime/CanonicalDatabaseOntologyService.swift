@@ -10,6 +10,7 @@ import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
+import GraphIndex
 import StorageKit
 
 public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
@@ -163,7 +164,7 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.serverStorageAccess
+                let transaction = transactionContext.executionStorageAccess
                 let revision = try await store.replace(
                     identifier: document.ontology,
                     auxiliaryIdentifiers: document.imports,
@@ -206,7 +207,7 @@ public struct CanonicalDatabaseOntologyService: DatabaseOntologyService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.serverStorageAccess
+                let transaction = transactionContext.executionStorageAccess
                 let revision = try await store.delete(
                     identifier: ontology,
                     expectedRevision: expectedRevision,

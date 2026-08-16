@@ -86,8 +86,7 @@ public final class CanonicalDatabaseOperationServiceFactory:
         #if DATABASE_OPERATIONS_GRAPH_INDEXES
         let ontologyStore = try await DatabaseRDFDocumentStore(
             container: context.container,
-            namespace: "ontology",
-            wireLimits: context.wireLimits
+            namespace: "ontology"
         )
         let ontologyProcessor = DatabaseOntologyReasoningProcessor(
             documentStore: ontologyStore,
@@ -98,8 +97,7 @@ public final class CanonicalDatabaseOperationServiceFactory:
         )
         let shaclStore = try await DatabaseRDFDocumentStore(
             container: context.container,
-            namespace: "shacl",
-            wireLimits: context.wireLimits
+            namespace: "shacl"
         )
         let shaclDataSourceResolver = SchemaDatabaseSHACLDataSourceResolver(
             container: context.container,

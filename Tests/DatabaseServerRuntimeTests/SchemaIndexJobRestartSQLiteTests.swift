@@ -233,7 +233,7 @@ struct SchemaIndexJobRestartSQLiteTests {
                 entity: RestartSchemaBuildAccountV2.persistableType,
                 index: "restart_schema_build_account_email",
                 partitions: FieldObject(),
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
     }

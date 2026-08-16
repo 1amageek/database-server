@@ -4,14 +4,30 @@ import DatabaseJobRuntime
 import DatabaseGraphOperations
 import DatabaseMutationOperations
 import DatabaseOperationCore
+@_spi(DatabaseExecution) import DatabaseEngine
 
 package extension DatabaseDataOperationExecutor {
     func makeEntityMutationExecutor(
         runtimeLimits: DatabaseOperationLimits
-    ) -> DatabaseEntityMutationExecutor {
+    ) throws -> DatabaseEntityMutationExecutor {
         DatabaseEntityMutationExecutor(
             container: container,
-            runtimeLimits: runtimeLimits
+            limits: try DatabaseEntityMutationLimits(
+                maximumChanges: runtimeLimits.maximumMutations,
+                maximumPreconditions: runtimeLimits.maximumPreconditions
+            )
+        )
+    }
+
+    func makeEntityStatementMutationExecutor(
+        runtimeLimits: DatabaseOperationLimits
+    ) throws -> DatabaseEntityStatementMutationExecutor {
+        DatabaseEntityStatementMutationExecutor(
+            container: container,
+            limits: try DatabaseEntityMutationLimits(
+                maximumChanges: runtimeLimits.maximumMutations,
+                maximumPreconditions: runtimeLimits.maximumPreconditions
+            )
         )
     }
 }

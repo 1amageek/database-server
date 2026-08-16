@@ -19,7 +19,7 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
     private let statementAdmission: DatabaseStatementAdmission
     private let runtimeLimits: DatabaseOperationLimits
 
-    public init(
+    package init(
         stateStore: DatabaseMutationStateStore,
         statementExecutor: AnyDatabaseStatementMutationExecutor,
         runtimeLimits: DatabaseOperationLimits = .default

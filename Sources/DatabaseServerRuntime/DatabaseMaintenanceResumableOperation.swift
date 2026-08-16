@@ -53,7 +53,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 ?? executor.schema.version
             let status = try await executor.migrationStatus(
                 targetVersion: targetVersion,
-                transaction: context.transaction.serverStorageAccess
+                transaction: context.transaction.executionStorageAccess
             )
             let maximumStagesPerSlice = min(
                 context.maximumSliceWorkUnits,
@@ -115,7 +115,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             )
         case .compact:
             _ = try context.operationContext.requireDataExecutor()
-            guard let compaction = context.transaction.serverStorageAccess.compaction
+            guard let compaction = context.transaction.executionStorageAccess.compaction
             else {
                 throw DatabaseMaintenanceRuntimeError.compactionUnavailable
             }
@@ -277,7 +277,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         ) { transaction in
             let stored = try await executor.maintenanceCheckpoint(
                 for: context.jobID,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
             let checkpoint: DatabaseMaintenanceJobCheckpoint?
             if let stored {
@@ -326,7 +326,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
                 maximumWorkUnits: maximumWorkUnits,
                 jobID: context.jobID,
                 cumulativeWorkUnitsBeforeSlice: currentWorkUnits,
-                transaction: transaction.serverStorageAccess,
+                transaction: transaction.executionStorageAccess,
                 operationContext: context.operationContext
             )
             let encoded = try PersistentJobPayloadStorage.encode(
@@ -336,7 +336,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
             try executor.storeMaintenanceCheckpoint(
                 encoded,
                 for: context.jobID,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
             return next
         }

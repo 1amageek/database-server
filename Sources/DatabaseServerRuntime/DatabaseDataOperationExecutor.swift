@@ -81,7 +81,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
             configuration: configuration,
             executionDeadline: executionDeadline
         ) { transaction in
-            try await operation(transaction.serverStorageAccess)
+            try await operation(transaction.executionStorageAccess)
         }
         #else
         _ = requiredAccess
@@ -89,7 +89,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
             configuration: configuration,
             executionDeadline: executionDeadline
         ) { transaction in
-            try await operation(transaction.serverStorageAccess)
+            try await operation(transaction.executionStorageAccess)
         }
         #endif
     }

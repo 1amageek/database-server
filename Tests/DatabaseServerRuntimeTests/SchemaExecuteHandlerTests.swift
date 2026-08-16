@@ -885,7 +885,7 @@ struct SchemaExecuteHandlerTests {
             try #require(
                 try await container.baseCatalog.load(
                     id,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             )
         }
@@ -1012,7 +1012,7 @@ struct SchemaExecuteHandlerTests {
                 entity: entity,
                 index: index,
                 partitions: partitions,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
     }

@@ -262,7 +262,7 @@ public extension DBContainer {
         ) async throws -> Result
     ) async throws -> Result {
         try await testBaseContext().withTransaction { transaction in
-            try await operation(transaction.serverStorageAccess)
+            try await operation(transaction.executionStorageAccess)
         }
     }
 

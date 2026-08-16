@@ -1,5 +1,6 @@
 import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseWire
 
 public struct DatabaseWriteCommandContext: Sendable {

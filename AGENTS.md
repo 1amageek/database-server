@@ -2,12 +2,14 @@
 
 ## Ownership
 
-This package owns two distinct layers. `DatabaseServerRuntime` owns canonical
+This package owns two internal layers behind one supported public artifact: the
+`database-server` executable. `DatabaseServerRuntime` owns canonical
 DatabaseWire frame execution, operation dispatch, remote command composition,
 durable server jobs, schema administration, admission, and typed remote errors.
 `DatabaseServerHost` owns native listener configuration, TLS, authentication,
 routing validation, stdio process framing, backend startup, signals, and
-authoritative shutdown. Neither owns framework query/index/transaction
+authoritative shutdown. These target names are source and test boundaries, not
+reusable library products. Neither owns framework query/index/transaction
 semantics, storage behavior, client UX, profiles, or client credentials.
 
 ## Required boundaries
@@ -16,6 +18,7 @@ semantics, storage behavior, client UX, profiles, or client credentials.
   `DatabaseOperationApplication`; it must remain Foundation-independent.
 - `DatabaseServerHost` composes `DatabaseServerRuntime` with a host-selected
   StorageEngine and native lifecycle dependencies.
+- Applications and platform adapters do not depend on either internal target.
 - HTTP, WebSocket, and stdio adapters share one authenticated request executor.
 - A valid DatabaseWire request always reaches `DatabaseOperationInstance`; adapters
   never reinterpret operation payloads.
@@ -30,10 +33,11 @@ semantics, storage behavior, client UX, profiles, or client credentials.
 ## Verification
 
 Use `scripts/xcode-test-harness` with the pinned Swift snapshot. Its reviewed
-standard contract is 308 logical tests. An isolated `MultipleBases` graph uses
-`DATABASE_SERVER_EXPECTED_TEST_COUNT=331` and requires 331 tests. Both runs
-require zero failures, skips, expected failures, runtime warnings, and internal
-tool errors. Cover HTTP, HTTPS with a real TLS
+standard contract is 279 logical tests. An isolated `MultipleBases` graph uses
+`DATABASE_SERVER_TEST_TRAITS=MultipleBases` and requires 302 tests. The harness
+selects that trait in an isolated source copy and derives the expected count.
+Both runs require zero failures, skips, expected failures, runtime warnings,
+and internal tool errors. Cover HTTP, HTTPS with a real TLS
 handshake, WebSocket, and stdio through real transports, including truncated
 frames, oversized payloads, authentication and routing rejection,
 cancellation, concurrent principals, graceful shutdown, and negative

@@ -2,6 +2,7 @@ import DatabaseKit
 import TestSupport
 import DatabaseRuntime
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseMutationOperations
 @testable import DatabaseServerRuntime
 import DatabaseServerFoundation
 import DatabaseTypes
@@ -232,21 +233,21 @@ struct DatabaseOperationInstanceTests {
             configuration: .readOnly
         ) { transaction in
             #if MultipleBases
-            let binding = try stateStore.binding(
+            let binding = try DatabaseMutationStateAccess(stateStore).binding(
                 for: runtimeTestTarget(baseContext)
             )
             #else
-            let binding = stateStore.binding()
+            let binding = DatabaseMutationStateAccess(stateStore).binding()
             #endif
             return (
                 try await stateStore.currentLogicalVersion(
                     in: binding,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 ),
-                try await stateStore.idempotencyEntry(
+                try await DatabaseMutationStateAccess(stateStore).idempotencyEntry(
                     for: "oversized-response",
                     in: binding,
-                    transaction: transaction.serverStorageAccess,
+                    transaction: transaction.executionStorageAccess,
                     limits: limits
                 )
             )

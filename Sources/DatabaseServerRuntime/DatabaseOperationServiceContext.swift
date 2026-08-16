@@ -11,7 +11,7 @@ import DatabaseOperationCore
 
 public struct DatabaseOperationServiceContext: Sendable {
     public let container: DBContainer
-    public let stateStore: DatabaseMutationStateStore
+    package let stateStore: DatabaseMutationStateStore
     public let coordinator: DatabaseTransactionalOperationCoordinator
     public let runtimeLimits: DatabaseOperationLimits
     public let wireLimits: DatabaseWireLimits
@@ -22,7 +22,7 @@ public struct DatabaseOperationServiceContext: Sendable {
     public let graphOperationLimits: GraphOperationLimits
     #endif
 
-    public init(
+    package init(
         container: DBContainer,
         stateStore: DatabaseMutationStateStore,
         coordinator: DatabaseTransactionalOperationCoordinator,
@@ -46,7 +46,7 @@ public struct DatabaseOperationServiceContext: Sendable {
     }
 
     #if DATABASE_OPERATIONS_GRAPH_INDEXES
-    public init(
+    package init(
         container: DBContainer,
         stateStore: DatabaseMutationStateStore,
         coordinator: DatabaseTransactionalOperationCoordinator,

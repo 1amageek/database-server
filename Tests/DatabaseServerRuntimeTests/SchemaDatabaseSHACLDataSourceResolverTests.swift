@@ -42,7 +42,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                     budget: ExecutionBudget(maximumWorkUnits: 10),
                     monotonicClock: TestProcessMonotonicClock()
                 ),
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
 
@@ -75,7 +75,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                     budget: ExecutionBudget(maximumWorkUnits: 2),
                     monotonicClock: TestProcessMonotonicClock()
                 ),
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
         }
 
@@ -100,7 +100,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                         budget: ExecutionBudget(maximumWorkUnits: 200),
                         monotonicClock: TestProcessMonotonicClock()
                     ),
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
 
@@ -136,7 +136,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                         budget: ExecutionBudget(maximumWorkUnits: 1),
                         monotonicClock: TestProcessMonotonicClock()
                     ),
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         }
@@ -201,7 +201,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                         budget: ExecutionBudget(maximumWorkUnits: 100),
                         monotonicClock: TestProcessMonotonicClock()
                     ),
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
 
@@ -231,7 +231,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
                         budget: ExecutionBudget(maximumWorkUnits: 10),
                         monotonicClock: TestProcessMonotonicClock()
                     ),
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 )
             }
         }

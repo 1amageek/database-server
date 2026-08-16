@@ -1,6 +1,7 @@
 import DatabaseKit
 import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseMutationOperations
 import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire
@@ -72,7 +73,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 body: { value, _ in value }
             )
             Issue.record("Expected an idempotency conflict")
-        } catch DatabaseMutationError.idempotencyKeyConflict {
+        } catch DatabaseMutationStateError.idempotencyKeyConflict {
             #expect(preparations.value == 1)
         }
     }
@@ -111,12 +112,14 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
             return (
                 try await mutationContext.stateStore.currentLogicalVersion(
                     in: binding,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 ),
-                try await mutationContext.stateStore.idempotencyEntry(
+                try await DatabaseMutationStateAccess(
+                    mutationContext.stateStore
+                ).idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
                     in: binding,
-                    transaction: transaction.serverStorageAccess,
+                    transaction: transaction.executionStorageAccess,
                     limits: .default
                 )
             )
@@ -138,7 +141,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 requestID: 1,
                 prepare: { 1 },
                 body: { value, context in
-                    try context.serverStorageAccess.setValue(
+                    try context.executionStorageAccess.setValue(
                         ByteString(repeating: 0, count: 64),
                         for: key
                     )
@@ -165,15 +168,17 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 context: databaseContext
             )
             return (
-                try await transaction.serverStorageAccess.getValue(for: key),
+                try await transaction.executionStorageAccess.getValue(for: key),
                 try await mutationContext.stateStore.currentLogicalVersion(
                     in: binding,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 ),
-                try await mutationContext.stateStore.idempotencyEntry(
+                try await DatabaseMutationStateAccess(
+                    mutationContext.stateStore
+                ).idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
                     in: binding,
-                    transaction: transaction.serverStorageAccess,
+                    transaction: transaction.executionStorageAccess,
                     limits: .default
                 )
             )
@@ -195,7 +200,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 prepare: { 1 },
                 body: { value, context in
                     try await ContinuousClock().sleep(for: .milliseconds(100))
-                    try context.serverStorageAccess.setValue(
+                    try context.executionStorageAccess.setValue(
                         [UInt8(value)],
                         for: [0xF1]
                     )
@@ -219,15 +224,17 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
                 context: databaseContext
             )
             return (
-                try await transaction.serverStorageAccess.getValue(for: [0xF1]),
+                try await transaction.executionStorageAccess.getValue(for: [0xF1]),
                 try await mutationContext.stateStore.currentLogicalVersion(
                     in: binding,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 ),
-                try await mutationContext.stateStore.idempotencyEntry(
+                try await DatabaseMutationStateAccess(
+                    mutationContext.stateStore
+                ).idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
                     in: binding,
-                    transaction: transaction.serverStorageAccess,
+                    transaction: transaction.executionStorageAccess,
                     limits: .default
                 )
             )
@@ -283,12 +290,14 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
             return (
                 try await mutationContext.stateStore.currentLogicalVersion(
                     in: binding,
-                    transaction: transaction.serverStorageAccess
+                    transaction: transaction.executionStorageAccess
                 ),
-                try await mutationContext.stateStore.idempotencyEntry(
+                try await DatabaseMutationStateAccess(
+                    mutationContext.stateStore
+                ).idempotencyEntry(
                     for: CoordinatedMutationContext.idempotencyKey,
                     in: binding,
-                    transaction: transaction.serverStorageAccess,
+                    transaction: transaction.executionStorageAccess,
                     limits: .default
                 )
             )
@@ -327,10 +336,12 @@ private func coordinatedMutationBinding(
     context: DatabaseContext
 ) throws -> DatabaseMutationStateBinding {
     #if MultipleBases
-    try store.binding(for: coordinatedMutationTarget(context))
+    try DatabaseMutationStateAccess(store).binding(
+        for: coordinatedMutationTarget(context)
+    )
     #else
     _ = context
-    return store.binding()
+    return DatabaseMutationStateAccess(store).binding()
     #endif
 }
 
@@ -454,7 +465,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
                         MutationExecuteOperation.Response(
                             commitVersion: commitVersion,
                             result: .rdf(
-                                MutationExecuteOperation.RDFEffect(
+                                RDFMutationEffect(
                                     insertedQuads: UInt64(value)
                                 )
                             )

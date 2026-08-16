@@ -6,6 +6,7 @@ import DatabaseMutationOperations
 import DatabaseQueryOperations
 import DatabaseCommandOperations
 import DatabaseOperationCore
+import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
@@ -13,7 +14,7 @@ import DatabaseTypes
 /// A type-erased, immutable statement preparation reusable across transaction retries.
 public final class PreparedDatabaseStatementMutation: Sendable {
     private let executeMutation: @Sendable (
-        [MutationExecuteOperation.Precondition],
+        [EntityMutationPrecondition],
         FieldObject,
         DatabaseOperationContext,
         DatabaseTransaction
@@ -39,7 +40,7 @@ public final class PreparedDatabaseStatementMutation: Sendable {
     }
 
     public func execute(
-        preconditions: [MutationExecuteOperation.Precondition],
+        preconditions: [EntityMutationPrecondition],
         graphPartitions: FieldObject,
         context: DatabaseOperationContext,
         transaction: DatabaseTransaction

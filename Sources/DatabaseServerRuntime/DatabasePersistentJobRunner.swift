@@ -367,7 +367,7 @@ public actor DatabasePersistentJobRunner {
             configuration: .batch
         ) { transactionContext in
             let observedNow = clock.now
-            let transaction = transactionContext.serverStorageAccess
+            let transaction = transactionContext.executionStorageAccess
             guard let snapshot = try await store.load(
                 dueJob.jobID,
                 transaction: transaction
@@ -470,7 +470,7 @@ public actor DatabasePersistentJobRunner {
         try await container.withControlMetadataTransaction(
             configuration: transactionConfiguration
         ) { transactionContext in
-            let transaction = transactionContext.serverStorageAccess
+            let transaction = transactionContext.executionStorageAccess
             try await self.requireTargetGrant(
                 operationContext,
                 transaction: transaction
@@ -622,7 +622,7 @@ public actor DatabasePersistentJobRunner {
                     .sliceTimeoutMilliseconds
             )
         ) { transactionContext in
-            let transaction = transactionContext.serverStorageAccess
+            let transaction = transactionContext.executionStorageAccess
             let currentState = try await store.loadState(
                 snapshot.specification.jobID,
                 specificationDigest: snapshot.specificationDigest,
@@ -734,7 +734,7 @@ public actor DatabasePersistentJobRunner {
                     .sliceTimeoutMilliseconds
             )
         ) { transactionContext in
-            let transaction = transactionContext.serverStorageAccess
+            let transaction = transactionContext.executionStorageAccess
             let currentState = try await store.loadState(
                 snapshot.specification.jobID,
                 specificationDigest: snapshot.specificationDigest,
@@ -813,7 +813,7 @@ public actor DatabasePersistentJobRunner {
                 let currentState = try await store.loadState(
                     snapshot.specification.jobID,
                     specificationDigest: snapshot.specificationDigest,
-                    transaction: transactionContext.serverStorageAccess
+                    transaction: transactionContext.executionStorageAccess
                 )
                 try Self.validateUnsuccessfulOutcomeLease(
                     currentState,
@@ -845,7 +845,7 @@ public actor DatabasePersistentJobRunner {
                         .sliceTimeoutMilliseconds
                 )
             ) { transactionContext in
-                let transaction = transactionContext.serverStorageAccess
+                let transaction = transactionContext.executionStorageAccess
                 let currentState = try await store.loadState(
                     snapshot.specification.jobID,
                     specificationDigest: snapshot.specificationDigest,
@@ -918,7 +918,7 @@ public actor DatabasePersistentJobRunner {
                     .sliceTimeoutMilliseconds
             )
         ) { transactionContext in
-            let transaction = transactionContext.serverStorageAccess
+            let transaction = transactionContext.executionStorageAccess
             let currentState = try await store.loadState(
                 snapshot.specification.jobID,
                 specificationDigest: snapshot.specificationDigest,

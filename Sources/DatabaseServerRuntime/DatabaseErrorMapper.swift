@@ -95,6 +95,24 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
+        if let fingerprintError = error as? SchemaFingerprintError {
+            switch fingerprintError {
+            case .invalidByteCount:
+                return RemoteOperationError(
+                    category: .invalidRequest,
+                    code: "INVALID_SCHEMA_FINGERPRINT",
+                    message: "The schema fingerprint has an invalid byte count",
+                    retryability: .never
+                )
+            case .canonicalRepresentationUnavailable:
+                return RemoteOperationError(
+                    category: .resourceLimit,
+                    code: "SCHEMA_FINGERPRINT_UNAVAILABLE",
+                    message: "The schema canonical representation exceeds runtime limits",
+                    retryability: .never
+                )
+            }
+        }
         if error is PersistableDecodingError || error is QueryRowCodecError {
             return RemoteOperationError(
                 category: .invalidRequest,
@@ -170,6 +188,14 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 category: .resourceLimit,
                 code: "QUERY_RESOURCE_LIMIT",
                 message: workLimitError.description,
+                retryability: .never
+            )
+        }
+        if error is DatabaseIntermediateFootprintError {
+            return RemoteOperationError(
+                category: .resourceLimit,
+                code: "INTERMEDIATE_FOOTPRINT_LIMIT",
+                message: "The intermediate result footprint cannot be represented within runtime limits",
                 retryability: .never
             )
         }
@@ -334,6 +360,16 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return Self.map(graphStoreError)
         }
         #endif
+        if let entityMutationError = error as? DatabaseEntityMutationError {
+            return Self.map(entityMutationError)
+        }
+        if let mutationStateError = error as? DatabaseMutationStateError {
+            return Self.map(mutationStateError)
+        }
+        if let statementMutationError =
+            error as? DatabaseEntityStatementMutationError {
+            return Self.map(statementMutationError)
+        }
         if let mutationError = error as? DatabaseMutationError {
             return Self.map(mutationError)
         }
@@ -898,6 +934,15 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
              .blankNodeNotAllowed, .nonRDFBinding, .invalidRDFTermRole:
             category = .invalidRequest
             code = "INVALID_SPARQL_UPDATE"
+        case .idempotencyKeyRequired:
+            category = .invalidRequest
+            code = "IDEMPOTENCY_KEY_REQUIRED"
+        case .mutationLimitExceeded:
+            category = .resourceLimit
+            code = "MUTATION_LIMIT"
+        case .invalidMaximumMutations:
+            category = .internalFailure
+            code = "SPARQL_UPDATE_CONFIGURATION_INVALID"
         case .effectCountOverflow:
             category = .internalFailure
             code = "SPARQL_UPDATE_RUNTIME_FAILURE"
@@ -1112,38 +1157,51 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         let category: OperationErrorCategory
         let code: String
         switch error {
+        case .preconditionLimitExceeded:
+            category = .resourceLimit
+            code = "MUTATION_LIMIT"
+        case .idempotencyEntryCorrupted:
+            category = .internalFailure
+            code = "MUTATION_RUNTIME_FAILURE"
+        case .invalidGraphPartitions:
+            category = .invalidRequest
+            code = "INVALID_GRAPH_PARTITIONS"
+        case .featureUnavailable:
+            category = .unavailable
+            code = "MUTATION_FEATURE_UNAVAILABLE"
+        }
+        return RemoteOperationError(
+            category: category,
+            code: code,
+            message: error.description,
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: DatabaseEntityMutationError
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
+        let code: String
+        switch error {
         case .emptyMutation:
             category = .invalidRequest
             code = "EMPTY_MUTATION"
-        case .mutationLimitExceeded, .preconditionLimitExceeded,
-             .idempotencyKeyTooLarge:
+        case .changeLimitExceeded, .preconditionLimitExceeded:
             category = .resourceLimit
             code = "MUTATION_LIMIT"
-        case .idempotencyKeyRequired:
-            category = .invalidRequest
-            code = "IDEMPOTENCY_KEY_REQUIRED"
-        case .idempotencyKeyConflict:
-            category = .conflict
-            code = "IDEMPOTENCY_KEY_CONFLICT"
-        case .idempotencyEntryCorrupted, .logicalVersionOverflow,
-             .stateStoreContainerMismatch:
-            category = .internalFailure
-            code = "MUTATION_RUNTIME_FAILURE"
         case .unknownEntity:
             category = .invalidRequest
             code = "UNKNOWN_ENTITY"
         case .entityHasNoPersistableType:
             category = .invalidRequest
             code = "ENTITY_NOT_PERSISTABLE"
-        case .invalidPersistableIdentifier, .identifierNotRepresentable:
+        case .invalidPersistableIdentifier:
             category = .invalidRequest
             code = "INVALID_ENTITY_IDENTIFIER"
         case .invalidPartition:
             category = .invalidRequest
             code = "INVALID_PARTITION"
-        case .invalidGraphPartitions:
-            category = .invalidRequest
-            code = "INVALID_GRAPH_PARTITIONS"
         case .entityTypeMismatch, .persistableIdentityMismatch,
              .fieldNotRepresentable, .fieldValueNotRepresentable:
             category = .invalidRequest
@@ -1161,15 +1219,61 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .invalidCompiledSchema:
             category = .internalFailure
             code = "MUTATION_SCHEMA_INVALID"
-        case .featureUnavailable:
-            category = .unavailable
-            code = "MUTATION_FEATURE_UNAVAILABLE"
-        case .unsupportedStatement:
-            category = .invalidRequest
-            code = "UNSUPPORTED_MUTATION_STATEMENT"
         case .fieldsRequired, .fieldsMustBeEmptyForDelete:
             category = .invalidRequest
             code = "INVALID_MUTATION_FIELDS"
+        }
+        return RemoteOperationError(
+            category: category,
+            code: code,
+            message: error.description,
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: DatabaseEntityStatementMutationError
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
+        let code: String
+        switch error {
+        case .unsupportedStatement:
+            category = .invalidRequest
+            code = "UNSUPPORTED_MUTATION_STATEMENT"
+        case .scanLimitUnsupportedOnCurrentPlatform, .scanLimitExceeded:
+            category = .resourceLimit
+            code = "MUTATION_LIMIT"
+        }
+        return RemoteOperationError(
+            category: category,
+            code: code,
+            message: error.description,
+            retryability: .never
+        )
+    }
+
+    private static func map(
+        _ error: DatabaseMutationStateError
+    ) -> RemoteOperationError {
+        let category: OperationErrorCategory
+        let code: String
+        switch error {
+        case .idempotencyKeyRequired:
+            category = .invalidRequest
+            code = "IDEMPOTENCY_KEY_REQUIRED"
+        case .idempotencyKeyTooLarge, .outcomeTooLarge:
+            category = .resourceLimit
+            code = "MUTATION_LIMIT"
+        case .idempotencyKeyConflict:
+            category = .conflict
+            code = "IDEMPOTENCY_KEY_CONFLICT"
+        case .invalidDiscriminator, .invalidFingerprint:
+            category = .invalidRequest
+            code = "INVALID_MUTATION_STATE"
+        case .invalidLimits, .corruptedState, .logicalVersionOverflow,
+             .containerMismatch:
+            category = .internalFailure
+            code = "MUTATION_RUNTIME_FAILURE"
         }
         return RemoteOperationError(
             category: category,
@@ -1957,7 +2061,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .revisionConflict:
             category = .conflict
             code = "RDF_DOCUMENT_REVISION_CONFLICT"
-        case .emptyIdentifier, .invalidPage, .invalidContinuation:
+        case .emptyIdentifier, .invalidPage, .invalidContinuation,
+             .invalidQuad:
             category = .invalidRequest
             code = "INVALID_RDF_DOCUMENT_REQUEST"
         case .revisionOverflow, .corruptedMetadata, .corruptedItemCount:

@@ -160,7 +160,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.serverStorageAccess
+                let transaction = transactionContext.executionStorageAccess
                 try processor.validateShapes(
                     graph: graph,
                     quads: shapes,
@@ -205,7 +205,7 @@ public struct CanonicalDatabaseSHACLService: DatabaseSHACLService {
                 context: context,
                 timeoutMilliseconds: request.budget.timeoutMilliseconds
             ) { transactionContext in
-                let transaction = transactionContext.serverStorageAccess
+                let transaction = transactionContext.executionStorageAccess
                 let revision = try await store.delete(
                     identifier: graph,
                     expectedRevision: expectedRevision,

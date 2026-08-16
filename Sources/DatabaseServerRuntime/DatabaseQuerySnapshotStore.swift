@@ -841,7 +841,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                 transaction in
                 let range = self.expirations.range()
                 let entries = try await TransactionRangeCollection.collect(
-                    using: transaction.serverStorageAccess,
+                    using: transaction.executionStorageAccess,
                     from: .firstGreaterOrEqual(range.begin),
                     to: .firstGreaterOrEqual(range.end),
                     limit: 129,
@@ -869,23 +869,23 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                     guard removed < 128 else { break }
                     try self.clearSnapshot(
                         record.snapshotID,
-                        transaction: transaction.serverStorageAccess
+                        transaction: transaction.executionStorageAccess
                     )
                     let slotKey = self.principalSlotKey(
                         principalDigest: record.principalDigest,
                         slot: record.slot
                     )
-                    if let slotBytes = try await transaction.serverStorageAccess
+                    if let slotBytes = try await transaction.executionStorageAccess
                         .getValue(for: slotKey, snapshot: false) {
                         let slot = try DatabaseServerFrameCodec.decode(
                             PrincipalSlot.self,
                             from: slotBytes
                         )
                         if slot.snapshotID == record.snapshotID {
-                            try transaction.serverStorageAccess.clear(key: slotKey)
+                            try transaction.executionStorageAccess.clear(key: slotKey)
                         }
                     }
-                    try transaction.serverStorageAccess.clear(key: key)
+                    try transaction.executionStorageAccess.clear(key: key)
                     removed += 1
                 }
                 return (removed: removed, nextExpiry: nextExpiry)
@@ -1064,7 +1064,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             loaded = try await container.withControlMetadataTransaction(
                 configuration: .readOnly
             ) { transaction in
-                guard let manifestBytes = try await transaction.serverStorageAccess
+                guard let manifestBytes = try await transaction.executionStorageAccess
                     .getValue(
                         for: self.manifestKey(snapshotID),
                         snapshot: false
@@ -1075,7 +1075,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                     Manifest.self,
                     from: manifestBytes
                 )
-                guard let descriptorBytes = try await transaction.serverStorageAccess
+                guard let descriptorBytes = try await transaction.executionStorageAccess
                     .getValue(
                         for: self.pageDescriptorKey(
                             snapshotID: snapshotID,
@@ -1102,7 +1102,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                 chunks.reserveCapacity(chunkCount)
                 var actualByteCount = 0
                 for chunkIndex in 0..<chunkCount {
-                    guard let chunk = try await transaction.serverStorageAccess
+                    guard let chunk = try await transaction.executionStorageAccess
                         .getValue(
                             for: self.pageChunkKey(
                                 snapshotID: snapshotID,
@@ -1596,13 +1596,13 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             return try await Task.detached {
                 try await self.container.withControlMetadataTransaction {
                     transaction in
-                    try await operation(transaction.serverStorageAccess)
+                    try await operation(transaction.executionStorageAccess)
                 }
             }.value
         }
         return try await container.withControlMetadataTransaction {
             transaction in
-            try await operation(transaction.serverStorageAccess)
+            try await operation(transaction.executionStorageAccess)
         }
     }
 
@@ -1678,9 +1678,9 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         try await container.withControlMetadataTransaction { transaction in
             try self.clearSnapshot(
                 snapshotID,
-                transaction: transaction.serverStorageAccess
+                transaction: transaction.executionStorageAccess
             )
-            try transaction.serverStorageAccess.clear(
+            try transaction.executionStorageAccess.clear(
                 key: self.expiryKey(
                     snapshotID: snapshotID,
                     expiresAt: expiresAt
@@ -1690,7 +1690,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                 principalDigest: principalDigest,
                 slot: slot
             )
-            if let slotBytes = try await transaction.serverStorageAccess.getValue(
+            if let slotBytes = try await transaction.executionStorageAccess.getValue(
                 for: slotKey,
                 snapshot: false
             ) {
@@ -1705,7 +1705,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                         .querySnapshotCorrupted
                 }
                 if slot.snapshotID == snapshotID {
-                    try transaction.serverStorageAccess.clear(key: slotKey)
+                    try transaction.executionStorageAccess.clear(key: slotKey)
                 }
             }
         }
