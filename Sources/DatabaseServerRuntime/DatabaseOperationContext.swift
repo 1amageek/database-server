@@ -22,7 +22,6 @@ public struct DatabaseOperationContext: Sendable {
     public let authorization: AuthorizationContext
     public let jobAuthorizationReference: DatabaseJobAuthorizationReference?
     public let requestPayload: ByteString
-    public let requestDigest: ByteString?
     public let wireLimits: DatabaseWireLimits
 
     #if DATABASE_SERVER_MULTIPLE_BASES
@@ -37,7 +36,6 @@ public struct DatabaseOperationContext: Sendable {
         authorization: AuthorizationContext = .anonymous,
         jobAuthorizationReference: DatabaseJobAuthorizationReference? = nil,
         requestPayload: ByteString,
-        requestDigest: ByteString? = nil,
         wireLimits: DatabaseWireLimits
     ) {
         switch target {
@@ -49,7 +47,6 @@ public struct DatabaseOperationContext: Sendable {
                 )
             )
         case .base(let baseID):
-            #if DATABASE_SERVER_MULTIPLE_BASES
             self.executor = .base(
                 BaseOperationExecutor(
                     baseID: baseID,
@@ -58,17 +55,7 @@ public struct DatabaseOperationContext: Sendable {
                     dataContext: baseContext
                 )
             )
-            #else
-            _ = baseID
-            self.executor = .control(
-                DatabaseControlExecutor(
-                    container: container,
-                    authorization: authorization
-                )
-            )
-            #endif
-        case .composition(let compositionID):
-            #if DATABASE_SERVER_MULTIPLE_BASES
+        case .composition(let selection):
             if requirement.transaction == .write {
                 self.executor = .control(
                     DatabaseControlExecutor(
@@ -79,25 +66,15 @@ public struct DatabaseOperationContext: Sendable {
             } else {
                 let source = composition ?? container.session(
                     authorization: authorization
-                ).composition(compositionID)
+                ).composition(selection)
                 self.executor = .composition(
                     CompositionReadExecutor(
-                        compositionID: compositionID,
+                        selection: selection,
                         container: container,
-                        authorization: authorization,
-                        source: source
+                        dataSource: source
                     )
                 )
             }
-            #else
-            _ = compositionID
-            self.executor = .control(
-                DatabaseControlExecutor(
-                    container: container,
-                    authorization: authorization
-                )
-            )
-            #endif
         }
         self.target = target
         self.requirement = requirement
@@ -106,7 +83,6 @@ public struct DatabaseOperationContext: Sendable {
         self.authorization = authorization
         self.jobAuthorizationReference = jobAuthorizationReference
         self.requestPayload = requestPayload
-        self.requestDigest = requestDigest
         self.wireLimits = wireLimits
     }
 
@@ -119,7 +95,6 @@ public struct DatabaseOperationContext: Sendable {
         authorization: AuthorizationContext = .anonymous,
         jobAuthorizationReference: DatabaseJobAuthorizationReference? = nil,
         requestPayload: ByteString,
-        requestDigest: ByteString? = nil,
         wireLimits: DatabaseWireLimits
     ) {
         self.init(
@@ -133,7 +108,6 @@ public struct DatabaseOperationContext: Sendable {
             authorization: authorization,
             jobAuthorizationReference: jobAuthorizationReference,
             requestPayload: requestPayload,
-            requestDigest: requestDigest,
             wireLimits: wireLimits
         )
     }
@@ -146,7 +120,6 @@ public struct DatabaseOperationContext: Sendable {
         authorization: AuthorizationContext = .anonymous,
         jobAuthorizationReference: DatabaseJobAuthorizationReference? = nil,
         requestPayload: ByteString,
-        requestDigest: ByteString? = nil,
         wireLimits: DatabaseWireLimits
     ) {
         self.executor = .control(
@@ -161,7 +134,6 @@ public struct DatabaseOperationContext: Sendable {
         self.authorization = authorization
         self.jobAuthorizationReference = jobAuthorizationReference
         self.requestPayload = requestPayload
-        self.requestDigest = requestDigest
         self.wireLimits = wireLimits
     }
     #endif

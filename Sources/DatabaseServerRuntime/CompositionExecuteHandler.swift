@@ -73,14 +73,15 @@ public struct CompositionExecuteHandler: DatabaseOperationEndpointHandler {
             )
 
         case .describe:
-            guard case .composition(let id) = context.target else {
+            guard case .composition(let selection) = context.target,
+                  selection.kind == .named else {
                 throw DatabaseAdministrationError.targetMismatch(context.target)
             }
             let executor = try context.requireCompositionExecutor()
-            guard executor.compositionID == id else {
+            guard executor.selection == selection else {
                 throw DatabaseAdministrationError.targetMismatch(context.target)
             }
-            let record = try await executor.resolve()
+            let record = try await executor.resolveNamedRecord()
             return DatabaseOperationResult(
                 CompositionExecuteOperation.self,
                 response: .composition(Self.description(record))
@@ -121,7 +122,8 @@ public struct CompositionExecuteHandler: DatabaseOperationEndpointHandler {
             let expectedRevision,
             let idempotencyKey
         ):
-            guard case .composition(let id) = context.target else {
+            guard case .composition(let selection) = context.target,
+                  let id = selection.namedID else {
                 throw DatabaseAdministrationError.targetMismatch(context.target)
             }
             try Self.requireIdempotencyKey(idempotencyKey, context: context)
@@ -151,7 +153,8 @@ public struct CompositionExecuteHandler: DatabaseOperationEndpointHandler {
             }.result
 
         case .delete(let expectedRevision, let idempotencyKey):
-            guard case .composition(let id) = context.target else {
+            guard case .composition(let selection) = context.target,
+                  let id = selection.namedID else {
                 throw DatabaseAdministrationError.targetMismatch(context.target)
             }
             try Self.requireIdempotencyKey(idempotencyKey, context: context)

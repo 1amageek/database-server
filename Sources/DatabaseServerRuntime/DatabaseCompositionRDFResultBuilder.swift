@@ -14,8 +14,8 @@ import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 
 /// Publishes a globally distinct Composition RDF graph while retaining only
-/// the visible page in memory. Exact identity and merged contributors live in
-/// the control-domain spill owned by the snapshot reservation.
+/// the visible page in memory. GraphIndex resolves exact identity and merged
+/// contributors before this server-owned result spool receives them.
 actor DatabaseCompositionRDFResultBuilder {
     private struct PageBuffer: Sendable {
         var quads: [RDFQuad] = []
@@ -53,6 +53,11 @@ actor DatabaseCompositionRDFResultBuilder {
             quads.removeAll(keepingCapacity: false)
             origins.removeAll(keepingCapacity: false)
         }
+
+        mutating func promoteToOutput() {
+            reservation?.release()
+            reservation = nil
+        }
     }
 
     private enum State: Sendable, Equatable {
@@ -61,12 +66,14 @@ actor DatabaseCompositionRDFResultBuilder {
         case aborted
     }
 
-    private let compositionID: Base.Composition.ID
-    private let compositionGeneration: UInt64
-    private let baseIDs: [Base.ID]
+    private let composition: CompositionResolution
+    private let basePlacementGenerations: [Base.ID: UInt64]
+    private let schemaGeneration: UInt64
     private let consistency: DatabaseKit.DatabaseReadConsistency
     private let pageLimit: Int
     private let maximumIntermediateBytes: UInt64
+    private let queryFingerprint: ByteString
+    private let authorization: AuthorizationContext
     private let snapshotStore: DatabaseQuerySnapshotStore
     private let workMeter: DatabaseWorkMeter
     private let footprintMeter: DatabaseRDFExecutionFootprintMeter
@@ -78,29 +85,29 @@ actor DatabaseCompositionRDFResultBuilder {
     private var firstContinuationPageID: ByteString?
     private var currentPageID: ByteString?
     private var continuationPageCount: UInt32 = 0
-    private var totalPayloadBytes: UInt64
+    private var totalPayloadBytes: UInt64 = 0
 
     init(
-        compositionID: Base.Composition.ID,
-        compositionGeneration: UInt64,
-        baseIDs: [Base.ID],
+        composition: CompositionResolution,
+        basePlacementGenerations: [Base.ID: UInt64],
         consistency: DatabaseKit.DatabaseReadConsistency,
+        schemaGeneration: UInt64,
         pageLimit: Int,
         maximumIntermediateBytes: UInt64,
+        queryFingerprint: ByteString,
+        authorization: AuthorizationContext,
         snapshotStore: DatabaseQuerySnapshotStore,
-        reservation: DatabaseQuerySnapshotStore.WriteReservation,
-        initialPayloadBytes: UInt64,
         workMeter: DatabaseWorkMeter
     ) throws {
-        self.compositionID = compositionID
-        self.compositionGeneration = compositionGeneration
-        self.baseIDs = baseIDs
+        self.composition = composition
+        self.basePlacementGenerations = basePlacementGenerations
+        self.schemaGeneration = schemaGeneration
         self.consistency = consistency
         self.pageLimit = pageLimit
         self.maximumIntermediateBytes = maximumIntermediateBytes
+        self.queryFingerprint = queryFingerprint
+        self.authorization = authorization
         self.snapshotStore = snapshotStore
-        self.writeReservation = reservation
-        self.totalPayloadBytes = initialPayloadBytes
         self.workMeter = workMeter
         self.footprintMeter = try DatabaseRDFExecutionFootprintMeter.make(
             workMeter: workMeter,
@@ -195,20 +202,27 @@ actor DatabaseCompositionRDFResultBuilder {
     }
 
     private func makeRoomForAdditionalQuad() async throws {
-        guard let writeReservation else {
-            throw DatabaseQueryExecutionError.querySnapshotCorrupted
-        }
         if firstPageBuffer == nil {
+            let writeReservation = try await snapshotStore.beginWrite(
+                composition: composition,
+                basePlacementGenerations: basePlacementGenerations,
+                schemaGeneration: schemaGeneration,
+                queryFingerprint: queryFingerprint,
+                authorization: authorization
+            )
+            self.writeReservation = writeReservation
             let pageID = try await snapshotStore.reservePage(
                 in: writeReservation
             )
             firstContinuationPageID = pageID
             currentPageID = pageID
-            firstPageBuffer = currentPageBuffer
+            var outputPageBuffer = currentPageBuffer
+            outputPageBuffer.promoteToOutput()
+            firstPageBuffer = outputPageBuffer
             currentPageBuffer = PageBuffer()
             return
         }
-        guard let currentPageID else {
+        guard let writeReservation, let currentPageID else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
         let nextPageID = try await snapshotStore.reservePage(
@@ -239,9 +253,7 @@ actor DatabaseCompositionRDFResultBuilder {
             quads: buffer.quads,
             continuation: continuation,
             provenance: CompositionPageProvenance(
-                compositionID: compositionID,
-                generation: compositionGeneration,
-                baseIDs: baseIDs,
+                composition: composition,
                 origins: buffer.origins
             ),
             consistency: consistency

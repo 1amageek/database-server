@@ -1,33 +1,22 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
-import DatabaseCommandOperations
-import DatabaseOperationCore
 #if DATABASE_SERVER_MULTIPLE_BASES
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import StorageKit
 
-/// Read-only execution boundary fixed to one persisted Composition.
+/// Server adapter state fixed to one semantic Composition selection.
 package final class CompositionReadExecutor: Sendable {
-    package let compositionID: Base.Composition.ID
-    package let authorization: AuthorizationContext
+    package let selection: CompositionSelection
+    package let dataSource: CompositionDataSource
     private let container: DBContainer
-    private let source: CompositionDataSource
 
     package init(
-        compositionID: Base.Composition.ID,
+        selection: CompositionSelection,
         container: DBContainer,
-        authorization: AuthorizationContext,
-        source: CompositionDataSource
+        dataSource: CompositionDataSource
     ) {
-        self.compositionID = compositionID
+        self.selection = selection
         self.container = container
-        self.authorization = authorization
-        self.source = source
+        self.dataSource = dataSource
     }
 
     package var monotonicClock: any StorageMonotonicClock {
@@ -44,42 +33,16 @@ package final class CompositionReadExecutor: Sendable {
     }
 
     package func acquireReadLease() async throws -> DatabaseCompositionLease {
-        try await source.acquireReadLease()
+        try await dataSource.acquireReadLease()
     }
 
-    package func resolve() async throws -> DatabaseCompositionRecord {
-        try await source.resolve()
-    }
-
-    package func withReadSnapshot<Result: Sendable>(
-        _ operation: @escaping @Sendable (
-            DatabaseCompositionReadSnapshot
-        ) async throws -> Result
-    ) async throws -> Result {
-        try await source.withReadSnapshot(operation)
-    }
-
-    package func withMemberContext<Result: Sendable>(
-        _ member: DatabaseBaseLease,
-        in snapshot: DatabaseCompositionReadSnapshot,
-        _ operation: @Sendable @escaping (
-            DatabaseContext
-        ) async throws -> Result
-    ) async throws -> Result {
-        guard snapshot.lease.record.composition.id == compositionID,
-              snapshot.lease.members.contains(where: { $0 === member }) else {
-            throw DatabaseCompositionAccessError.unavailable(compositionID)
+    package func resolveNamedRecord() async throws
+        -> DatabaseCompositionRecord {
+        let lease = try await acquireReadLease()
+        guard let record = lease.namedRecord else {
+            throw DatabaseCompositionAccessError.unavailable(selection)
         }
-        return try await container.executionWithBaseLease(member) {
-            let context = container.session(
-                authorization: authorization
-            ).base(member.baseID).newContext()
-            return try await RequestAuthorization.$context.withValue(
-                authorization
-            ) {
-                try await operation(context)
-            }
-        }
+        return record
     }
 }
 

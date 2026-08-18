@@ -530,23 +530,13 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         #if DATABASE_SERVER_MULTIPLE_BASES
         switch context.target {
         case .database:
-            #if DATABASE_SERVER_MULTIPLE_BASES
             return try await context.requireControlExecutor().withTransaction(
                 requiredAccess: context.requirement.access,
                 configuration: configuration,
                 executionDeadline: executionDeadline,
                 operation
             )
-            #else
-            return try await context.requireDataExecutor().withDataTransaction(
-                requiredAccess: context.requirement.access,
-                configuration: configuration,
-                executionDeadline: executionDeadline,
-                operation
-            )
-            #endif
         case .base:
-            #if DATABASE_SERVER_MULTIPLE_BASES
             if context.requirement.baseAdmission == .administration
                 || context.requirement.baseAdmission == .lifecycleJob {
                 return try await context.requireBaseExecutor()
@@ -564,9 +554,6 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 executionDeadline: executionDeadline,
                 operation
             )
-            #else
-            throw DatabaseOperationError.targetKindNotAccepted(context.target)
-            #endif
         case .composition:
             throw DatabaseOperationError.targetKindNotAccepted(context.target)
         }

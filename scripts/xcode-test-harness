@@ -108,7 +108,7 @@ case "$TEST_TRAITS" in
     default_expected_test_count=279
     ;;
   "MultipleBases")
-    default_expected_test_count=302
+    default_expected_test_count=305
     ;;
   *)
     echo "error: DATABASE_SERVER_TEST_TRAITS must be empty or MultipleBases" >&2

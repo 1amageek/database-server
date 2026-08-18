@@ -104,7 +104,6 @@ public final class DatabasePersistentJobService:
                 )
             }
         case .base:
-            #if DATABASE_SERVER_MULTIPLE_BASES
             let executor = try context.requireBaseExecutor()
             let baseAdmission = try baseAdmission(for: request.operation)
             guard context.requirement.baseAdmission == baseAdmission else {
@@ -153,9 +152,6 @@ public final class DatabasePersistentJobService:
                         response: JobStartOperation.Response(job: job)
                     )
                 }
-            #else
-            throw DatabaseJobRuntimeError.invalidTarget
-            #endif
         case .composition:
             throw DatabaseJobRuntimeError.invalidTarget
         }
@@ -538,7 +534,6 @@ public final class DatabasePersistentJobService:
                 )
             }
         case .base:
-            #if DATABASE_SERVER_MULTIPLE_BASES
             coordinated = try await coordinator
                 .executeControlMetadataAfterTargetAuthorization(
                     operation: JobCancelOperation.identifier,
@@ -553,9 +548,6 @@ public final class DatabasePersistentJobService:
                         response: response
                     )
                 }
-            #else
-            throw DatabaseJobRuntimeError.invalidTarget
-            #endif
         case .composition:
             throw DatabaseJobRuntimeError.invalidTarget
         }
@@ -616,7 +608,6 @@ public final class DatabasePersistentJobService:
                 configuration: .readOnly
             ) { _ in () }
         case .base(let baseID):
-            #if DATABASE_SERVER_MULTIPLE_BASES
             let executor = try context.requireBaseExecutor()
             guard executor.baseID == baseID else {
                 throw DatabaseJobRuntimeError.invalidTarget
@@ -633,10 +624,6 @@ public final class DatabasePersistentJobService:
                     throw error
                 }
             }
-            #else
-            _ = baseID
-            throw DatabaseJobRuntimeError.invalidTarget
-            #endif
         case .composition:
             throw DatabaseJobRuntimeError.invalidTarget
         }
@@ -726,7 +713,6 @@ public final class DatabasePersistentJobService:
             ),
             authorization: authorization,
             requestPayload: [],
-            requestDigest: snapshot.specification.requestDigest,
             wireLimits: wireLimits
         )
     }
@@ -749,7 +735,6 @@ public final class DatabasePersistentJobService:
             ),
             authorization: authorization,
             requestPayload: [],
-            requestDigest: snapshot.specification.requestDigest,
             wireLimits: wireLimits
         )
     }

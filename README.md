@@ -244,7 +244,7 @@ products before its isolated `test-without-building` run.
 
 The strict harness requires 279 logical tests for the standard graph. Set
 `DATABASE_SERVER_TEST_TRAITS=MultipleBases` to select that trait in an isolated
-source copy and require 302 tests. Both graphs require zero failures, zero
+source copy and require 305 tests. Both graphs require zero failures, zero
 skips, zero expected failures, zero runtime warnings, and no internal tool
 errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap

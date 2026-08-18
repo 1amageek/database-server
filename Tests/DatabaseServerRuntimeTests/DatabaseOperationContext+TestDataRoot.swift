@@ -30,7 +30,6 @@ extension DatabaseOperationContext {
         authorization: AuthorizationContext = TestBaseEnvironment.authorization,
         jobAuthorizationReference: DatabaseJobAuthorizationReference? = nil,
         requestPayload: ByteString = [],
-        requestDigest: ByteString? = nil,
         dataContext: DatabaseContext? = nil,
         wireLimits: DatabaseWireLimits = .default
     ) -> DatabaseOperationContext {
@@ -42,7 +41,6 @@ extension DatabaseOperationContext {
             authorization: authorization,
             jobAuthorizationReference: jobAuthorizationReference,
             requestPayload: requestPayload,
-            requestDigest: requestDigest,
             dataContext: dataContext,
             wireLimits: wireLimits
         )
@@ -56,7 +54,6 @@ extension DatabaseOperationContext {
         authorization: AuthorizationContext = TestBaseEnvironment.authorization,
         jobAuthorizationReference: DatabaseJobAuthorizationReference? = nil,
         requestPayload: ByteString = [],
-        requestDigest: ByteString? = nil,
         dataContext: DatabaseContext? = nil,
         wireLimits: DatabaseWireLimits = .default
     ) -> DatabaseOperationContext {
@@ -73,7 +70,6 @@ extension DatabaseOperationContext {
             authorization: authorization,
             jobAuthorizationReference: jobAuthorizationReference,
             requestPayload: requestPayload,
-            requestDigest: requestDigest,
             wireLimits: wireLimits
         )
 #else
@@ -86,7 +82,6 @@ extension DatabaseOperationContext {
             authorization: authorization,
             jobAuthorizationReference: jobAuthorizationReference,
             requestPayload: requestPayload,
-            requestDigest: requestDigest,
             wireLimits: wireLimits
         )
 #endif

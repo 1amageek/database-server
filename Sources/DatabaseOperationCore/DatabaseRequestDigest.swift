@@ -18,18 +18,39 @@ public enum DatabaseRequestDigest {
         switch target {
         case .database:
             accumulator.update(bigEndian: 0)
-        #if DATABASE_SERVER_MULTIPLE_BASES
         case .base(let baseID):
             accumulator.update(bigEndian: 1)
             accumulator.update(bigEndian: UInt64(baseID.value.utf8.count))
             accumulator.update(utf8: baseID.value)
-        case .composition(let compositionID):
+        case .composition(let selection):
             accumulator.update(bigEndian: 2)
-            accumulator.update(
-                bigEndian: UInt64(compositionID.value.utf8.count)
-            )
-            accumulator.update(utf8: compositionID.value)
-        #endif
+            switch selection.kind {
+            case .named:
+                accumulator.update(bigEndian: 0)
+                guard let id = selection.namedID else {
+                    preconditionFailure(
+                        "Named Composition selection is missing its identifier"
+                    )
+                }
+                accumulator.update(
+                    bigEndian: UInt64(id.value.utf8.count)
+                )
+                accumulator.update(utf8: id.value)
+            case .derived:
+                accumulator.update(bigEndian: 1)
+                guard let bases = selection.bases else {
+                    preconditionFailure(
+                        "Derived Composition selection is missing its Bases"
+                    )
+                }
+                accumulator.update(bigEndian: UInt64(bases.count))
+                for baseID in bases {
+                    accumulator.update(
+                        bigEndian: UInt64(baseID.value.utf8.count)
+                    )
+                    accumulator.update(utf8: baseID.value)
+                }
+            }
         }
         accumulator.update(prefix)
         accumulator.update(payload)

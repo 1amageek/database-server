@@ -59,6 +59,63 @@ struct DatabaseCompositionQueryTests {
         #expect(second.continuation == nil)
     }
 
+    @Test("Composition page size is bounded before snapshot publication")
+    func pageLimitIsBoundedByMaximumRows() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        try await seed(fixture)
+        let budget = ExecutionBudget(maximumRows: 2)
+
+        let first = try await successfulPage(
+            request(pageLimit: 10, budget: budget),
+            requestID: 3,
+            fixture: fixture
+        )
+        #expect(try priorities(first) == [1, 2])
+        let continuation = try #require(first.continuation)
+
+        let second = try await successfulPage(
+            request(
+                pageLimit: 10,
+                continuation: continuation,
+                budget: budget
+            ),
+            requestID: 4,
+            fixture: fixture
+        )
+        #expect(try priorities(second) == [3, 4])
+        #expect(second.continuation == nil)
+    }
+
+    @Test("derived Composition executes remotely without a catalog identity")
+    func derivedCompositionHasNoSyntheticIdentity() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        try await seed(fixture)
+        let selection = try CompositionSelection.derived([
+            fixture.secondaryBaseID,
+            fixture.primaryBaseID,
+        ])
+
+        let page = try await successfulPage(
+            request(pageLimit: 4),
+            requestID: 5,
+            fixture: fixture,
+            selection: selection
+        )
+        #expect(try priorities(page) == [1, 2, 3, 4])
+        let provenance = try #require(page.provenance)
+        #expect(provenance.composition.kind == .derived)
+        #expect(provenance.composition.namedID == nil)
+        #expect(provenance.composition.generation == nil)
+        #expect(
+            provenance.composition.bases == [
+                fixture.primaryBaseID,
+                fixture.secondaryBaseID,
+            ].sorted()
+        )
+    }
+
     @Test("joins execute independently inside every member Base")
     func baseLocalJoinIsSupported() async throws {
         let fixture = try await makeFixture()
@@ -136,6 +193,92 @@ struct DatabaseCompositionQueryTests {
         #expect(try origins.next() == nil)
     }
 
+    @Test("explicit cross-Base INNER JOIN uses framework semantics")
+    func crossBaseInnerJoinIsAdaptedWithoutServerPlanning() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        try await insert(
+            [("shared", 1)],
+            into: fixture.primaryBaseID,
+            container: fixture.container
+        )
+        try await insert(
+            [("shared", 2)],
+            into: fixture.secondaryBaseID,
+            container: fixture.container
+        )
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(
+                    .column(ColumnRef(table: "lhs", column: "priority")),
+                    alias: "leftPriority"
+                ),
+                ProjectionItem(
+                    .column(ColumnRef(table: "rhs", column: "priority")),
+                    alias: "rightPriority"
+                ),
+            ]),
+            source: .join(
+                JoinClause(
+                    type: .inner,
+                    left: .base(
+                        fixture.primaryBaseID,
+                        .table(
+                            TableRef(
+                                table: DatabaseEndpointEntity.persistableType,
+                                alias: "lhs"
+                            )
+                        )
+                    ),
+                    right: .base(
+                        fixture.secondaryBaseID,
+                        .table(
+                            TableRef(
+                                table: DatabaseEndpointEntity.persistableType,
+                                alias: "rhs"
+                            )
+                        )
+                    ),
+                    condition: .on(
+                        .equal(
+                            .column(ColumnRef(table: "lhs", column: "id")),
+                            .column(ColumnRef(table: "rhs", column: "id"))
+                        )
+                    )
+                )
+            )
+        )
+
+        let page = try await successfulPage(
+            QueryExecuteOperation.Request(
+                input: .ir(.select(query)),
+                page: QueryExecuteOperation.Page(limit: 10)
+            ),
+            requestID: 15,
+            fixture: fixture
+        )
+        let row = try #require(
+            page.materializedRows(maximumCount: 1).first
+        )
+        #expect(
+            try value("leftPriority", row: row, page: page) == .int64(1)
+        )
+        #expect(
+            try value("rightPriority", row: row, page: page) == .int64(2)
+        )
+        let provenance = try #require(page.provenance)
+        var origins = provenance.makeOriginIterator()
+        #expect(
+            try origins.next() == .derived(
+                contributors: [
+                    fixture.primaryBaseID,
+                    fixture.secondaryBaseID,
+                ].sorted()
+            )
+        )
+        #expect(try origins.next() == nil)
+    }
+
     @Test("a Composition generation change makes a continuation stale")
     func generationChangeInvalidatesContinuation() async throws {
         let fixture = try await makeFixture()
@@ -168,6 +311,58 @@ struct DatabaseCompositionQueryTests {
         )
         #expect(error.category == .conflict)
         #expect(error.code == "QUERY_SNAPSHOT_STALE")
+    }
+
+    @Test("a member Base placement change makes a derived continuation stale")
+    func basePlacementChangeInvalidatesDerivedContinuation() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        try await seed(fixture)
+        let selection = try CompositionSelection.derived([
+            fixture.primaryBaseID,
+            fixture.secondaryBaseID,
+        ])
+        let firstRequest = request(pageLimit: 1)
+        let first = try await successfulPage(
+            firstRequest,
+            requestID: 22,
+            fixture: fixture,
+            selection: selection
+        )
+        let continuation = try #require(first.continuation)
+        guard case .ir(.select(let query)) = firstRequest.input else {
+            throw TestFailure.unexpectedResponse
+        }
+        let lease = try await fixture.container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).composition(selection).acquireReadLease()
+        var changedGenerations = lease.basePlacementGenerations
+        let currentGeneration = try #require(
+            changedGenerations[fixture.primaryBaseID]
+        )
+        changedGenerations[fixture.primaryBaseID] = currentGeneration + 1
+
+        do {
+            _ = try await fixture.snapshotStore.load(
+                continuation: continuation,
+                composition: lease.resolution,
+                basePlacementGenerations: changedGenerations,
+                schemaGeneration: fixture.container.schemaGeneration,
+                queryFingerprint: try DatabaseQuerySnapshotStore
+                    .queryFingerprint(
+                        query: query,
+                        request: firstRequest,
+                        limits: .default
+                    ),
+                authorization: TestBaseEnvironment.authorization
+            )
+            Issue.record("Expected the changed Base generation to be stale")
+        } catch let error as DatabaseQueryExecutionError {
+            guard case .querySnapshotStale = error else {
+                Issue.record("Expected querySnapshotStale, got \(error)")
+                return
+            }
+        }
     }
 
     @Test("decomposable aggregates reduce across every member Base")
@@ -411,97 +606,6 @@ struct DatabaseCompositionQueryTests {
         }
     }
 
-    @Test("DISTINCT compares exact identity after a digest collision")
-    func distinctDigestCollisionUsesExactIdentity() async throws {
-        let fixture = try await makeFixture()
-        defer { await fixture.container.shutdown() }
-        let reservation = try await fixture.snapshotStore.beginWrite(
-            compositionID: fixture.compositionID,
-            compositionGeneration: 1,
-            schemaGeneration: 1,
-            queryFingerprint: ByteString(repeating: 0x71, count: 32),
-            authorization: TestBaseEnvironment.authorization
-        )
-        let workMeter = DatabaseWorkMeter(
-            budget: ExecutionBudget(
-                maximumRows: 100,
-                maximumWorkUnits: 100_000,
-                maximumIntermediateRows: 16,
-                maximumIntermediateBytes: 1 * 1_024 * 1_024,
-                timeoutMilliseconds: 30_000
-            ),
-            monotonicClock: TestProcessMonotonicClock()
-        )
-        let spill = DatabaseCompositionDistinctSpill(
-            snapshotStore: fixture.snapshotStore,
-            reservation: reservation,
-            maximumIntermediateBytes: 1 * 1_024 * 1_024,
-            workMeter: workMeter,
-            identityFingerprint: { _ in
-                ByteString(repeating: 0x42, count: 32)
-            }
-        )
-        let output = Mutex<[DatabaseCompositionDistinctSpill.Result]>([])
-
-        do {
-            try await spill.insert(
-                DatabaseEngine.QueryRow(
-                    fields: ["priority": .int64(1)],
-                    annotations: ["representative": .string("first")],
-                    version: PersistableVersionToken("version-1")
-                ),
-                origin: .source(fixture.primaryBaseID),
-                sequence: 0
-            )
-            try await spill.insert(
-                DatabaseEngine.QueryRow(
-                    fields: ["priority": .int64(2)]
-                ),
-                origin: .source(fixture.secondaryBaseID),
-                sequence: 1
-            )
-            try await spill.insert(
-                DatabaseEngine.QueryRow(
-                    fields: ["priority": .int64(1)],
-                    annotations: ["representative": .string("later")],
-                    version: PersistableVersionToken("version-2")
-                ),
-                origin: .source(fixture.secondaryBaseID),
-                sequence: 2
-            )
-            try await spill.forEachResult(batchSize: 1) { result in
-                output.withLock { $0.append(result) }
-                return true
-            }
-        } catch {
-            do {
-                try await fixture.snapshotStore.abortWrite(reservation)
-            } catch let cleanupError {
-                Issue.record("DISTINCT workspace cleanup failed: \(cleanupError)")
-            }
-            throw error
-        }
-        try await fixture.snapshotStore.abortWrite(reservation)
-
-        let results = output.withLock { $0 }
-        #expect(results.count == 2)
-        #expect(results[0].row.fields["priority"] == .int64(1))
-        #expect(
-            results[0].origin == .derived(
-                contributors: [
-                    fixture.primaryBaseID,
-                    fixture.secondaryBaseID,
-                ].sorted()
-            )
-        )
-        #expect(
-            results[0].row.annotations["representative"]
-                == .string("first")
-        )
-        #expect(results[0].row.version?.value == "version-1")
-        #expect(results[1].row.fields["priority"] == .int64(2))
-    }
-
     #if DATABASE_OPERATIONS_TEST_VECTOR_INDEXES
     @Test("vector search merges one comparable score contract globally")
     func vectorSearchMergesGlobally() async throws {
@@ -736,6 +840,14 @@ struct DatabaseCompositionQueryTests {
                     object: .variable("object")
                 ),
             ])
+        )
+        let localResult = try await fixture.container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).composition(fixture.compositionID).ask(matching)
+        #expect(localResult.value)
+        #expect(
+            localResult.origin
+                == .derived(contributors: [fixture.secondaryBaseID])
         )
         let matchingResponse = try await invoke(
             QueryExecuteOperation.Request(
@@ -1535,12 +1647,14 @@ struct DatabaseCompositionQueryTests {
     private func successfulPage(
         _ request: QueryExecuteOperation.Request,
         requestID: UInt64,
-        fixture: Fixture
+        fixture: Fixture,
+        selection: CompositionSelection? = nil
     ) async throws -> QueryRowPage {
         let response = try await invoke(
             request,
             requestID: requestID,
-            fixture: fixture
+            fixture: fixture,
+            selection: selection
         )
         switch response {
         case .success(.rows(let page)):
@@ -1576,7 +1690,8 @@ struct DatabaseCompositionQueryTests {
     private func invoke(
         _ request: QueryExecuteOperation.Request,
         requestID: UInt64,
-        fixture: Fixture
+        fixture: Fixture,
+        selection: CompositionSelection? = nil
     ) async throws -> Result<
         QueryExecuteOperation.Response,
         RemoteOperationError
@@ -1584,7 +1699,9 @@ struct DatabaseCompositionQueryTests {
         let bytes = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperationCatalog.queryExecute,
             requestID: requestID,
-            target: .composition(fixture.compositionID),
+            target: .composition(
+                selection ?? .named(fixture.compositionID)
+            ),
             request: request
         )
         return try DatabaseWireDecoder().decodeResponse(

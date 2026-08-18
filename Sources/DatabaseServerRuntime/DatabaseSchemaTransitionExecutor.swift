@@ -43,20 +43,12 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
                 let context = self.container.makeExecutionContext(
                     authorization: self.authorization
                 )
-                #if DATABASE_SERVER_MULTIPLE_BASES
                 let executor = DatabaseDataOperationExecutor(
                     resource: .database,
                     container: self.container,
                     authorization: self.authorization,
                     dataContext: context
                 )
-                #else
-                let executor = DatabaseDataOperationExecutor(
-                    container: self.container,
-                    authorization: self.authorization,
-                    dataContext: context
-                )
-                #endif
                 return try await operation(executor)
             }
         case .base(let id):

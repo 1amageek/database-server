@@ -30,14 +30,10 @@ public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
     public func requirement(
         for request: GrantExecuteOperation.Request
     ) throws -> DatabaseOperationRequirement {
-        #if DATABASE_SERVER_MULTIPLE_BASES
         let acceptedTargets: DatabaseOperationTargetKinds = [
             .database,
             .base,
         ]
-        #else
-        let acceptedTargets: DatabaseOperationTargetKinds = .database
-        #endif
         let access: Security.Access
         let transaction: DatabaseOperationTransactionKind
         switch request.invocation {
@@ -184,7 +180,6 @@ public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
                 )
             }
         case .base:
-            #if DATABASE_SERVER_MULTIPLE_BASES
             let executor = try context.requireBaseExecutor()
             return try await executor.withAdministrationTransaction(
                 requiredAccess: requiredAccess,
@@ -192,9 +187,6 @@ public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
             ) { transaction in
                 try await operation(try executor.grantStore(), transaction)
             }
-            #else
-            throw DatabaseAdministrationError.targetMismatch(context.target)
-            #endif
         case .composition:
             throw DatabaseAdministrationError.targetMismatch(context.target)
         }
@@ -207,11 +199,7 @@ public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
         case .database:
             return try context.requireControlExecutor().grantStore
         case .base:
-            #if DATABASE_SERVER_MULTIPLE_BASES
             return try context.requireBaseExecutor().grantStore()
-            #else
-            throw DatabaseAdministrationError.targetMismatch(context.target)
-            #endif
         case .composition:
             throw DatabaseAdministrationError.targetMismatch(context.target)
         }

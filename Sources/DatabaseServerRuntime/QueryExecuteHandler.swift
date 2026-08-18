@@ -11,6 +11,9 @@ import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import DatabaseKit
 import StorageKit
+#if DATABASE_OPERATIONS_GRAPH_INDEXES && DATABASE_SERVER_MULTIPLE_BASES
+@_spi(DatabaseExecution) import GraphIndex
+#endif
 
 #if DATABASE_SERVER_MULTIPLE_BASES
 private typealias DatabaseQueryBooleanResponse = QueryBooleanResult
@@ -211,7 +214,9 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 let lease = try await source.acquireReadLease()
                 let page = try await querySnapshotStore.load(
                     continuation: continuation,
-                    composition: lease.record,
+                    composition: lease.resolution,
+                    basePlacementGenerations: lease
+                        .basePlacementGenerations,
                     schemaGeneration: context.executor.schemaGeneration,
                     queryFingerprint: queryFingerprint,
                     authorization: context.authorization
@@ -219,7 +224,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 try Self.recordOutput(page, workMeter: workMeter)
                 return page
             }
-            let page = try await DatabaseCompositionQueryPlanner(
+            let page = try await DatabaseCompositionQueryAdapter(
                 structuralLimits: structuralLimits
             ).execute(
                 query,
@@ -513,7 +518,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
 
     #if DATABASE_OPERATIONS_GRAPH_INDEXES && DATABASE_SERVER_MULTIPLE_BASES
     private func executeCompositionRDFGraph(
-        _ statement: DatabaseCompositionRDFQueryPlanner.Statement,
+        _ statement: DatabaseCompositionRDFQueryAdapter.Statement,
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter,
@@ -535,7 +540,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             let lease = try await source.acquireReadLease()
             let page = try await querySnapshotStore.loadRDFGraph(
                 continuation: continuation,
-                composition: lease.record,
+                composition: lease.resolution,
+                basePlacementGenerations: lease.basePlacementGenerations,
                 schemaGeneration: context.executor.schemaGeneration,
                 queryFingerprint: queryFingerprint,
                 authorization: context.authorization
@@ -543,7 +549,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             try Self.recordOutput(page, workMeter: workMeter)
             return page
         }
-        let page = try await DatabaseCompositionRDFQueryPlanner(
+        let page = try await DatabaseCompositionRDFQueryAdapter(
             structuralLimits: structuralLimits
         ).execute(
             statement,
@@ -570,59 +576,42 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         guard request.page.continuation == nil else {
             throw DatabaseQueryExecutionError.continuationNotSupported("ASK")
         }
+        #if DATABASE_SERVER_MULTIPLE_BASES
+        if case .composition = context.target {
+            let source = try context.requireCompositionExecutor()
+            let result: CompositionAskResult
+            do {
+                result = try await CompositionRDFQueryPlanner().executeAsk(
+                    query,
+                    source: source.dataSource,
+                    graphPartitions: request.graphPartitions,
+                    readContext: ReadExecutionContext(
+                        options: ReadExecutionOptions(budget: request.budget),
+                        monotonicClock: context.executor.monotonicClock,
+                        workMeter: workMeter,
+                        queryStructuralLimits: structuralLimits
+                    )
+                )
+            } catch let error as CompositionQueryError {
+                throw mapCompositionError(error)
+            }
+            try workMeter.recordOutputRows(1)
+            return try QueryBooleanResult(
+                value: result.value,
+                provenance: CompositionPageProvenance(
+                    composition: result.metadata.composition,
+                    origins: [result.origin]
+                ),
+                consistency: result.metadata.consistency
+            )
+        }
+        #endif
         guard let executor = context.executor.runtimeConfiguration
             .logicalSourceExecutors.sparqlExecutor else {
             throw CanonicalReadError.unsupportedSource(
                 "SPARQL source executor is not registered"
             )
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
-        if case .composition = context.target {
-            try DatabaseCompositionSPARQLPlanValidator.validate(query)
-            let source = try context.requireCompositionExecutor()
-            let result = try await source.withReadSnapshot { snapshot in
-                var matchingBases: [Base.ID] = []
-                matchingBases.reserveCapacity(snapshot.lease.members.count)
-                let options = ReadExecutionContext(
-                    options: ReadExecutionOptions(budget: request.budget),
-                    monotonicClock: context.executor.monotonicClock,
-                    workMeter: workMeter,
-                    queryStructuralLimits: structuralLimits
-                )
-                for member in snapshot.lease.members {
-                    let transaction = try snapshot.transaction(for: member)
-                    let matched = try await source.withMemberContext(
-                        member,
-                        in: snapshot
-                    ) { databaseContext in
-                        try await executor.executeAskInTransaction(
-                            context: databaseContext,
-                            askQuery: query,
-                            options: options,
-                            partitions: request.graphPartitions,
-                            transaction: transaction
-                        )
-                    }
-                    if matched { matchingBases.append(member.baseID) }
-                }
-                let contributors = matchingBases.isEmpty
-                    ? snapshot.lease.record.composition.bases
-                    : matchingBases
-                return try QueryBooleanResult(
-                    value: !matchingBases.isEmpty,
-                    provenance: CompositionPageProvenance(
-                        compositionID: snapshot.lease.record.composition.id,
-                        generation: snapshot.lease.record.generation,
-                        baseIDs: snapshot.lease.record.composition.bases,
-                        origins: [.derived(contributors: contributors)]
-                    ),
-                    consistency: .federated(try await snapshot.readPoints())
-                )
-            }
-            try workMeter.recordOutputRows(1)
-            return result
-        }
-        #endif
         let databaseContext = try context.requireDataContext()
         let lease = try databaseContext.executionStorage()
         let response = try await databaseContext.executeCanonicalRead {
@@ -672,6 +661,23 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         }
         try workMeter.recordOutputRows(quadCount)
     }
+
+    #if DATABASE_SERVER_MULTIPLE_BASES
+    private static func mapCompositionError(
+        _ error: CompositionQueryError
+    ) -> DatabaseQueryExecutionError {
+        switch error {
+        case .unsupportedPlan(let reason):
+            return .compositionPlanUnsupported(reason)
+        case .aggregateFailure(let reason):
+            return .compositionAggregateFailure(reason)
+        case .invalidExecutionConfiguration(let reason):
+            return .compositionPlanUnsupported(reason)
+        case .workspaceCorrupted:
+            return .querySnapshotCorrupted
+        }
+    }
+    #endif
 
     #endif
 

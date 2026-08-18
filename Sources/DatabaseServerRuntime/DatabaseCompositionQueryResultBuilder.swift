@@ -68,10 +68,9 @@ actor DatabaseCompositionQueryResultBuilder {
         case aborted
     }
 
-    private let compositionID: Base.Composition.ID
-    private let compositionGeneration: UInt64
+    private let composition: CompositionResolution
+    private let basePlacementGenerations: [Base.ID: UInt64]
     private let schemaGeneration: UInt64
-    private let baseIDs: [Base.ID]
     private let consistency: DatabaseKit.DatabaseReadConsistency
     private let pageLimit: Int
     private let queryFingerprint: ByteString
@@ -93,33 +92,26 @@ actor DatabaseCompositionQueryResultBuilder {
     private var totalPayloadBytes: UInt64 = 0
 
     init(
-        compositionID: Base.Composition.ID,
-        compositionGeneration: UInt64,
+        composition: CompositionResolution,
+        basePlacementGenerations: [Base.ID: UInt64],
         schemaGeneration: UInt64,
-        baseIDs: [Base.ID],
         consistency: DatabaseKit.DatabaseReadConsistency,
         pageLimit: Int,
         queryFingerprint: ByteString,
         authorization: AuthorizationContext,
         maximumIntermediateBytes: UInt64,
         snapshotStore: DatabaseQuerySnapshotStore?,
-        initialWriteReservation:
-            DatabaseQuerySnapshotStore.WriteReservation? = nil,
-        initialPayloadBytes: UInt64 = 0,
         workMeter: DatabaseWorkMeter
     ) {
-        self.compositionID = compositionID
-        self.compositionGeneration = compositionGeneration
+        self.composition = composition
+        self.basePlacementGenerations = basePlacementGenerations
         self.schemaGeneration = schemaGeneration
-        self.baseIDs = baseIDs
         self.consistency = consistency
         self.pageLimit = pageLimit
         self.queryFingerprint = queryFingerprint
         self.authorization = authorization
         self.maximumIntermediateBytes = maximumIntermediateBytes
         self.snapshotStore = snapshotStore
-        self.writeReservation = initialWriteReservation
-        self.totalPayloadBytes = initialPayloadBytes
         self.workMeter = workMeter
     }
 
@@ -161,31 +153,6 @@ actor DatabaseCompositionQueryResultBuilder {
             footprint: footprint,
             workMeter: workMeter
         )
-    }
-
-    func adoptWorkspace(
-        _ reservation: DatabaseQuerySnapshotStore.WriteReservation
-    ) throws {
-        guard state == .accumulating,
-              writeReservation == nil,
-              firstPageBuffer == nil,
-              currentPageBuffer.count == 0,
-              totalPayloadBytes == 0 else {
-            throw DatabaseQueryExecutionError.querySnapshotCorrupted
-        }
-        writeReservation = reservation
-    }
-
-    func accountWorkspacePayloadBytes(_ byteCount: UInt64) throws {
-        guard state == .accumulating,
-              writeReservation != nil,
-              firstPageBuffer == nil,
-              currentPageBuffer.count == 0,
-              totalPayloadBytes == 0,
-              byteCount <= maximumIntermediateBytes else {
-            throw DatabaseQueryExecutionError.querySnapshotCorrupted
-        }
-        totalPayloadBytes = byteCount
     }
 
     func finish() async throws -> QueryRowPage {
@@ -266,19 +233,21 @@ actor DatabaseCompositionQueryResultBuilder {
             )
         }
         if firstPageBuffer == nil {
-            let reservation = if let writeReservation {
-                writeReservation
+            let reservation: DatabaseQuerySnapshotStore.WriteReservation
+            if let writeReservation {
+                reservation = writeReservation
             } else {
-                try await snapshotStore.beginWrite(
-                compositionID: compositionID,
-                compositionGeneration: compositionGeneration,
-                schemaGeneration: schemaGeneration,
-                queryFingerprint: queryFingerprint,
-                authorization: authorization
+                let newReservation = try await snapshotStore.beginWrite(
+                    composition: composition,
+                    basePlacementGenerations: basePlacementGenerations,
+                    schemaGeneration: schemaGeneration,
+                    queryFingerprint: queryFingerprint,
+                    authorization: authorization
                 )
+                self.writeReservation = newReservation
+                reservation = newReservation
             }
             let pageID = try await snapshotStore.reservePage(in: reservation)
-            writeReservation = reservation
             firstContinuationPageID = pageID
             currentPageID = pageID
             var outputPageBuffer = currentPageBuffer
@@ -315,9 +284,7 @@ actor DatabaseCompositionQueryResultBuilder {
         continuation: ByteString?
     ) throws -> QueryRowPage {
         let provenance = try CompositionPageProvenance(
-            compositionID: compositionID,
-            generation: compositionGeneration,
-            baseIDs: baseIDs,
+            composition: composition,
             origins: buffer.origins
         )
         return try QueryRowPage(

@@ -176,7 +176,6 @@ package final class DatabaseOperationDispatcher: Sendable {
                 requirement: prepared.requirement,
                 wireLimits: wireLimits
             )
-            #if DATABASE_SERVER_MULTIPLE_BASES
             return try await container.withExecutionDataRoot {
                 try await self.invoke(
                     prepared,
@@ -184,15 +183,7 @@ package final class DatabaseOperationDispatcher: Sendable {
                     context: context
                 )
             }
-            #else
-            return try await invoke(
-                prepared,
-                request: request,
-                context: context
-            )
-            #endif
         case .base(let baseID):
-            #if DATABASE_SERVER_MULTIPLE_BASES
             let lease: DatabaseBaseLease
             do {
                 lease = try container.executionAcquireBaseLease(
@@ -246,14 +237,10 @@ package final class DatabaseOperationDispatcher: Sendable {
                     context: context
                 )
             }
-            #else
-            _ = baseID
-            throw DatabaseOperationError.targetKindNotAccepted(request.target)
-            #endif
-        case .composition(let compositionID):
+        case .composition(let selection):
             let source = container.session(
                 authorization: executionContext.authorization
-            ).composition(compositionID)
+            ).composition(selection)
             let context = makeCompositionContext(
                 request: request,
                 executionContext: executionContext,

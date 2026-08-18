@@ -24,16 +24,30 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     #if DATABASE_SERVER_MULTIPLE_BASES
     fileprivate enum Target: Sendable, Equatable {
         case resource(Security.Resource, generation: UInt64)
-        case composition(Base.Composition.ID, generation: UInt64)
+        case composition(
+            CompositionResolution,
+            basePlacementGenerations: [Base.ID: UInt64]
+        )
 
         func hasSameIdentity(as other: Self) -> Bool {
             switch (self, other) {
             case (.resource(let lhs, _), .resource(let rhs, _)):
-                lhs == rhs
+                return lhs == rhs
             case (.composition(let lhs, _), .composition(let rhs, _)):
-                lhs == rhs
+                switch (lhs.kind, rhs.kind) {
+                case (.named, .named):
+                    guard let lhsID = lhs.namedID,
+                          let rhsID = rhs.namedID else {
+                        return false
+                    }
+                    return lhsID == rhsID
+                case (.derived, .derived):
+                    return lhs.bases == rhs.bases
+                default:
+                    return false
+                }
             default:
-                false
+                return false
             }
         }
 
@@ -48,10 +62,28 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                 encoder.writeUInt8(1)
                 try encoder.writeString(id.value)
                 encoder.writeUInt64(generation)
-            case .composition(let id, let generation):
+            case .composition(let composition, let baseGenerations):
                 encoder.writeUInt8(2)
-                try encoder.writeString(id.value)
-                encoder.writeUInt64(generation)
+                switch composition.kind {
+                case .named:
+                    guard let id = composition.namedID,
+                          let generation = composition.generation else {
+                        throw .invalidValue
+                    }
+                    encoder.writeUInt8(0)
+                    try encoder.writeString(id.value)
+                    encoder.writeUInt64(generation)
+                case .derived:
+                    encoder.writeUInt8(1)
+                }
+                try encoder.writeCount(composition.bases.count)
+                for baseID in composition.bases {
+                    try encoder.writeString(baseID.value)
+                    guard let generation = baseGenerations[baseID] else {
+                        throw .invalidValue
+                    }
+                    encoder.writeUInt64(generation)
+                }
             }
         }
 
@@ -70,10 +102,47 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                         generation: try decoder.readUInt64()
                     )
                 case 2:
-                    self = .composition(
-                        try Base.Composition.ID(decoder.readString()),
-                        generation: try decoder.readUInt64()
-                    )
+                    let compositionKind = try decoder.readUInt8()
+                    let id: Base.Composition.ID?
+                    let generation: UInt64?
+                    switch compositionKind {
+                    case 0:
+                        id = try Base.Composition.ID(decoder.readString())
+                        generation = try decoder.readUInt64()
+                    case 1:
+                        id = nil
+                        generation = nil
+                    default:
+                        throw StorageFrameError.invalidValue
+                    }
+                    let count = try decoder.readCount()
+                    var bases: [Base.ID] = []
+                    var baseGenerations: [Base.ID: UInt64] = [:]
+                    bases.reserveCapacity(count)
+                    baseGenerations.reserveCapacity(count)
+                    for _ in 0..<count {
+                        let baseID = try Base.ID(decoder.readString())
+                        guard baseGenerations[baseID] == nil else {
+                            throw StorageFrameError.invalidValue
+                        }
+                        bases.append(baseID)
+                        baseGenerations[baseID] = try decoder.readUInt64()
+                    }
+                    if let id, let generation {
+                        self = .composition(
+                            try .named(
+                                id: id,
+                                generation: generation,
+                                bases: bases
+                            ),
+                            basePlacementGenerations: baseGenerations
+                        )
+                    } else {
+                        self = .composition(
+                            try .derived(bases),
+                            basePlacementGenerations: baseGenerations
+                        )
+                    }
                 default:
                     throw StorageFrameError.invalidValue
                 }
@@ -85,9 +154,15 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             switch self {
             case .resource(.database, _):
                 break
-            case .resource(.base, let generation),
-                 .composition(_, let generation):
+            case .resource(.base, let generation):
                 guard generation > 0 else { throw .invalidValue }
+            case .composition(let composition, let baseGenerations):
+                guard baseGenerations.count == composition.bases.count,
+                      composition.bases.allSatisfy({
+                          baseGenerations[$0].map { $0 > 0 } == true
+                      }) else {
+                    throw .invalidValue
+                }
             }
         }
     }
@@ -571,8 +646,8 @@ package struct DatabaseQuerySnapshotStore: Sendable {
 
     #if DATABASE_SERVER_MULTIPLE_BASES
     package func beginWrite(
-        compositionID: Base.Composition.ID,
-        compositionGeneration: UInt64,
+        composition: CompositionResolution,
+        basePlacementGenerations: [Base.ID: UInt64],
         schemaGeneration: UInt64,
         queryFingerprint: ByteString,
         authorization: AuthorizationContext,
@@ -580,8 +655,8 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     ) async throws -> WriteReservation {
         try await beginWrite(
             target: .composition(
-                compositionID,
-                generation: compositionGeneration
+                composition,
+                basePlacementGenerations: basePlacementGenerations
             ),
             schemaGeneration: schemaGeneration,
             queryFingerprint: queryFingerprint,
@@ -645,9 +720,14 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         switch target {
         case .resource(.database, _):
             return true
-        case .resource(.base, let generation),
-             .composition(_, let generation):
+        case .resource(.base, let generation):
             return generation > 0
+        case .composition(let composition, let baseGenerations):
+            return !composition.bases.isEmpty
+                && baseGenerations.count == composition.bases.count
+                && composition.bases.allSatisfy {
+                    baseGenerations[$0].map { $0 > 0 } == true
+                }
         }
         #else
         guard case .database = target else { return false }
@@ -993,7 +1073,8 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     #if DATABASE_SERVER_MULTIPLE_BASES
     func load(
         continuation: ByteString,
-        composition: DatabaseCompositionRecord,
+        composition: CompositionResolution,
+        basePlacementGenerations: [Base.ID: UInt64],
         schemaGeneration: UInt64,
         queryFingerprint: ByteString,
         authorization: AuthorizationContext
@@ -1001,13 +1082,13 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         let response = try await loadResponse(
             continuation: continuation,
             target: .composition(
-                composition.composition.id,
-                generation: composition.generation
+                composition,
+                basePlacementGenerations: basePlacementGenerations
             ),
             schemaGeneration: schemaGeneration,
             queryFingerprint: queryFingerprint,
             authorization: authorization,
-            compositionBaseIDs: composition.composition.bases
+            compositionBaseIDs: composition.bases
         )
         guard case .rows(let page) = response else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
@@ -1017,7 +1098,8 @@ package struct DatabaseQuerySnapshotStore: Sendable {
 
     func loadRDFGraph(
         continuation: ByteString,
-        composition: DatabaseCompositionRecord,
+        composition: CompositionResolution,
+        basePlacementGenerations: [Base.ID: UInt64],
         schemaGeneration: UInt64,
         queryFingerprint: ByteString,
         authorization: AuthorizationContext
@@ -1025,13 +1107,13 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         let response = try await loadResponse(
             continuation: continuation,
             target: .composition(
-                composition.composition.id,
-                generation: composition.generation
+                composition,
+                basePlacementGenerations: basePlacementGenerations
             ),
             schemaGeneration: schemaGeneration,
             queryFingerprint: queryFingerprint,
             authorization: authorization,
-            compositionBaseIDs: composition.composition.bases
+            compositionBaseIDs: composition.bases
         )
         guard case .rdfGraph(let page) = response else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
@@ -1222,10 +1304,9 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             guard provenance == nil else {
                 throw DatabaseQueryExecutionError.querySnapshotCorrupted
             }
-        case .composition(let compositionID, let generation):
+        case .composition(let composition, _):
             guard let provenance,
-                  provenance.compositionID == compositionID,
-                  provenance.generation == generation,
+                  provenance.composition == composition,
                   provenance.baseIDs == compositionBaseIDs else {
                 throw DatabaseQueryExecutionError.querySnapshotCorrupted
             }
@@ -1473,7 +1554,6 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         case .resource(.database, _):
             return
         case .resource(.base(let id), let generation):
-            #if DATABASE_SERVER_MULTIPLE_BASES
             guard let current = try await container.executionLoadBaseRecord(
                 id,
                 transaction: transaction
@@ -1481,18 +1561,33 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                current.lifecycle == .active else {
                 throw DatabaseQueryExecutionError.querySnapshotStale
             }
-            #else
-            _ = id
-            _ = generation
-            throw DatabaseQueryExecutionError.querySnapshotStale
-            #endif
-        case .composition(let id, let generation):
-            guard let current = try await container
-                .executionLoadCompositionRecord(
-                id,
-                transaction: transaction
-            ), current.generation == generation else {
-                throw DatabaseQueryExecutionError.querySnapshotStale
+        case .composition(let composition, let baseGenerations):
+            switch composition.kind {
+            case .named:
+                guard let id = composition.namedID,
+                      let generation = composition.generation,
+                      let current = try await container
+                        .executionLoadCompositionRecord(
+                            id,
+                            transaction: transaction
+                        ), current.generation == generation,
+                      current.composition.bases == composition.bases else {
+                    throw DatabaseQueryExecutionError.querySnapshotStale
+                }
+            case .derived:
+                break
+            }
+            for id in composition.bases {
+                guard let expectedGeneration = baseGenerations[id],
+                      let current = try await container
+                        .executionLoadBaseRecord(
+                            id,
+                            transaction: transaction
+                        ),
+                      current.placementGeneration == expectedGeneration,
+                      current.lifecycle == .active else {
+                    throw DatabaseQueryExecutionError.querySnapshotStale
+                }
             }
         }
         #else

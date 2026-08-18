@@ -157,7 +157,6 @@ public actor DatabasePersistentJobRunner {
                 )
             }
         case .base(let baseID):
-            #if DATABASE_SERVER_MULTIPLE_BASES
             do {
                 let lease = try container.executionAcquireBaseLease(
                     baseID,
@@ -208,10 +207,6 @@ public actor DatabasePersistentJobRunner {
                     authorizationFailure: authorizationFailure
                 )
             }
-            #else
-            _ = baseID
-            throw DatabaseJobRuntimeError.invalidTarget
-            #endif
         case .composition:
             throw DatabaseJobRuntimeError.invalidTarget
         }
@@ -970,7 +965,6 @@ public actor DatabasePersistentJobRunner {
                 configuration: .readOnly
             ) { _ in () }
         case .base(let baseID):
-            #if DATABASE_SERVER_MULTIPLE_BASES
             do {
                 try await container.executionWithBaseAdministrationTransaction(
                     baseID: baseID,
@@ -987,10 +981,6 @@ public actor DatabasePersistentJobRunner {
                     throw error
                 }
             }
-            #else
-            _ = baseID
-            throw DatabaseJobRuntimeError.invalidTarget
-            #endif
         case .composition:
             throw DatabaseJobRuntimeError.invalidTarget
         }
@@ -1011,20 +1001,12 @@ public actor DatabasePersistentJobRunner {
         #if DATABASE_SERVER_MULTIPLE_BASES
         switch context.target {
         case .database:
-            #if DATABASE_SERVER_MULTIPLE_BASES
             try await container.executionDatabaseGrantStore.require(
                 .administer,
                 authorization: context.authorization,
                 transaction: transaction
             )
-            #else
-            // Principal identity is revalidated before every job slice. A
-            // persisted database Grant exists only when MultipleBases owns
-            // resource grants; the single-database runtime has no Grant store.
-            _ = transaction
-            #endif
         case .base(let baseID):
-            #if DATABASE_SERVER_MULTIPLE_BASES
             guard try container.executionBoundBaseMatchesControlDomain(
                 baseID
             ) else {
@@ -1037,10 +1019,6 @@ public actor DatabasePersistentJobRunner {
                 authorization: context.authorization,
                 transaction: transaction
             )
-            #else
-            _ = baseID
-            throw DatabaseJobRuntimeError.invalidTarget
-            #endif
         case .composition:
             throw DatabaseJobRuntimeError.invalidTarget
         }
