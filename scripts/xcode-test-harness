@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCHEME="database-server"
 DESTINATION="platform=macOS,arch=arm64"
 TEST_TRAITS="${DATABASE_SERVER_TEST_TRAITS:-}"
+TOOLCHAIN_IDENTIFIER="org.swift.64202608141a"
+XCODE_TOOLCHAIN_IDENTIFIER="com.apple.dt.toolchain.XcodeDefault"
 BUILD_TIMEOUT_SECONDS="${XCODE_TEST_BUILD_TIMEOUT_SECONDS:-1200}"
 TEST_TIMEOUT_SECONDS="${XCODE_TEST_TIMEOUT_SECONDS:-300}"
 RESULT_DIRECTORY="${XCODE_TEST_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-server-xcode-results}"
@@ -58,7 +60,7 @@ inject_testing_runtime() {
   local target_count=0
   local configuration_index=0
 
-  swiftc="$(xcrun --toolchain "$TOOLCHAINS" --find swiftc)"
+  swiftc="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
   toolchain_root="$(cd "$(dirname "$swiftc")/../.." && pwd)"
   testing_library_path="$toolchain_root/usr/lib/swift/macosx/testing"
   if [[ ! -f "$testing_library_path/libTesting.dylib" ]]; then
@@ -117,22 +119,21 @@ case "$TEST_TRAITS" in
 esac
 EXPECTED_TEST_COUNT="${DATABASE_SERVER_EXPECTED_TEST_COUNT:-$default_expected_test_count}"
 
-for command in jq xcodebuild xcrun plutil perl rg rsync tee; do
+for command in cmp jq xcodebuild xcrun plutil perl rg rsync tee; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 1
   fi
 done
 
-if [[ -z "${TOOLCHAINS:-}" ]]; then
-  echo "error: TOOLCHAINS must identify the pinned Swift snapshot" >&2
-  exit 2
-fi
-
 if ! [[ "$EXPECTED_TEST_COUNT" =~ ^[0-9]+$ ]]; then
   echo "error: DATABASE_SERVER_EXPECTED_TEST_COUNT must be a non-negative integer" >&2
   exit 2
 fi
+
+PINNED_SWIFTC="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
+xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swift --version
+xcodebuild -version
 
 has_local_dependencies=false
 if rg -n '\.package\(path:' "$ROOT_DIR/Package.swift" >/dev/null; then
@@ -154,6 +155,8 @@ else
   derived_data="$WORK_ROOT/DerivedData"
 fi
 mkdir -p "$derived_data" "$RESULT_DIRECTORY"
+locked_resolved="$WORK_ROOT/Package.resolved"
+cp "$ROOT_DIR/Package.resolved" "$locked_resolved"
 build_root="$ROOT_DIR"
 if [[ -n "$TEST_TRAITS" ]]; then
   source_root="$WORK_ROOT/source"
@@ -172,6 +175,7 @@ if [[ -n "$TEST_TRAITS" ]]; then
   build_root="$source_root"
 fi
 run_identifier="$(date -u +%Y%m%d-%H%M%S)-$$"
+resolve_log="$RESULT_DIRECTORY/Resolve-$run_identifier.log"
 build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
 test_result="$RESULT_DIRECTORY/Test-$run_identifier.xcresult"
 build_log="$RESULT_DIRECTORY/Build-$run_identifier.log"
@@ -180,7 +184,34 @@ test_log="$RESULT_DIRECTORY/Test-$run_identifier.log"
 set +e
 (
   cd "$build_root"
-  timeout_command "$BUILD_TIMEOUT_SECONDS" xcodebuild build-for-testing \
+  timeout_command "$BUILD_TIMEOUT_SECONDS" env \
+    TOOLCHAINS="$XCODE_TOOLCHAIN_IDENTIFIER" \
+    xcodebuild -resolvePackageDependencies \
+    -scheme "$SCHEME" \
+    -derivedDataPath "$derived_data" \
+    -disablePackageRepositoryCache \
+    -onlyUsePackageVersionsFromResolvedFile \
+    SWIFT_EXEC="$PINNED_SWIFTC" \
+    2>&1 | tee "$resolve_log"
+)
+resolve_status=$?
+set -e
+reject_internal_tool_errors "$resolve_log"
+if (( resolve_status != 0 )); then
+  echo "error: dependency resolution exited with status $resolve_status" >&2
+  exit "$resolve_status"
+fi
+if ! cmp -s "$locked_resolved" "$build_root/Package.resolved"; then
+  echo "error: dependency resolution changed the pinned package graph" >&2
+  exit 1
+fi
+
+set +e
+(
+  cd "$build_root"
+  timeout_command "$BUILD_TIMEOUT_SECONDS" env \
+    TOOLCHAINS="$XCODE_TOOLCHAIN_IDENTIFIER" \
+    xcodebuild build-for-testing \
     -scheme "$SCHEME" \
     -destination "$DESTINATION" \
     -derivedDataPath "$derived_data" \
@@ -189,11 +220,16 @@ set +e
     -enableCodeCoverage NO \
     -onlyUsePackageVersionsFromResolvedFile \
     -skipPackageUpdates \
+    SWIFT_EXEC="$PINNED_SWIFTC" \
     2>&1 | tee "$build_log"
 )
 build_status=$?
 set -e
 reject_internal_tool_errors "$build_log"
+if ! rg -F "SWIFT_EXEC = $PINNED_SWIFTC" "$build_log" >/dev/null; then
+  echo "error: Xcode did not record the pinned Swift compiler" >&2
+  exit 1
+fi
 if (( build_status != 0 )); then
   echo "error: build-for-testing exited with status $build_status" >&2
   exit "$build_status"
@@ -213,7 +249,9 @@ cp "$xctestrun_paths" "$configured_xctestrun"
 inject_testing_runtime "$configured_xctestrun"
 
 set +e
-timeout_command "$TEST_TIMEOUT_SECONDS" xcodebuild test-without-building \
+timeout_command "$TEST_TIMEOUT_SECONDS" env \
+  TOOLCHAINS="$XCODE_TOOLCHAIN_IDENTIFIER" \
+  xcodebuild test-without-building \
   -xctestrun "$configured_xctestrun" \
   -destination "$DESTINATION" \
   -resultBundlePath "$test_result" \
