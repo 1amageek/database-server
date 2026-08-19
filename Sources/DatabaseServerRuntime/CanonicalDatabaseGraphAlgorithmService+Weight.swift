@@ -33,7 +33,7 @@ actor DatabaseIndexedWeightedGraphNeighborSource: WeightedGraphNeighborSource {
         self.scanner = GraphPropertyScanner(
             indexSubspace: source.indexSubspace,
             strategy: source.strategy,
-            storedFieldNames: [property],
+            includedFieldNames: [property],
             snapshot: snapshot
         )
         self.graphTarget = source.graphTarget

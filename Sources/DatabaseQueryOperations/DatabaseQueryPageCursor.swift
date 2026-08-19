@@ -1,37 +1,42 @@
+import DatabaseKit
 import DatabaseOperationCore
 import DatabaseTypes
-import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseWire
 
 package struct DatabaseQueryPageCursor: Sendable, Hashable {
-    private static let formatVersion: UInt8 = 6
+    private static let formatVersion: UInt8 = 7
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package let resource: Security.Resource
     #endif
     package let restorableReadPosition: DatabaseStorageReadPosition?
+    package let schemaGeneration: UInt64
     package let dataGeneration: UInt64
     package let continuation: ByteString
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package init(
         resource: Security.Resource,
         restorableReadPosition: DatabaseStorageReadPosition?,
+        schemaGeneration: UInt64,
         dataGeneration: UInt64,
         continuation: ByteString
     ) {
         self.resource = resource
         self.restorableReadPosition = restorableReadPosition
+        self.schemaGeneration = schemaGeneration
         self.dataGeneration = dataGeneration
         self.continuation = continuation
     }
     #else
     package init(
         restorableReadPosition: DatabaseStorageReadPosition?,
+        schemaGeneration: UInt64,
         dataGeneration: UInt64,
         continuation: ByteString
     ) {
         self.restorableReadPosition = restorableReadPosition
+        self.schemaGeneration = schemaGeneration
         self.dataGeneration = dataGeneration
         self.continuation = continuation
     }
@@ -45,7 +50,7 @@ package struct DatabaseQueryPageCursor: Sendable, Hashable {
             return try DatabaseWireWriter.encode(limits: limits) {
                 (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
                 writer.writeUInt8(Self.formatVersion)
-                #if DATABASE_SERVER_MULTIPLE_BASES
+                #if DATABASE_SERVER_MULTI_BASE
                 try Self.write(resource, to: &writer)
                 #endif
                 switch restorableReadPosition {
@@ -59,6 +64,7 @@ package struct DatabaseQueryPageCursor: Sendable, Hashable {
                         "Opaque read positions are not restorable"
                     )
                 }
+                writer.writeUInt64(schemaGeneration)
                 writer.writeUInt64(dataGeneration)
                 try writer.writeBytes(continuation)
             }
@@ -76,7 +82,7 @@ package struct DatabaseQueryPageCursor: Sendable, Hashable {
             guard try reader.readUInt8() == Self.formatVersion else {
                 throw DatabaseQueryExecutionError.invalidContinuation
             }
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             let resource = try Self.readResource(from: &reader)
             #endif
             let restorableReadPosition: DatabaseStorageReadPosition?
@@ -88,22 +94,25 @@ package struct DatabaseQueryPageCursor: Sendable, Hashable {
             default:
                 throw DatabaseQueryExecutionError.invalidContinuation
             }
+            let schemaGeneration = try reader.readUInt64()
             let dataGeneration = try reader.readUInt64()
             let continuation = try reader.readBytes()
             guard !continuation.isEmpty else {
                 throw DatabaseQueryExecutionError.invalidContinuation
             }
             try reader.ensureFullyRead()
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             return Self(
                 resource: resource,
                 restorableReadPosition: restorableReadPosition,
+                schemaGeneration: schemaGeneration,
                 dataGeneration: dataGeneration,
                 continuation: continuation
             )
             #else
             return Self(
                 restorableReadPosition: restorableReadPosition,
+                schemaGeneration: schemaGeneration,
                 dataGeneration: dataGeneration,
                 continuation: continuation
             )
@@ -115,7 +124,7 @@ package struct DatabaseQueryPageCursor: Sendable, Hashable {
         }
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private static func write(
         _ resource: Security.Resource,
         to writer: inout DatabaseWireWriter

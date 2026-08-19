@@ -4,7 +4,7 @@ import DatabaseKit
 
 extension DBContainer {
     /// Adapts server operation authorization to the selected framework build.
-    /// Persisted Grant evaluation exists only with `MultipleBases`; the
+    /// Persisted Grant evaluation exists only with `MultiBase`; the
     /// ordinary runtime binds the authenticated principal solely for entity
     /// and field policy evaluation.
     package func withServerControlTransaction<Result: Sendable>(
@@ -16,7 +16,7 @@ extension DBContainer {
             DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         try await withControlTransaction(
             requiredAccess: requiredAccess,
             authorization: authorization,

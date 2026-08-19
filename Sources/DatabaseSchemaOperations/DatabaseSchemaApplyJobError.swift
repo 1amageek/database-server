@@ -6,11 +6,12 @@ public enum DatabaseSchemaApplyJobError: Error, Sendable, Equatable,
     CustomStringConvertible {
     case invalidInvocation
     case corruptedPlan
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     case baseLifecycleTransitionInProgress(Base.ID, String)
     case baseGenerationChanged(Base.ID)
     #endif
     case publishedSchemaMismatch
+    case physicalLayoutChanged
     case sliceMadeNoProgress
 
     public var description: String {
@@ -19,7 +20,7 @@ public enum DatabaseSchemaApplyJobError: Error, Sendable, Equatable,
             return "Only schema apply requests can create schema build jobs"
         case .corruptedPlan:
             return "Schema apply job plan is corrupted"
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .baseLifecycleTransitionInProgress(let id, let lifecycle):
             return "Base '\(id.value)' has an in-progress lifecycle transition '\(lifecycle)'"
         case .baseGenerationChanged(let id):
@@ -27,6 +28,8 @@ public enum DatabaseSchemaApplyJobError: Error, Sendable, Equatable,
         #endif
         case .publishedSchemaMismatch:
             return "Published schema does not match the schema build job"
+        case .physicalLayoutChanged:
+            return "Index provider physical layouts changed while applying the schema"
         case .sliceMadeNoProgress:
             return "Schema index build slice made no progress"
         }

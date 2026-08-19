@@ -1,12 +1,13 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
-@testable import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
+
+@testable import DatabaseEngine
 
 @Suite("Database Index Maintenance Runtime Tests", .serialized)
 struct DatabaseIndexMaintenanceRuntimeTests {
@@ -246,7 +247,7 @@ struct DatabaseIndexMaintenanceRuntimeTests {
 
     private func tenantPartition(_ tenant: String) throws -> FieldObject {
         try FieldObject([
-            (key: "tenantID", value: .string(tenant)),
+            (key: "tenantID", value: .string(tenant))
         ])
     }
 
@@ -258,7 +259,11 @@ struct DatabaseIndexMaintenanceRuntimeTests {
             ),
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .testingDisabled
         )

@@ -13,21 +13,28 @@ struct DatabaseGraphSourceEdge {
     var weight: Double = 0
 
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \DatabaseGraphSourceEdge.source,
-        edge: \DatabaseGraphSourceEdge.label,
-        to: \DatabaseGraphSourceEdge.target,
+        .graph(
+            name: "source_graph",
+            definition: .property(
+                source: \DatabaseGraphSourceEdge.source,
+                label: .field(\DatabaseGraphSourceEdge.label),
+                target: \DatabaseGraphSourceEdge.target,
         graph: \DatabaseGraphSourceEdge.graph,
-        storedFields: [\DatabaseGraphSourceEdge.weight],
-        name: "source_graph"
-    )
+                strategy: .adjacency
+            ),
+            includedFields: [\DatabaseGraphSourceEdge.weight]
+        ))
 
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \DatabaseGraphSourceEdge.source,
-        edge: \DatabaseGraphSourceEdge.label,
-        to: \DatabaseGraphSourceEdge.target,
-        storedFields: [\DatabaseGraphSourceEdge.weight],
-        name: "source_graph_default"
-    )
+        .graph(
+            name: "source_graph_default",
+            definition: .property(
+                source: \DatabaseGraphSourceEdge.source,
+                label: .field(\DatabaseGraphSourceEdge.label),
+                target: \DatabaseGraphSourceEdge.target,
+                graph: nil,
+                strategy: .adjacency
+            ),
+            includedFields: [\DatabaseGraphSourceEdge.weight]
+        ))
 }

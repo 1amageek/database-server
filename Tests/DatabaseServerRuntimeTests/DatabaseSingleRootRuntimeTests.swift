@@ -1,4 +1,4 @@
-#if !MultipleBases
+#if !MultiBase
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
@@ -89,7 +89,7 @@ struct DatabaseSingleRootRuntimeTests {
     }
 
     @Test("runtime advertises only database-root operations")
-    func capabilitiesExcludeMultipleBaseOperations() async throws {
+    func capabilitiesExcludeMultiBaseOperations() async throws {
         let container = try await makeContainer()
         let runtime = try await makeRuntime(container: container)
 
@@ -122,13 +122,17 @@ struct DatabaseSingleRootRuntimeTests {
                 wallClock: RealtimeDatabaseWallClock()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SingleRootEntity.self
-                    ),
+                    )
                 ],
                 authorizationPolicies: [
-                    AuthorizationPolicyHandler(SingleRootEntity.self),
+                    AuthorizationPolicyHandler(SingleRootEntity.self)
                 ]
             )
         )

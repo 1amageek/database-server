@@ -4,7 +4,7 @@ import DatabaseTypes
 func databaseServerHostCapabilitiesRequest(
     requestID: UInt64
 ) throws -> ByteString {
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     return try DatabaseWireEncoder().encodeRequest(
         DatabaseOperationCatalog.capabilitiesDescribe,
         requestID: requestID,

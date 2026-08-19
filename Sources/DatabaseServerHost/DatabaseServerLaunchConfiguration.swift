@@ -182,7 +182,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
-    #if !DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if !DATABASE_SERVER_HOST_MULTI_BASE
     public struct DatabaseRoot: Codable, Sendable, Equatable {
         public enum Kind: String, Codable, Sendable {
             case engine
@@ -233,7 +233,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
     #endif
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     public struct Domain: Codable, Sendable, Equatable {
         public let id: String
         public let namespace: [String]
@@ -270,7 +270,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
 
     public let formatVersion: Int
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     public let controlDomain: String
     public let domains: [Domain]
     public let placements: [Placement]
@@ -286,7 +286,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     public let tls: TLS?
     public let maximumFrameBytes: Int?
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     public init(
         formatVersion: Int = 2,
         controlDomain: String,
@@ -371,7 +371,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     public func runtimeStorageTopology() throws
         -> NativeDatabaseStorageTopologyConfiguration {
         try NativeDatabaseStorageTopologyConfiguration(
@@ -457,7 +457,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
 
     private func validate() throws {
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         let expectedFormatVersion = 2
         #else
         let expectedFormatVersion = 3
@@ -470,7 +470,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             throw DatabaseServerLaunchConfigurationError
                 .missingTokenRegistryPath
         }
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         let topology = try runtimeStorageTopology()
         guard !topology.domains.isEmpty else {
             throw DatabaseServerLaunchConfigurationError.emptyTopology

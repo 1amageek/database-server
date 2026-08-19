@@ -1,4 +1,5 @@
 import DatabaseJobRuntime
+import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseWire
 
 public enum DatabaseSchemaExecutionError: Error, Sendable, Equatable,
@@ -7,7 +8,7 @@ public enum DatabaseSchemaExecutionError: Error, Sendable, Equatable,
     case runtimeUnavailable
     case storageCapabilityUnavailable(
         indexName: String,
-        kindIdentifier: String,
+        indexType: IndexType,
         capability: String
     )
     case persistentJobServiceUnavailable
@@ -20,10 +21,11 @@ public enum DatabaseSchemaExecutionError: Error, Sendable, Equatable,
             return "Schema runtime is unavailable"
         case .storageCapabilityUnavailable(
             let indexName,
-            let kindIdentifier,
+            let indexType,
             let capability
         ):
-            return "Index '\(indexName)' of kind '\(kindIdentifier)' requires unavailable storage capability '\(capability)'"
+            return
+                "Index '\(indexName)' of type '\(indexType.diagnosticName)' requires unavailable storage capability '\(capability)'"
         case .persistentJobServiceUnavailable:
             return "Schema index backfill requires the persistent job service"
         }

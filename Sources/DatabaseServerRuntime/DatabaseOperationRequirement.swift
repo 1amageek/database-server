@@ -9,7 +9,7 @@ import DatabaseOperationCore
 import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseWire
 
-#if DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_SERVER_MULTI_BASE
 public struct DatabaseOperationTargetKinds: OptionSet, Sendable, Hashable {
     public let rawValue: UInt8
 
@@ -40,7 +40,7 @@ public enum DatabaseOperationTransactionKind: Sendable, Hashable {
     case write
 }
 
-#if DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_SERVER_MULTI_BASE
 public enum DatabaseBaseAdmissionKind: Sendable, Hashable {
     case activeData
     case administration
@@ -49,15 +49,15 @@ public enum DatabaseBaseAdmissionKind: Sendable, Hashable {
 #endif
 
 public struct DatabaseOperationRequirement: Sendable, Hashable {
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     public let acceptedTargets: DatabaseOperationTargetKinds
     #endif
     public let access: Security.Access
     public let transaction: DatabaseOperationTransactionKind
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     public let baseAdmission: DatabaseBaseAdmissionKind
     #endif
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     public init(
         acceptedTargets: DatabaseOperationTargetKinds,
         access: Security.Access,
@@ -82,7 +82,7 @@ public struct DatabaseOperationRequirement: Sendable, Hashable {
     package static func canonical(
         for identifier: DatabaseOperationIdentifier
     ) -> Self {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let grantAndJobTargets: DatabaseOperationTargetKinds = [
             .database,
             .base,

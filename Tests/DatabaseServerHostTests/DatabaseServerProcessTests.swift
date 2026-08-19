@@ -16,7 +16,7 @@ struct DatabaseServerProcessTests {
         let errorOutput = Pipe()
         process.executableURL = try serverExecutableURL()
         process.arguments = ["stdio", "--memory"]
-        #if MultipleBases
+        #if MultiBase
         process.arguments?.append(
             contentsOf: ["--domain-namespace", "process-test"]
         )
@@ -56,7 +56,7 @@ struct DatabaseServerProcessTests {
             )
             let payload = try response.get()
 
-            #expect(payload.runtimeVersion == "26.0818.0")
+            #expect(payload.runtimeVersion == "26.0819.0")
             #expect(
                 payload.features.contains {
                     $0.identifier == "schema.execute" && $0.version == 1
@@ -221,7 +221,7 @@ struct DatabaseServerProcessTests {
                 matching: requestID
             )
             let capabilities = try wireResponse.get()
-            #expect(capabilities.runtimeVersion == "26.0818.0")
+            #expect(capabilities.runtimeVersion == "26.0819.0")
 
             process.interrupt()
             let status = try await waitForTermination(
@@ -291,7 +291,7 @@ struct DatabaseServerProcessTests {
             "--config", configURL.path,
             "--path", databaseURL.path,
         ]
-        #if MultipleBases
+        #if MultiBase
         process.arguments?.append(
             contentsOf: ["--domain-namespace", "process-test"]
         )

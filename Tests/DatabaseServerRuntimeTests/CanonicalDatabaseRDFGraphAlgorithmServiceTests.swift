@@ -1,12 +1,12 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import GraphIndex
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Canonical RDF graph algorithm service")
@@ -188,7 +188,12 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             ),
             configuration: DBConfiguration.testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self), try DatabaseFrameworkRuntime.entity(CanonicalRDFGraphStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self), try DatabaseFrameworkRuntime.entity(CanonicalRDFGraphStatement.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -204,17 +209,15 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             throw CanonicalRDFGraphAlgorithmSetupError
                 .missingRDFDatasetIndex
         }
-        let index = Index(
-            name: "rdf-graph",
-            kind: descriptor.kind,
+        let index = ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "predicate"),
                 FieldKeyExpression(fieldName: "object"),
                 FieldKeyExpression(fieldName: "graph"),
             ]),
-            itemTypes: Set([CanonicalRDFGraphStatement.persistableType]),
-            storedFieldNames: ["weight"]
+            itemTypes: Set([CanonicalRDFGraphStatement.persistableType])
         )
         let maintainer: any IndexMaintainer<CanonicalRDFGraphStatement> = try RDFQuadIndexMaintainerProvider()
             .makeIndexMaintainer(
@@ -228,7 +231,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
             entityName: CanonicalRDFGraphStatement.persistableType,
             indexName: index.name,
             indexSubspace: subspace,
-            storedFieldNames: index.storedFieldNames,
+            storedFieldNames: index.includedFieldNames,
             layout: .rdf(
                 try ResolvedDatabaseGraphSource.RDFLayout(
                     graphTarget: .defaultGraph,

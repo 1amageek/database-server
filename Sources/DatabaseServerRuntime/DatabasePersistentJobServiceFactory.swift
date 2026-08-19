@@ -62,7 +62,7 @@ public final class DatabasePersistentJobServiceFactory:
             return AnyDatabaseJobService(UnavailableDatabaseJobService())
         }
         var registry = registry
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         registry = try registry.including(
             AnyDatabaseResumableOperation(
                 DatabaseBaseLifecycleResumableOperation(

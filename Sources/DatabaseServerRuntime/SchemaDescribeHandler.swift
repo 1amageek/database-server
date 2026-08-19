@@ -1,13 +1,13 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
-import DatabaseOperationCore
-import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseGraphOperations
+import DatabaseJobRuntime
+import DatabaseKit
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
+import DatabaseOperationCore
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 
@@ -87,7 +87,7 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
                 }
                 return SchemaDescribeOperation.Index(
                     name: index.name,
-                    kind: index.kindIdentifier,
+                    type: index.type,
                     fields: fieldNumbers,
                     options: try options(for: index)
                 )
@@ -199,36 +199,108 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
     }
 
     private static func options(
-        for index: IndexDescriptorMetadata
-    ) throws -> FieldObject {
-        var values: [(key: String, value: FieldValue)] =
-            index.kind.metadata.map {
-                (key: "kind.\($0.key)", value: $0.value)
+        for index: IndexDescriptor) throws -> FieldObject {
+        var values: [(key: String, value: FieldValue)] = [
+            (
+                key: "keyOrders",
+                value: .array(
+                    index.keys.map {
+                        .string($0.order.rawValue)
+                    })
+            ),
+            (
+                key: "includedFields",
+                value: .array(
+                    index.includedFieldNames.map(FieldValue.string)
+                )
+            ),
+        ]
+        switch index.declaration.definition {
+        case .ordered(_, _, let unique):
+            values.append((key: "unique", value: .bool(unique)))
+        case .aggregate(let function, _, _):
+            switch function {
+            case .approximateDistinct(let precision):
+                values.append((key: "precision", value: .int64(Int64(precision))))
+            case .percentile(let compression):
+                values.append((key: "compression", value: .float64(compression)))
+            case .count, .sum, .minimum, .maximum, .average, .nonNullCount:
+                break
             }
-        values.append(
-            (
-                key: "common.unique",
-                value: .bool(index.commonOptions.unique)
-            )
-        )
-        values.append(
-            (
-                key: "common.sparse",
-                value: .bool(index.commonOptions.sparse)
-            )
-        )
-        values.append(contentsOf: index.commonOptions.metadata.map {
-            (
-                key: "common.metadata.\($0.key)",
-                value: .string($0.value)
-            )
-        })
-        values.append(
-            (
-                key: "storedFields",
-                value: .array(index.storedFieldNames.map(FieldValue.string))
-            )
-        )
+        case .updateCount, .bitmap, .rank:
+            break
+        case .history(_, let retention):
+            switch retention {
+            case .keepAll:
+                values.append((key: "retention", value: .string("keepAll")))
+            case .keepLast(let count):
+                values.append((key: "retention", value: .string("keepLast")))
+                values.append((key: "retentionCount", value: .int64(Int64(count))))
+            case .keepForDuration(let duration):
+                values.append((key: "retention", value: .string("duration")))
+                values.append((key: "retentionDuration", value: .timeSpan(duration)))
+            }
+        case .leaderboard(_, _, let window, let windowCount):
+            let windowName: String
+            switch window {
+            case .hourly: windowName = "hourly"
+            case .daily: windowName = "daily"
+            case .weekly: windowName = "weekly"
+            case .monthly: windowName = "monthly"
+            case .custom: windowName = "custom"
+            }
+            values.append((key: "window", value: .string(windowName)))
+            values.append((key: "windowDuration", value: .float64(window.durationSeconds)))
+            values.append((key: "windowCount", value: .int64(Int64(windowCount))))
+        case .vector(_, let dimensions, let metric):
+            values.append((key: "dimensions", value: .int64(Int64(dimensions))))
+            values.append((key: "metric", value: .string(metric.rawValue)))
+        case .text(_, let mode):
+            switch mode {
+            case .fullText(
+                let tokenizer,
+                let storePositions,
+                let ngramSize,
+                let minimumTermLength
+            ):
+                values.append((key: "tokenizer", value: .string(tokenizer.rawValue)))
+                values.append((key: "storePositions", value: .bool(storePositions)))
+                values.append((key: "ngramSize", value: .int64(Int64(ngramSize))))
+                values.append((key: "minimumTermLength", value: .int64(Int64(minimumTermLength))))
+            case .autocomplete(
+                let minimumPrefixLength,
+                let maximumPrefixLength
+            ):
+                values.append((key: "minimumPrefixLength", value: .int64(Int64(minimumPrefixLength))))
+                values.append((key: "maximumPrefixLength", value: .int64(Int64(maximumPrefixLength))))
+            }
+        case .spatial(_, let encoding, let level):
+            values.append((key: "encoding", value: .string(encoding.rawValue)))
+            values.append((key: "level", value: .int64(Int64(level))))
+        case .graph(let graph, _):
+            switch graph {
+            case .property(_, let label, _, _, let strategy):
+                let labelMode: String
+                switch label {
+                case .field: labelMode = "field"
+                case .implicit: labelMode = "implicit"
+                }
+                values.append((key: "label", value: .string(labelMode)))
+                values.append((key: "strategy", value: .string(strategy.rawValue)))
+            case .rdf:
+                break
+            case .ontologyProjection(let individualIRIBase, let graph):
+                values.append((key: "individualIRIBase", value: .string(individualIRIBase)))
+                if let graph {
+                    values.append((key: "graph", value: .rdfTerm(graph.term)))
+                }
+            }
+        case .custom(let definition):
+            values.append(
+                contentsOf: definition.parameters.map {
+            (key: "parameters.\($0.key)", value: $0.value)
+                })
+        }
         return try FieldObject(
             values.sorted { $0.key < $1.key }
         )

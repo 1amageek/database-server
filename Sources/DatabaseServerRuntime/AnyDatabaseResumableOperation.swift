@@ -28,8 +28,9 @@ public struct AnyDatabaseResumableOperation: Sendable {
     }
 
     public let operation: JobOperationIdentifier
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    public let baseAdmission: DatabaseBaseAdmissionKind
+    #if DATABASE_SERVER_MULTI_BASE
+    public let startBaseAdmission: DatabaseBaseAdmissionKind
+    public let sliceBaseAdmission: DatabaseBaseAdmissionKind
     #endif
 
     private let prepareJob: @Sendable (
@@ -88,8 +89,9 @@ public struct AnyDatabaseResumableOperation: Sendable {
     ) throws {
         let job = try Operation.job()
         self.operation = job.identifier
-        #if DATABASE_SERVER_MULTIPLE_BASES
-        self.baseAdmission = operation.baseAdmission
+        #if DATABASE_SERVER_MULTI_BASE
+        self.startBaseAdmission = operation.startBaseAdmission
+        self.sliceBaseAdmission = operation.sliceBaseAdmission
         #endif
         self.prepareJob = { payload, context, limits, storageLimits in
             let request = try job.decodeStartRequest(

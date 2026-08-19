@@ -286,7 +286,7 @@ package struct DatabasePersistentJobStore: Sendable {
                 maximum: storageLimits.maximumResultBytes
             )
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let responseDigest = DatabasePersistentJobDigest.result(
             operation: snapshot.specification.operation,
             target: snapshot.specification.target,

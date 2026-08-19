@@ -1,13 +1,14 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
-@testable import DatabaseServerRuntime
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
+
+@testable import DatabaseServerRuntime
 
 private let persistentJobTestStorageLimits =
     DatabasePersistentJobStorageLimits(maximumStorageValueBytes: 1_048_576)
@@ -18,7 +19,7 @@ private func jobStartRequest(
     maximumSliceWorkUnits: UInt64 = 100_000,
     retryPolicy: JobStartOperation.RetryPolicy = .init()
 ) throws -> JobStartOperation.Request {
-    #if MultipleBases
+    #if MultiBase
     return JobStartOperation.Request(
         target: try testDataRootTarget(),
         operation: operation,
@@ -39,7 +40,7 @@ private func jobStartRequest(
 private func jobResultDigestAccumulator(
     for job: JobIdentity
 ) -> JobResultDigestAccumulator {
-    #if MultipleBases
+    #if MultiBase
     JobResultDigestAccumulator(
         operation: job.operation,
         target: job.target
@@ -54,7 +55,7 @@ private func jobIdentity(
     operation: JobOperationIdentifier,
     matching source: JobIdentity
 ) -> JobIdentity {
-    #if MultipleBases
+    #if MultiBase
     JobIdentity(
         jobID: jobID,
         operation: operation,
@@ -67,6 +68,49 @@ private func jobIdentity(
 
 @Suite("Persistent Database Job Service Tests", .serialized)
 struct DatabasePersistentJobServiceTests {
+    @Test("Checkpointed slice deadlines cancel work without advancing state")
+    func checkpointedSliceDeadlineCancelsWithoutAdvancingState() async throws {
+        let cancellationProbe = SliceCancellationProbe()
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: TimingOutCheckpointedOperation(
+                cancellationProbe: cancellationProbe
+            )
+        )
+        let request = try jobStartRequest(
+            operation: try TimingOutCheckpointedJob.operation().identifier,
+            requestPayload: try encodedValue(14),
+            maximumSliceWorkUnits: 1,
+            retryPolicy: .init(
+                maximumAttempts: 2,
+                initialBackoffMilliseconds: 1,
+                maximumBackoffMilliseconds: 1
+            )
+        )
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "checkpointed-slice-timeout"
+        )
+        let service = try await jobContext.makeService()
+        let job = try await service.start(
+            request,
+            context: context
+        ).response.job
+
+        try await service.runScheduledWork()
+
+        let status = try await service.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(cancellationProbe.wasCancelled)
+        #expect(status.state == .pending)
+        #expect(status.completedWorkUnits == 0)
+        #expect(status.executionCount == 1)
+        #expect(status.currentSliceAttempt == 1)
+        #expect(status.nextAttemptAt != nil)
+    }
+
     @Test("Scheduled slices bind persisted authorization and one schema generation")
     func scheduledSliceBindsExecutionContext() async throws {
         let gate = OperationExecutionGate()
@@ -85,7 +129,7 @@ struct DatabasePersistentJobServiceTests {
         let authorization = AuthorizationContext.authenticated(
             Principal(identifier: "persistent-job-user", roles: ["writer"])
         )
-        #if MultipleBases
+        #if MultiBase
         try await jobContext.container.grantTestBaseAccess(
             to: .principal("persistent-job-user"),
             access: .all
@@ -121,10 +165,14 @@ struct DatabasePersistentJobServiceTests {
         let nextFingerprint = try SchemaManifest(schema: nextSchema)
             .fingerprint()
         let nextRuntime = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     DatabaseEndpointEntity.self
-                ),
+                )
             ]
         )
         let publicationResult: Result<
@@ -214,7 +262,7 @@ struct DatabasePersistentJobServiceTests {
         )
     }
 
-    #if MultipleBases
+    #if MultiBase
     @Test("Changed persisted Grant roles are used by the next job slice")
     func changedRolesAreUsedByNextSlice() async throws {
         let jobContext = try await makePersistentJobServiceContext()
@@ -848,7 +896,7 @@ struct DatabasePersistentJobServiceTests {
                 jobID: job.jobID,
                 as: DatabasePersistentJobSpecification.self
             ) { specification in
-                #if MultipleBases
+                #if MultiBase
                 DatabasePersistentJobSpecification(
                     jobID: specification.jobID,
                     operation: alternateOperation,
@@ -2404,13 +2452,17 @@ struct DatabasePersistentJobServiceTests {
         let container = try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DatabaseEndpointEntity.schemaEntity,
+                    try DatabaseEndpointEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -2428,7 +2480,7 @@ struct DatabasePersistentJobServiceTests {
         let authorizationValidator = try TestDatabaseJobAuthorizationValidator()
         let registry = try DatabaseResumableOperationRegistry(
             operations: [
-                AnyDatabaseResumableOperation(operation),
+                AnyDatabaseResumableOperation(operation)
             ]
         )
         return PersistentJobServiceContext(
@@ -2467,7 +2519,7 @@ struct DatabasePersistentJobServiceTests {
                     access: .readOnly
                 ),
                 input: try FieldObject([
-                    (key: "step", value: .uint8(value)),
+                    (key: "step", value: .uint8(value))
                 ])
             )
         )
@@ -2615,7 +2667,7 @@ struct DatabasePersistentJobServiceTests {
     ) throws -> DatabaseOperationContext {
         let requirement: DatabaseOperationRequirement
         if operation.identifier == .jobStart {
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             requirement = DatabaseOperationRequirement(
                 acceptedTargets: [.database, .base],
                 access: .administer,
@@ -2857,6 +2909,18 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
+    private enum TimingOutCheckpointedJob:
+        PersistentJobTestDescriptor
+    {
+        static let kind = "database.test.checkpointed-timeout"
+
+        static func operation() throws(DatabaseWireError)
+            -> JobOperation<CommandRequest, CommandExecuteOperation.Response>
+        {
+            try PersistentJobTestOperations.operation(for: Self.self)
+        }
+    }
+
     private enum RetryingJob: PersistentJobTestDescriptor {
         static let kind = "database.test.retrying"
         static func operation() throws(DatabaseWireError)
@@ -2935,6 +2999,18 @@ struct DatabasePersistentJobServiceTests {
 
         func recordExecution() {
             storage.withLock { $0 += 1 }
+        }
+    }
+
+    private final class SliceCancellationProbe: Sendable {
+        private let storage = Mutex(false)
+
+        var wasCancelled: Bool {
+            storage.withLock { $0 }
+        }
+
+        func recordCancellation() {
+            storage.withLock { $0 = true }
         }
     }
 
@@ -3166,6 +3242,93 @@ struct DatabasePersistentJobServiceTests {
                     step: 13
                 )
             )
+        }
+    }
+
+    private struct TimingOutCheckpointedOperation:
+        PersistentJobTestOperation,
+        DatabaseUnsuccessfulOutcomeIndependentOperation
+    {
+        typealias TestDescriptor = TimingOutCheckpointedJob
+        typealias Plan = JobStepValue
+        typealias State = JobStepValue
+
+        static func job() throws(DatabaseWireError)
+            -> JobOperation<Request, Response>
+        {
+            try TestDescriptor.operation()
+        }
+
+        let cancellationProbe: SliceCancellationProbe
+
+        func compile(
+            _ request: CommandRequest,
+            context: DatabaseResumableOperationStartContext
+        ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            let request = try DatabasePersistentJobServiceTests.jobStep(
+                in: request
+            )
+            guard request == JobStepValue(14) else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            _ = context
+            return DatabasePreparedResumableJob(
+                plan: request,
+                initialState: JobStepValue(0),
+                sliceTimeoutMilliseconds: 10
+            )
+        }
+
+        func commitModel(
+            for plan: JobStepValue
+        ) -> DatabaseResumableOperationCommitModel {
+            _ = plan
+            return .operationCheckpointed
+        }
+
+        func runSlice(
+            plan: JobStepValue,
+            state: JobStepValue,
+            maximumWorkUnits: UInt64,
+            context: DatabaseResumableOperationContext
+        ) async throws
+            -> sending DatabaseResumableOperationSlice<
+                State,
+                Response
+            >
+        {
+            _ = plan
+            _ = state
+            _ = maximumWorkUnits
+            _ = context
+            throw PersistentJobScenarioError.unexpectedExecution
+        }
+
+        func runCheckpointedSlice(
+            plan: JobStepValue,
+            state: JobStepValue,
+            maximumWorkUnits: UInt64,
+            context: DatabaseCheckpointedResumableOperationContext
+        ) async throws
+            -> sending DatabaseResumableOperationSlice<
+                State,
+                Response
+            >
+        {
+            guard plan == JobStepValue(14),
+                state == JobStepValue(0),
+                maximumWorkUnits == 1
+            else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            _ = context
+            do {
+                try await Task.sleep(for: .seconds(60))
+            } catch is CancellationError {
+                cancellationProbe.recordCancellation()
+                throw CancellationError()
+            }
+            throw PersistentJobScenarioError.unexpectedExecution
         }
     }
 

@@ -1,6 +1,7 @@
 import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseOperationCore
+import DatabaseQueryOperations
+
 #if DATABASE_GRAPH_OPERATIONS_ENABLED
 import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseEngine
@@ -60,7 +61,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             transaction: transaction
         )
         try workBudget.consume()
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let resource = executionStorage.resource
         let target: DatabaseOperationTarget
         switch resource {
@@ -146,7 +147,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                 context: databaseContext
             ).readableIndex(
                 named: data.index,
-                kindIdentifier: descriptor.kindIdentifier,
+                indexType: descriptor.type,
                 forEntityName: data.entity,
                 partitions: data.partitions,
                 transaction: transaction
@@ -166,7 +167,7 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                     indexName: data.index,
                     indexSubspace: $0,
                     coverage: coverage,
-                    storedFieldNames: selection.storedFieldNames
+                    includedFieldNames: selection.includedFieldNames
                 )
             },
             dataGraph: dataGraph

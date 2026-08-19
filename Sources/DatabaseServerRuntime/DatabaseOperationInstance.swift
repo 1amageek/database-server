@@ -167,7 +167,7 @@ public final class DatabaseOperationInstance: Sendable {
             querySnapshotStore = nil
         }
         let includesDurableQueryPaging = querySnapshotStore != nil
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let includesDurableCompositionPaging = querySnapshotStore != nil
         #else
         let includesDurableCompositionPaging = false
@@ -198,7 +198,7 @@ public final class DatabaseOperationInstance: Sendable {
                 )
             ),
         ]
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         handlers.append(contentsOf: [
             AnyDatabaseOperationHandler(
                 GrantExecuteHandler(

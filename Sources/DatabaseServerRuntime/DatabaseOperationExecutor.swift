@@ -13,7 +13,7 @@ import StorageKit
 
 package enum DatabaseOperationExecutor: Sendable {
     case control(DatabaseControlExecutor)
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     case base(BaseOperationExecutor)
     case composition(CompositionReadExecutor)
     #endif
@@ -21,7 +21,7 @@ package enum DatabaseOperationExecutor: Sendable {
     package var monotonicClock: any StorageMonotonicClock {
         switch self {
         case .control(let executor): executor.monotonicClock
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .base(let executor): executor.monotonicClock
         case .composition(let executor): executor.monotonicClock
         #endif
@@ -31,7 +31,7 @@ package enum DatabaseOperationExecutor: Sendable {
     package var schema: Schema {
         switch self {
         case .control(let executor): executor.schema
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .base(let executor): executor.schema
         case .composition(let executor): executor.schema
         #endif
@@ -41,7 +41,7 @@ package enum DatabaseOperationExecutor: Sendable {
     package var schemaGeneration: UInt64 {
         switch self {
         case .control(let executor): executor.schemaGeneration
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .base(let executor): executor.schemaGeneration
         case .composition(let executor): executor.schemaGeneration
         #endif
@@ -51,7 +51,7 @@ package enum DatabaseOperationExecutor: Sendable {
     package var runtimeConfiguration: DatabaseRuntimeConfiguration {
         switch self {
         case .control(let executor): executor.runtimeConfiguration
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .base(let executor): executor.runtimeConfiguration
         case .composition(let executor): executor.runtimeConfiguration
         #endif
@@ -62,7 +62,7 @@ package enum DatabaseOperationExecutor: Sendable {
         switch self {
         case .control(let executor):
             executor.containerIdentity
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .base(let executor):
             executor.containerIdentity
         case .composition(let executor):

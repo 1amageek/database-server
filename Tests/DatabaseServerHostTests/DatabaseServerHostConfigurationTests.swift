@@ -77,7 +77,7 @@ struct DatabaseServerHostConfigurationTests {
         }
     }
 
-    #if !DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if !DATABASE_SERVER_HOST_MULTI_BASE
     @Test("Standard database roots are explicit and backend-specific")
     func standardDatabaseRootsAreBackendSpecific() throws {
         let sqlite = DatabaseServerLaunchConfiguration.Storage(
@@ -158,7 +158,7 @@ struct DatabaseServerHostConfigurationTests {
             from: configurationURL
         )
         #expect(loaded.routing.databaseID == "main")
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         #expect(loaded.formatVersion == 2)
         #expect(loaded.domains.first?.storage.kind == .sqlite)
         #else
@@ -238,7 +238,7 @@ struct DatabaseServerHostConfigurationTests {
             duplicateDomainDocument,
             at: duplicateDomainURL
         )
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         let duplicateDomainError =
             DatabaseServerLaunchConfigurationError.invalidTopology
         #else
@@ -251,7 +251,7 @@ struct DatabaseServerHostConfigurationTests {
             )
         }
 
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         let missingDomainURL = directory.appendingPathComponent(
             "missing-domain.json"
         )
@@ -284,7 +284,7 @@ struct DatabaseServerHostConfigurationTests {
             duplicateBackendDocument,
             at: duplicateBackendURL
         )
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         let duplicateBackendError = DatabaseServerLaunchConfigurationError
             .duplicatePhysicalBackend
         #else
@@ -300,7 +300,7 @@ struct DatabaseServerHostConfigurationTests {
 }
 
 private var placementDocumentFragment: String {
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     #", "placements":[{"id":"default","domain":"primary","path":["bases"]}],"defaultPlacement":"default""#
     #else
     ""
@@ -311,7 +311,7 @@ private func launchConfiguration(
     storage: DatabaseServerLaunchConfiguration.Storage,
     tokenRegistryPath: String
 ) -> DatabaseServerLaunchConfiguration {
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     DatabaseServerLaunchConfiguration(
         controlDomain: "primary",
         domains: [

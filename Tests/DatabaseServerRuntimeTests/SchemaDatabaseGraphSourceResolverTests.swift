@@ -1,12 +1,12 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import GraphIndex
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Schema graph source resolver")
@@ -59,10 +59,9 @@ struct SchemaDatabaseGraphSourceResolverTests {
         let container = try await makeContainer()
         guard let descriptor = try DatabaseSHACLStatement.indexDescriptors.first(
             where: {
-                $0.kindIdentifier
-                    == IndexDefinition.rdfDataset.identifier
-            }
-        ) else {
+                    $0.type == .graph(.rdf)
+                }
+            ) else {
             Issue.record("Expected the RDF quad index descriptor")
             return
         }
@@ -159,7 +158,12 @@ struct SchemaDatabaseGraphSourceResolverTests {
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self), try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self), try DatabaseFrameworkRuntime.entity(DefaultGraphSourceStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self), try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self), try DatabaseFrameworkRuntime.entity(DefaultGraphSourceStatement.self),
+                ]
             ),
             security: .testingDisabled
         )

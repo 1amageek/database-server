@@ -212,7 +212,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         let idempotencyKey = try validatedIdempotencyKey(
             context.metadata.idempotencyKey
         )
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let requestDigest = DatabaseRequestDigest.computeRequest(
             operation: operation,
             target: context.target,
@@ -272,7 +272,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         let idempotencyKey = try validatedIdempotencyKey(
             context.metadata.idempotencyKey
         )
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let requestDigest = DatabaseRequestDigest.computeRequest(
             operation: operation,
             target: context.target,
@@ -420,7 +420,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
         for transactionScope: TransactionScope,
         context: DatabaseOperationContext
     ) throws -> DatabaseMutationStateBinding {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch transactionScope {
         case .requestTarget:
             return try stateAccess.binding(for: context.target)
@@ -527,7 +527,7 @@ public struct DatabaseTransactionalOperationCoordinator: Sendable {
                 operation
             )
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch context.target {
         case .database:
             return try await context.requireControlExecutor().withTransaction(

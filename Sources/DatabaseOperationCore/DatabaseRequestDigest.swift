@@ -5,7 +5,7 @@ import DatabaseTypes
 public enum DatabaseRequestDigest {
     public static let byteCount = 32
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     public static func computeRequest(
         operation: DatabaseOperationIdentifier,
         target: DatabaseOperationTarget,

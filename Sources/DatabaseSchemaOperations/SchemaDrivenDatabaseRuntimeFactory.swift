@@ -1,5 +1,5 @@
-import DatabaseJobRuntime
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseJobRuntime
 import DatabaseKit
 import DatabaseRuntime
 
@@ -7,11 +7,14 @@ import DatabaseRuntime
 /// canonical `SchemaManifest` rather than compiled `Persistable` types.
 public struct SchemaDrivenDatabaseRuntimeFactory: DatabaseSchemaRuntimeFactory,
     Sendable {
+    private let executionIdentity: DatabaseExecutionRuntimeIdentity
     private let authorizationPolicies: [AuthorizationPolicyHandler]
 
     public init(
+        executionIdentity: DatabaseExecutionRuntimeIdentity,
         authorizationPolicies: [AuthorizationPolicyHandler] = []
     ) {
+        self.executionIdentity = executionIdentity
         self.authorizationPolicies = authorizationPolicies
     }
 
@@ -19,6 +22,7 @@ public struct SchemaDrivenDatabaseRuntimeFactory: DatabaseSchemaRuntimeFactory,
         for schema: Schema
     ) async throws -> DatabaseRuntimeConfiguration {
         try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: executionIdentity,
             schema: schema,
             authorizationPolicies: authorizationPolicies
         )

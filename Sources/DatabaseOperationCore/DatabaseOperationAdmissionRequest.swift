@@ -5,13 +5,13 @@ import DatabaseKit
 public struct DatabaseOperationAdmissionRequest: Sendable, Hashable {
     public let requestID: UInt64
     public let operation: DatabaseOperationIdentifier
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     public let target: DatabaseOperationTarget
     #endif
     public let metadata: OperationRequestMetadata
     public let authorization: AuthorizationContext
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     public init(
         requestID: UInt64,
         operation: DatabaseOperationIdentifier,

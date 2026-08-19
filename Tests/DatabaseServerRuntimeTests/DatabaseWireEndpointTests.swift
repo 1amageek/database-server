@@ -1,11 +1,11 @@
-import DatabaseKit
-import TestSupport
-import DatabaseRuntime
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
+import DatabaseRuntime
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Canonical database endpoint", .serialized)
@@ -226,7 +226,7 @@ struct DatabaseWireEndpointTests {
         #expect(error.details.isEmpty)
     }
 
-    #if MultipleBases
+    #if MultiBase
     @Test("request and response limits remain independent")
     func asymmetricWireLimitsRemainIndependent() async throws {
         let container = try await makeContainer()
@@ -340,7 +340,7 @@ struct DatabaseWireEndpointTests {
     @Test("capabilities and schema handlers describe the compiled runtime")
     func describesCapabilitiesAndSchema() async throws {
         let container = try await makeContainer()
-        #if MultipleBases
+        #if MultiBase
         try await container.grantTestDatabaseAccess(
             to: .principal("test-runner"),
             access: .read
@@ -356,7 +356,7 @@ struct DatabaseWireEndpointTests {
                             try JobOperationIdentifier(
                                 family: .commandExecute,
                                 kind: "calendar.import.validate"
-                            ),
+                            )
                         ]
                     )
                 ),
@@ -386,7 +386,7 @@ struct DatabaseWireEndpointTests {
         )
 
         #expect(capabilities.runtimeVersion == "3.2.1")
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         #expect(
             capabilities.features.map(\.identifier) == [
                 "base.execute",
@@ -443,7 +443,7 @@ struct DatabaseWireEndpointTests {
                 try JobOperationIdentifier(
                     family: .commandExecute,
                     kind: "calendar.import.validate"
-                ),
+                )
             ]
         )
         #expect(schema.version == container.schema.version)
@@ -462,7 +462,11 @@ struct DatabaseWireEndpointTests {
             for: schema,
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -502,7 +506,7 @@ struct DatabaseWireEndpointTests {
         metadata: OperationRequestMetadata = OperationRequestMetadata(),
         payload: Request
     ) throws -> ByteString {
-        #if MultipleBases
+        #if MultiBase
         return try DatabaseWireEncoder().encodeRequest(
             operation,
             requestID: requestID,

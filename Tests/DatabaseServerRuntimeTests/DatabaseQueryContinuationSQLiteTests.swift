@@ -52,7 +52,7 @@ struct DatabaseQueryContinuationSQLiteTests {
             return
         }
         let continuation = try #require(firstPage.continuation)
-        #if MultipleBases
+        #if MultiBase
         guard case .transactional(let readPoint) = firstPage.consistency else {
             Issue.record("Expected one transactional SQLite read point")
             return
@@ -81,7 +81,7 @@ struct DatabaseQueryContinuationSQLiteTests {
         }
         #expect(secondPage.rowCount == 1)
         #expect(secondPage.continuation == nil)
-        #if MultipleBases
+        #if MultiBase
         guard case .transactional(let secondReadPoint) = secondPage.consistency
         else {
             Issue.record("Expected one transactional SQLite read point")
@@ -105,10 +105,14 @@ struct DatabaseQueryContinuationSQLiteTests {
             ),
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SQLiteContinuationEntity.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -134,7 +138,7 @@ struct DatabaseQueryContinuationSQLiteTests {
                         runtimeLimits: .default,
                         querySnapshotStore: snapshotStore
                     )
-                ),
+                )
             ],
             requiredOperations: [.queryExecute]
         )
@@ -166,7 +170,7 @@ struct DatabaseQueryContinuationSQLiteTests {
         endpoint: DatabaseWireEndpoint
     ) async throws -> Result<QueryExecuteOperation.Response, RemoteOperationError> {
         let encoder = DatabaseWireEncoder()
-        #if MultipleBases
+        #if MultiBase
         let requestFrame = try encoder.encodeRequest(
             DatabaseOperationCatalog.queryExecute,
             requestID: requestID,
@@ -195,7 +199,7 @@ struct DatabaseQueryContinuationSQLiteTests {
         )
     }
 
-    #if MultipleBases
+    #if MultiBase
     private func operationTarget() throws -> DatabaseOperationTarget {
         .base(try TestBaseEnvironment.id())
     }

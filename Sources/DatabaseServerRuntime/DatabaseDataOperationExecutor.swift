@@ -1,13 +1,13 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
-import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseGraphOperations
+import DatabaseJobRuntime
 import DatabaseKit
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
+import DatabaseOperationCore
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
@@ -18,16 +18,16 @@ import GraphIndex
 /// Executes database semantics against one already selected data root.
 ///
 /// The executor has no API for resolving another root. Base lifecycle remains
-/// in `BaseOperationExecutor` when the `MultipleBases` trait is enabled.
+/// in `BaseOperationExecutor` when the `MultiBase` trait is enabled.
 package final class DatabaseDataOperationExecutor: Sendable {
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package let resource: Security.Resource
     #endif
     package let authorization: AuthorizationContext
     package let container: DBContainer
     private let dataContext: DatabaseContext
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package init(
         resource: Security.Resource,
         container: DBContainer,
@@ -75,7 +75,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
             any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         try await dataContext.withExecutionTransaction(
             requiredAccess: requiredAccess,
             configuration: configuration,
@@ -102,7 +102,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
             DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         try await dataContext.withExecutionTransaction(
             requiredAccess: requiredAccess,
             configuration: configuration,
@@ -129,7 +129,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
         ) async throws -> Result
     ) async throws -> Result {
         let lease = try container.executionStorage()
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard lease.resource == resource else {
             throw DatabaseOperationError.dataRootLeaseMismatch
         }
@@ -146,12 +146,40 @@ package final class DatabaseDataOperationExecutor: Sendable {
         DatabaseIndexMaintenanceRuntime(container: container)
     }
 
-    package func pendingSchemaIndexBuilds(
-        in schema: Schema,
+    package func makePolymorphicIndexMaintenanceRuntime()
+        -> DatabasePolymorphicIndexMaintenanceRuntime
+    {
+        DatabasePolymorphicIndexMaintenanceRuntime(container: container)
+    }
+
+    package func pendingSchemaIndexRetirements(
+        validFor schema: Schema,
         transaction: any TransactionAccess
-    ) async throws -> [String: Set<String>] {
-        try await container.pendingSchemaIndexBuilds(
-            in: schema,
+    ) async throws -> [DatabasePendingIndexRetirement] {
+        try await container.pendingSchemaIndexRetirements(
+            validFor: schema,
+            transaction: transaction
+        )
+    }
+
+    package func completeSchemaIndexRetirement(
+        _ retirement: DatabasePendingIndexRetirement,
+        transaction: any TransactionAccess
+    ) throws {
+        try container.completeSchemaIndexRetirement(
+            retirement,
+            transaction: transaction
+        )
+    }
+
+    package func retireSchemaIndexStorage(
+        _ retirement: DatabasePendingIndexRetirement,
+        partitions: FieldObject,
+        transaction: any TransactionAccess
+    ) throws {
+        try container.retireSchemaIndexStorage(
+            retirement,
+            partitions: partitions,
             transaction: transaction
         )
     }
@@ -171,13 +199,11 @@ package final class DatabaseDataOperationExecutor: Sendable {
     }
 
     package func completeSchemaIndexBuild(
-        entity: String,
-        index: String,
+        _ target: DatabaseIndexTransitionPlan.Target,
         transaction: any TransactionAccess
     ) throws {
         try container.completeSchemaIndexBuild(
-            entity: entity,
-            index: index,
+            target,
             transaction: transaction
         )
     }
@@ -218,25 +244,29 @@ package final class DatabaseDataOperationExecutor: Sendable {
         targetVersion: Schema.Version? = nil,
         transaction: any TransactionAccess
     ) async throws -> DatabaseMigrationStatus {
-        try await dataContext.withExecutionDataOperation {
+        try await container.withMigrationMaintenanceAccess {
+            try await self.dataContext.withExecutionDataOperation {
             try await self.container.migrationStatus(
                 targetVersion: targetVersion,
                 transaction: transaction
-            )
+                )
+            }
         }
     }
 
     package func migrationStatus(
         targetVersion: Schema.Version? = nil
     ) async throws -> DatabaseMigrationStatus {
-        try await withStorageTransaction(
+        try await container.withMigrationMaintenanceAccess {
+            try await self.withStorageTransaction(
             requiredAccess: .administer,
             configuration: .readOnly
         ) { transaction in
             try await self.container.migrationStatus(
                 targetVersion: targetVersion,
                 transaction: transaction
-            )
+                )
+            }
         }
     }
 
@@ -244,16 +274,18 @@ package final class DatabaseDataOperationExecutor: Sendable {
         targetVersion: Schema.Version? = nil,
         maximumStageCount: UInt64
     ) async throws -> DatabaseMigrationExecutionResult {
-        try await dataContext.withExecutionDataOperation {
+        try await container.withMigrationMaintenanceAccess {
+            try await self.dataContext.withExecutionDataOperation {
             try await self.container.runMigrations(
                 targetVersion: targetVersion,
                 maximumStageCount: maximumStageCount
-            )
+                )
+            }
         }
     }
 
     package func authorize(_ access: Security.Access) async throws {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         try await withDataTransaction(
             requiredAccess: access,
             configuration: .readOnly
@@ -266,7 +298,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
         #endif
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package func grantStore() throws -> DatabaseGrantStore {
         let root = try container.executionStorage()
         guard root.resource == resource else {
@@ -304,7 +336,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
         try transaction.clear(key: maintenanceCheckpointKey(for: jobID))
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private var target: DatabaseOperationTarget {
         switch resource {
         case .database: .database
@@ -317,7 +349,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
         for jobID: DatabaseTypes.UUID
     ) throws -> ByteString {
         let root = try container.executionStorage()
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard root.resource == resource else {
             throw DatabaseAdministrationError.targetMismatch(target)
         }

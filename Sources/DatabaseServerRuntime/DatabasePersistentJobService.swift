@@ -30,11 +30,11 @@ public final class DatabasePersistentJobService:
         registry.identifiers
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    public func baseAdmission(
+    #if DATABASE_SERVER_MULTI_BASE
+    public func startBaseAdmission(
         for operation: JobOperationIdentifier
     ) throws -> DatabaseBaseAdmissionKind {
-        try registry.resolve(operation).baseAdmission
+        try registry.resolve(operation).startBaseAdmission
     }
     #endif
 
@@ -83,7 +83,7 @@ public final class DatabasePersistentJobService:
         let requestPayload = context.requestPayload
         let service = self
         let coordinated: DatabaseCoordinatedOperationResponse
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch context.target {
         case .database:
             coordinated = try await coordinator.executeControlMetadata(
@@ -105,7 +105,7 @@ public final class DatabasePersistentJobService:
             }
         case .base:
             let executor = try context.requireBaseExecutor()
-            let baseAdmission = try baseAdmission(for: request.operation)
+            let baseAdmission = try startBaseAdmission(for: request.operation)
             guard context.requirement.baseAdmission == baseAdmission else {
                 throw DatabaseJobRuntimeError.invalidTarget
             }
@@ -203,7 +203,7 @@ public final class DatabasePersistentJobService:
         transaction: DatabaseTransaction
     ) async throws -> DatabasePreparedPersistentJob {
         try validate(request)
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard request.target == context.target else {
             throw DatabaseJobRuntimeError.invalidTarget
         }
@@ -233,7 +233,7 @@ public final class DatabasePersistentJobService:
             sliceTimeoutMilliseconds: compiled.sliceTimeoutMilliseconds
         )
 
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let targetDigestPrefix = try DatabaseWireWriter.encode {
             (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
             try request.target.encode(into: &writer)
@@ -261,7 +261,7 @@ public final class DatabasePersistentJobService:
                 context.jobAuthorizationReference else {
             throw DatabaseJobAuthorizationError.referenceRequired
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let specification = DatabasePersistentJobSpecification(
             jobID: jobID,
             operation: request.operation,
@@ -326,7 +326,7 @@ public final class DatabasePersistentJobService:
             failure: nil,
             updatedAt: createdAt
         )
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let identity = JobIdentity(
             jobID: jobID,
             operation: request.operation,
@@ -471,7 +471,7 @@ public final class DatabasePersistentJobService:
                     actual: snapshot.specification.operation
                 )
             }
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             guard snapshot.specification.target == request.target else {
                 throw DatabaseJobRuntimeError.invalidTarget
             }
@@ -518,7 +518,7 @@ public final class DatabasePersistentJobService:
             )
         }
         let coordinated: DatabaseCoordinatedOperationResponse
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch context.target {
         case .database:
             coordinated = try await coordinator.executeControlMetadata(
@@ -588,7 +588,7 @@ public final class DatabasePersistentJobService:
                 actual: snapshot.specification.operation
             )
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard snapshot.specification.target == job.target else {
             throw DatabaseJobRuntimeError.invalidTarget
         }
@@ -600,7 +600,7 @@ public final class DatabasePersistentJobService:
         _ context: DatabaseOperationContext,
         snapshot: DatabasePersistentJobSnapshot
     ) async throws {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch context.target {
         case .database:
             try await context.requireControlExecutor().withTransaction(
@@ -687,7 +687,7 @@ public final class DatabasePersistentJobService:
         }
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     static func operationContext(
         for snapshot: DatabasePersistentJobSnapshot,
         container: DBContainer,

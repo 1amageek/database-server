@@ -1,6 +1,6 @@
 import DatabaseKit
-import DatabaseTypes
 import DatabaseRuntime
+import DatabaseTypes
 
 @Persistable
 struct CatalogPartitionedEntity {
@@ -10,10 +10,10 @@ struct CatalogPartitionedEntity {
         \CatalogPartitionedEntity.tenantID
     )
     #Index(
-        .scalar,
-        fields: [\CatalogPartitionedEntity.value],
-        name: "catalog_value"
-    )
+        .ordered(
+            name: "catalog_value",
+            keys: [.ascending(\CatalogPartitionedEntity.value)]
+        ))
 
     var id: String = ""
     var tenantID: String = ""

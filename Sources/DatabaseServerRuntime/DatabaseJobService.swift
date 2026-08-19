@@ -11,10 +11,10 @@ import DatabaseOperationCore
 public protocol DatabaseJobService: Sendable {
     var jobOperations: [JobOperationIdentifier] { get }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    /// Resolves the Base lifecycle admission required by a concrete durable
-    /// operation before the endpoint constructs its target-bound executor.
-    func baseAdmission(
+    #if DATABASE_SERVER_MULTI_BASE
+    /// Resolves the Base lifecycle admission required while a concrete durable
+    /// operation is validated and compiled.
+    func startBaseAdmission(
         for operation: JobOperationIdentifier
     ) throws -> DatabaseBaseAdmissionKind
     #endif

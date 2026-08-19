@@ -11,11 +11,11 @@ import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import DatabaseKit
 import StorageKit
-#if DATABASE_OPERATIONS_GRAPH_INDEXES && DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_OPERATIONS_GRAPH_INDEXES && DATABASE_SERVER_MULTI_BASE
 @_spi(DatabaseExecution) import GraphIndex
 #endif
 
-#if DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_SERVER_MULTI_BASE
 private typealias DatabaseQueryBooleanResponse = QueryBooleanResult
 #else
 private typealias DatabaseQueryBooleanResponse = Bool
@@ -79,7 +79,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         workMeter: DatabaseWorkMeter,
         structuralLimits: QueryStructuralLimits
     ) async throws -> QueryExecuteOperation.Response {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         if case .composition = context.target {
             switch statement {
             case .select, .ask, .construct, .describe:
@@ -121,7 +121,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             #endif
         case .construct(let query):
             #if DATABASE_OPERATIONS_GRAPH_INDEXES
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             if case .composition = context.target {
                 return .rdfGraph(
                     try await executeCompositionRDFGraph(
@@ -153,7 +153,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             #endif
         case .describe(let query):
             #if DATABASE_OPERATIONS_GRAPH_INDEXES
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             if case .composition = context.target {
                 return .rdfGraph(
                     try await executeCompositionRDFGraph(
@@ -195,7 +195,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         workMeter: DatabaseWorkMeter,
         structuralLimits: QueryStructuralLimits
     ) async throws -> QueryRowPage {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         if case .composition = context.target {
             let queryFingerprint = try DatabaseQuerySnapshotStore
                 .queryFingerprint(
@@ -270,26 +270,34 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 limits: context.wireLimits
             )
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard cursor?.resource == nil || cursor?.resource == lease.resource,
-              cursor?.dataGeneration == nil
+            cursor?.schemaGeneration == nil
+                || cursor?.schemaGeneration == context.executor.schemaGeneration,
+            cursor?.dataGeneration == nil
                 || cursor?.dataGeneration == lease.generation
         else {
             throw DatabaseQueryExecutionError.invalidContinuation
         }
         #else
-        guard cursor?.dataGeneration == nil
-                || cursor?.dataGeneration == lease.generation else {
+        guard
+            cursor?.schemaGeneration == nil
+                || cursor?.schemaGeneration == context.executor.schemaGeneration,
+            cursor?.dataGeneration == nil
+                || cursor?.dataGeneration == lease.generation
+        else {
             throw DatabaseQueryExecutionError.invalidContinuation
         }
         #endif
         let page = try await databaseContext.executeCanonicalRead {
             transaction in
             if let restorableReadPosition = cursor?.restorableReadPosition {
-                guard try DatabaseTransactionReadPoint.restore(
-                    restorableReadPosition,
-                    transaction: transaction
-                ) else {
+                guard
+                    try DatabaseTransactionReadPoint.restore(
+                        restorableReadPosition,
+                        transaction: transaction
+                    )
+                else {
                     throw DatabaseQueryExecutionError.invalidContinuation
                 }
             }
@@ -298,7 +306,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 transaction: transaction
             )
             if case .version(let expectedVersion)? = cursor?
-                .restorableReadPosition {
+                .restorableReadPosition
+            {
                 guard readPoint.position == .version(expectedVersion) else {
                     throw DatabaseQueryExecutionError.invalidContinuation
                 }
@@ -338,6 +347,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     readPoint: transaction.capabilities.historicalReadVersion
                         ? readPoint.position
                         : nil,
+                    schemaGeneration: context.executor.schemaGeneration,
                     lease: lease,
                     limits: context.wireLimits
                 )
@@ -516,7 +526,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         try workMeter.recordOutputRows(rowCount)
     }
 
-    #if DATABASE_OPERATIONS_GRAPH_INDEXES && DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_OPERATIONS_GRAPH_INDEXES && DATABASE_SERVER_MULTI_BASE
     private func executeCompositionRDFGraph(
         _ statement: DatabaseCompositionRDFQueryAdapter.Statement,
         request: QueryExecuteOperation.Request,
@@ -576,7 +586,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         guard request.page.continuation == nil else {
             throw DatabaseQueryExecutionError.continuationNotSupported("ASK")
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         if case .composition = context.target {
             let source = try context.requireCompositionExecutor()
             let result: CompositionAskResult
@@ -632,7 +642,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 domainID: lease.domainIdentifier,
                 transaction: transaction
             )
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             return try QueryBooleanResult(
                 value: value,
                 provenance: nil,
@@ -662,7 +672,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         try workMeter.recordOutputRows(quadCount)
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private static func mapCompositionError(
         _ error: CompositionQueryError
     ) -> DatabaseQueryExecutionError {
@@ -735,19 +745,22 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
     private static func encodeCursor(
         continuation: ByteString,
         readPoint: DatabaseStorageReadPosition?,
+        schemaGeneration: UInt64,
         lease: DatabaseExecutionStorage,
         limits: DatabaseWireLimits
     ) throws -> ByteString {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return try DatabaseQueryPageCursor(
             resource: lease.resource,
             restorableReadPosition: readPoint,
+            schemaGeneration: schemaGeneration,
             dataGeneration: lease.generation,
             continuation: continuation
         ).encode(limits: limits)
         #else
         return try DatabaseQueryPageCursor(
             restorableReadPosition: readPoint,
+            schemaGeneration: schemaGeneration,
             dataGeneration: lease.generation,
             continuation: continuation
         ).encode(limits: limits)
@@ -770,7 +783,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             }
             return QueryColumn(number: number, name: name)
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return try QueryRowPage(
             columns: columns,
             rows: try response.rows.map {

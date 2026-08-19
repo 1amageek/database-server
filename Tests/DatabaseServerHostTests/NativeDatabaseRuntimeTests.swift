@@ -55,7 +55,7 @@ struct NativeDatabaseRuntimeTests {
         }
     }
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     @Test("A native host owns multiple storage domains as one topology")
     func multipleStorageDomainsOpenAndShutdownTogether() async throws {
         let environment = try await NativeDatabaseRuntimeEnvironment.open(
@@ -130,7 +130,7 @@ private func openNativeRuntime(
     authenticator: any DatabaseServerAuthenticator,
     version: String
 ) async throws -> NativeDatabaseRuntimeEnvironment {
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     try await NativeDatabaseRuntimeEnvironment.open(
         storageTopology: .single(
             storage: .sqliteMemory,
@@ -149,7 +149,7 @@ private func openNativeRuntime(
     #endif
 }
 
-#if DATABASE_SERVER_HOST_MULTIPLE_BASES
+#if DATABASE_SERVER_HOST_MULTI_BASE
 private func multipleDomainTopology()
     -> NativeDatabaseStorageTopologyConfiguration
 {

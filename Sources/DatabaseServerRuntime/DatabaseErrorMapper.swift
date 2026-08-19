@@ -1,24 +1,25 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
-import DatabaseOperationCore
-import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseGraphOperations
+import DatabaseJobRuntime
+import DatabaseKit
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
+import DatabaseOperationCore
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
+import QueryAST
+import StorageKit
+
 #if DATABASE_OPERATIONS_GRAPH_INDEXES
 import GraphIndex
 import OntologyIndex
 #endif
-import QueryAST
 #if DATABASE_OPERATIONS_RELATIONSHIPS
 import RelationshipIndex
 #endif
-import StorageKit
 
 public protocol DatabaseErrorMapper: Sendable {
     func remoteError(
@@ -133,10 +134,10 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                         (
                             key: "operation",
                             value: .uint64(UInt64(operation.rawValue))
-                        ),
+                        )
                     ])
                 )
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             case .targetKindNotAccepted:
                 return RemoteOperationError(
                     category: .invalidRequest,
@@ -159,7 +160,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                     details: Self.errorDetails([
                         (key: "timeoutMilliseconds",
                             value: .uint64(UInt64(timeoutMilliseconds))
-                        ),
+                        )
                     ])
                 )
             }
@@ -179,7 +180,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 details: Self.errorDetails([
                     (key: "timeoutMilliseconds",
                         value: .uint64(deadlineError.timeoutMilliseconds)
-                    ),
+                    )
                 ])
             )
         }
@@ -385,7 +386,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         if let projectionError = error as? PolymorphicProjectionError {
             return Self.map(projectionError)
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         if let grantError = error as? DatabaseGrantAuthorizationError {
             return Self.map(grantError, target: context.target)
         }
@@ -402,7 +403,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return Self.map(compositionCatalogError)
         }
         #endif
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         if let administrationError = error as? DatabaseAdministrationError {
             return Self.map(administrationError)
         }
@@ -412,6 +413,11 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         }
         if let jobError = error as? DatabaseJobRuntimeError {
             return Self.map(jobError)
+        }
+        if let migrationAdmissionError =
+            error as? DatabaseMigrationAdmissionError
+        {
+            return Self.map(migrationAdmissionError)
         }
         if let maintenanceError = error as? DatabaseMaintenanceRuntimeError {
             return Self.map(maintenanceError)
@@ -456,6 +462,13 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                     message: schemaError.description,
                     retryability: .never
                 )
+            case .generationConflict:
+                return RemoteOperationError(
+                    category: .conflict,
+                    code: "SCHEMA_GENERATION_CONFLICT",
+                    message: schemaError.description,
+                    retryability: .never
+                )
             case .generationOverflow, .corruptedState:
                 return RemoteOperationError(
                     category: .internalFailure,
@@ -497,8 +510,24 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 )
             }
         }
+        if let configurationError = error as? IndexRuntimeConfigurationError {
+            return RemoteOperationError(
+                category: .invalidRequest,
+                code: "SCHEMA_INDEX_RUNTIME_CONFIGURATION_INVALID",
+                message: configurationError.description,
+                retryability: .never
+            )
+        }
         if let schemaJobError = error as? DatabaseSchemaApplyJobError {
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            if case .physicalLayoutChanged = schemaJobError {
+                return RemoteOperationError(
+                    category: .conflict,
+                    code: "SCHEMA_PHYSICAL_LAYOUT_CHANGED",
+                    message: schemaJobError.description,
+                    retryability: .never
+                )
+            }
+            #if DATABASE_SERVER_MULTI_BASE
             if case .baseLifecycleTransitionInProgress = schemaJobError {
                 return RemoteOperationError(
                     category: .conflict,
@@ -1367,7 +1396,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             code = "PRECONDITION_FAILED"
             retryability = .never
             details = Self.errorDetails([
-                (key: "identity", value: .reference(identity)),
+                (key: "identity", value: .reference(identity))
             ])
         }
         return RemoteOperationError(
@@ -1510,7 +1539,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
     }
     #endif
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private static func map(
         _ error: DatabaseGrantAuthorizationError,
         target: DatabaseOperationTarget
@@ -1574,7 +1603,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private static func map(
         _ error: DatabaseBaseExecutionError,
         target: DatabaseOperationTarget
@@ -1758,7 +1787,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
     }
     #endif
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private static func map(
         _ error: DatabaseAdministrationError
     ) -> RemoteOperationError {
@@ -1832,6 +1861,9 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
              .unsuccessfulOutcomeExceedsLimits, .sliceMadeNoProgress:
             category = .resourceLimit
             code = "JOB_RESOURCE_LIMIT"
+        case .sliceTimedOut:
+            category = .resourceLimit
+            code = "JOB_SLICE_TIMED_OUT"
         case .invalidConfiguration, .corruptedSpecification, .corruptedPlan,
              .corruptedState, .corruptedResult, .resultChunkMissing,
              .invalidStateTransition, .stateRevisionOverflow,
@@ -1840,12 +1872,58 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "JOB_RUNTIME_FAILURE"
         }
+        let retryability: OperationRetryability =
+            switch error {
+            case .sliceTimedOut:
+                .backoff
+            default:
+                .never
+            }
         return RemoteOperationError(
             category: category,
             code: code,
             message: error.description,
-            retryability: .never
+            retryability: retryability
         )
+    }
+
+    private static func map(
+        _ error: DatabaseMigrationAdmissionError
+    ) -> RemoteOperationError {
+        switch error {
+        case .migrationRequired:
+            return RemoteOperationError(
+                category: .unavailable,
+                code: "DATABASE_MIGRATION_REQUIRED",
+                message: error.description,
+                retryability: .backoff
+            )
+        case .migrationInProgress:
+            return RemoteOperationError(
+                category: .unavailable,
+                code: "DATABASE_MIGRATION_IN_PROGRESS",
+                message: error.description,
+                retryability: .backoff
+            )
+        case .staleSchemaGeneration(let required, let actual):
+            return RemoteOperationError(
+                category: .unavailable,
+                code: "DATABASE_SCHEMA_GENERATION_STALE",
+                message: error.description,
+                retryability: .immediate,
+                details: Self.errorDetails([
+                    (key: "requiredGeneration", value: .uint64(required)),
+                    (key: "actualGeneration", value: .uint64(actual)),
+                ])
+            )
+        case .operationLimitExceeded:
+            return RemoteOperationError(
+                category: .internalFailure,
+                code: "DATABASE_MIGRATION_ADMISSION_FAILURE",
+                message: error.description,
+                retryability: .never
+            )
+        }
     }
 
     private static func map(
@@ -1888,9 +1966,12 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         let category: OperationErrorCategory
         let code: String
         switch error {
-        case .entityNotFound, .indexNotFound:
+        case .entityNotFound, .polymorphicGroupNotFound, .indexNotFound:
             category = .notFound
             code = "INDEX_TARGET_NOT_FOUND"
+        case .indexGenerationMismatch:
+            category = .conflict
+            code = "INDEX_GENERATION_MISMATCH"
         case .buildAlreadyActive:
             category = .conflict
             code = "INDEX_REBUILD_ACTIVE"
@@ -1903,7 +1984,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .invalidContinuation:
             category = .invalidRequest
             code = "INVALID_INDEX_CONTINUATION"
-        case .compiledTypeMissing, .corruptedRebuildState, .entityCountOverflow:
+        case .polymorphicGroupHasNoMembers, .polymorphicTypeCodeCollision,
+             .compiledTypeMissing, .corruptedRebuildState, .entityCountOverflow:
             category = .internalFailure
             code = "INDEX_REBUILD_FAILURE"
         }

@@ -1,6 +1,5 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseServerRuntime
 import DatabaseTypes
@@ -8,6 +7,7 @@ import DatabaseWire
 import GraphIndex
 import OntologyIndex
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Schema database SHACL data source resolver")
@@ -148,7 +148,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
         let triples = [
             ("subclass", "urn:test:Employee", Self.rdfsSubClassOf, "urn:test:Person"),
             ("subproperty", "urn:test:manages", Self.rdfsSubPropertyOf, "urn:test:knows"),
-            ("type", "urn:test:Alice", Self.rdfType, "urn:test:Employee")
+            ("type", "urn:test:Alice", Self.rdfType, "urn:test:Employee"),
         ]
         let context = resolutionContext.container.testBaseContext()
         for (id, subject, predicate, object) in triples {
@@ -172,7 +172,7 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             iri: "urn:test:shacl-ontology",
             classes: [
                 OWLClass(iri: "urn:test:Person"),
-                OWLClass(iri: "urn:test:Employee")
+                OWLClass(iri: "urn:test:Employee"),
             ]
         )
         ontology.axioms = [
@@ -246,12 +246,16 @@ struct SchemaDatabaseSHACLDataSourceResolverTests {
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self)]
             ),
             security: .testingDisabled
         )
         guard let descriptor = try DatabaseSHACLStatement.indexDescriptors
-            .first(where: { $0.kindIdentifier == "rdf_quad" }) else {
+            .first(where: { $0.type == .graph(.rdf) }) else {
             throw SHACLDataSourceResolutionSetupError.missingRDFIndex
         }
         let stateStore = DatabaseMutationStateStore(

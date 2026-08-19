@@ -1,18 +1,24 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
-import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseGraphOperations
+import DatabaseJobRuntime
 import DatabaseKit
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
+import DatabaseOperationCore
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
+import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 
 /// Owns the cross-domain sequencing required by one database-scoped schema
 /// transition. Each callback receives an executor fixed to one data root.
 package final class DatabaseSchemaTransitionExecutor: Sendable {
+    package struct PreparedRuntime: Sendable {
+        package let configuration: DatabaseRuntimeConfiguration
+        package let generation: DatabasePreparedSchemaGeneration
+    }
+
     private let container: DBContainer
     private let authorization: AuthorizationContext
     private let runtimeFactory: AnyDatabaseSchemaRuntimeFactory
@@ -33,7 +39,7 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
             DatabaseDataOperationExecutor
         ) async throws -> Result
     ) async throws -> Result {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch target.resource {
         case .database:
             guard target.generation == 0 else {
@@ -90,21 +96,61 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
 
     func stage(
         _ target: DatabaseSchemaApplyJobPlan.DataTarget,
-        previousSchema: Schema,
-        targetSchema: Schema
+        targetSchema: Schema,
+        physicalLayouts: [String: IndexPhysicalLayout],
+        retirements: [DatabaseIndexTransitionPlan.Target]
     ) async throws {
         try await withDataTarget(target) { executor in
             try await executor.withDataTransaction(
                 requiredAccess: .administer,
                 configuration: .batch
             ) { transaction in
-                _ = try await self.container.initializeNewSchemaIndexStates(
-                    from: previousSchema,
-                    to: targetSchema,
+                _ = try await self.container.initializeSchemaIndexStates(
+                    for: targetSchema,
+                    indexPhysicalLayouts: physicalLayouts,
+                    transaction: transaction.executionStorageAccess
+                )
+                try await self.container.stageSchemaIndexRetirements(
+                    retirements.map(DatabasePendingIndexRetirement.init),
+                    validFor: targetSchema,
+                    indexPhysicalLayouts: physicalLayouts,
                     transaction: transaction.executionStorageAccess
                 )
             }
         }
+    }
+
+    package func preflight(
+        schema: Schema,
+        expectedIndexPhysicalFingerprint: ByteString? = nil
+    ) async throws -> PreparedRuntime {
+        let configuration =
+            try await runtimeFactory
+            .makeOperationConfiguration(for: schema)
+        let generation = try container.prepareSchemaGeneration(
+            schema,
+            runtimeConfiguration: configuration
+        )
+        if let expectedIndexPhysicalFingerprint,
+            generation.indexPhysicalFingerprint
+                != expectedIndexPhysicalFingerprint
+        {
+            throw DatabaseSchemaApplyJobError.physicalLayoutChanged
+        }
+        return PreparedRuntime(
+            configuration: configuration,
+            generation: generation
+        )
+    }
+
+    package func planIndexTransition(
+        targetSchema: Schema,
+        preparedGeneration: DatabasePreparedSchemaGeneration
+    ) throws -> DatabaseIndexTransitionPlan {
+        try container.planIndexTransition(
+            to: targetSchema,
+            preparedGeneration: preparedGeneration
+        )
     }
 
     func installSnapshot(
@@ -128,13 +174,13 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
         manifest: SchemaManifest,
         expectedFingerprint: SchemaFingerprint,
         targetFingerprint: SchemaFingerprint,
+        expectedIndexPhysicalFingerprint: ByteString,
         idempotencyKey: String
     ) async throws -> DatabaseSchemaPublicationResult {
-        let runtimeConfiguration = try await runtimeFactory
-            .makeOperationConfiguration(for: manifest.schema)
-        try container.validateSchemaGeneration(
-            manifest.schema,
-            runtimeConfiguration: runtimeConfiguration
+        let prepared = try await preflight(
+            schema: manifest.schema,
+            expectedIndexPhysicalFingerprint:
+                expectedIndexPhysicalFingerprint
         )
         return try await container.publishSchema(
             manifest.schema,
@@ -142,8 +188,28 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
             expectedFingerprint: expectedFingerprint,
             idempotencyKey: idempotencyKey,
             authorization: authorization,
-            runtimeConfiguration: runtimeConfiguration
+            runtimeConfiguration: prepared.configuration
         )
+    }
+
+    package func waitForRetiredSchemaRequestsToDrain(
+        expectedFingerprint: SchemaFingerprint,
+        expectedVersion: Schema.Version,
+        expectedIndexPhysicalFingerprint: ByteString
+    ) async throws {
+        try Task.checkCancellation()
+        let lease = container.acquirePublishedSchemaLease()
+        guard lease.fingerprint == expectedFingerprint,
+            lease.schema.version == expectedVersion,
+            lease.indexPhysicalFingerprint
+                == expectedIndexPhysicalFingerprint
+        else {
+            throw DatabaseSchemaApplyJobError.publishedSchemaMismatch
+        }
+        try await container.waitForSchemaLeases(
+            olderThan: lease.generation
+        )
+        try Task.checkCancellation()
     }
 
     package func finish(job: JobIdentity) async throws {

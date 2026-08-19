@@ -17,11 +17,17 @@ public protocol DatabaseResumableOperation: Sendable {
     static func job()
         throws(DatabaseWireError) -> JobOperation<Request, Response>
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    /// Declares which Base lifecycle state the operation requires while each
-    /// durable slice runs. Data maintenance uses the default active admission;
-    /// lifecycle operations override this with `.lifecycleJob`.
-    var baseAdmission: DatabaseBaseAdmissionKind { get }
+    #if DATABASE_SERVER_MULTI_BASE
+    /// Declares which Base lifecycle admission is required while the job is
+    /// validated and compiled. This may be broader than slice admission when
+    /// compilation must inspect administrative state while data admission is
+    /// closed, as with an offline migration.
+    var startBaseAdmission: DatabaseBaseAdmissionKind { get }
+
+    /// Declares which Base lifecycle admission is required while each durable
+    /// slice runs. Data maintenance uses active admission by default;
+    /// lifecycle operations override this explicitly.
+    var sliceBaseAdmission: DatabaseBaseAdmissionKind { get }
     #endif
 
     func compile(
@@ -79,8 +85,9 @@ public protocol DatabaseResumableOperation: Sendable {
 }
 
 public extension DatabaseResumableOperation {
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    var baseAdmission: DatabaseBaseAdmissionKind { .activeData }
+    #if DATABASE_SERVER_MULTI_BASE
+    var startBaseAdmission: DatabaseBaseAdmissionKind { .activeData }
+    var sliceBaseAdmission: DatabaseBaseAdmissionKind { .activeData }
     #endif
 
     func commitModel(

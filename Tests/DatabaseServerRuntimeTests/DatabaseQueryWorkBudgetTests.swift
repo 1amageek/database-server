@@ -1,12 +1,12 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
-import DatabaseServerFoundation
+import DatabaseKit
 import DatabaseRuntime
+import DatabaseServerFoundation
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Canonical query work budget", .serialized)
@@ -61,7 +61,7 @@ struct DatabaseQueryWorkBudgetTests {
         }
         let query = SelectQuery(
             projection: .items([
-                ProjectionItem(.parameter(.position(1)), alias: "value"),
+                ProjectionItem(.parameter(.position(1)), alias: "value")
             ]),
             source: .table(TableRef(DatabaseEndpointEntity.persistableType))
         )
@@ -72,7 +72,7 @@ struct DatabaseQueryWorkBudgetTests {
                     position: 1,
                     name: "value",
                     value: value
-                ),
+                )
             ],
             page: QueryExecuteOperation.Page(limit: 1)
         )
@@ -149,7 +149,7 @@ struct DatabaseQueryWorkBudgetTests {
         }
         let query = SelectQuery(
             projection: .items([
-                ProjectionItem(expression, alias: "value"),
+                ProjectionItem(expression, alias: "value")
             ]),
             source: .graphPattern(.basic([]))
         )
@@ -433,7 +433,11 @@ struct DatabaseQueryWorkBudgetTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -521,7 +525,7 @@ struct DatabaseQueryWorkBudgetTests {
         baseContext: DatabaseContext? = nil
     ) throws -> DatabaseOperationContext {
         let baseContext = baseContext ?? container.testBaseContext()
-#if MultipleBases
+#if MultiBase
         return DatabaseOperationContext(
             container: container,
             target: .base(baseContext.baseID),

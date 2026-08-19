@@ -1,5 +1,5 @@
 import DatabaseQueryOperations
-#if DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_SERVER_MULTI_BASE
 @_spi(DatabaseExecution) import DatabaseEngine
 #if DATABASE_OPERATIONS_GRAPH_INDEXES
 @_spi(DatabaseExecution) import GraphIndex

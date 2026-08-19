@@ -21,7 +21,7 @@ enum DatabaseOperationCapabilityCatalog {
             .commandExecute,
             .maintenanceExecute,
         ]
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         operations.append(contentsOf: [
             .baseExecute,
             .compositionExecute,
@@ -72,7 +72,7 @@ enum DatabaseOperationCapabilityCatalog {
                 )
             )
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         features.append(contentsOf: [
             CapabilitiesDescribeOperation.Feature(
                 identifier: "composition.query.scan-filter-project",
@@ -157,7 +157,7 @@ enum DatabaseOperationCapabilityCatalog {
             "schema.describe"
         case .schemaExecute:
             "schema.execute"
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .baseExecute:
             "base.execute"
         case .compositionExecute:

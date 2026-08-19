@@ -1,13 +1,14 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseMutationOperations
 import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
+
 @testable import DatabaseServerRuntime
 
 @Suite("Staged transactional operation coordinator")
@@ -323,7 +324,7 @@ struct DatabaseTransactionalOperationCoordinatorStagedTests {
 private func coordinatedMutationTarget(
     _ context: DatabaseContext
 ) -> TestDataRootTarget {
-#if MultipleBases
+#if MultiBase
     .base(context.baseID)
 #else
     _ = context
@@ -335,7 +336,7 @@ private func coordinatedMutationBinding(
     _ store: DatabaseMutationStateStore,
     context: DatabaseContext
 ) throws -> DatabaseMutationStateBinding {
-    #if MultipleBases
+    #if MultiBase
     try DatabaseMutationStateAccess(store).binding(
         for: coordinatedMutationTarget(context)
     )
@@ -345,12 +346,12 @@ private func coordinatedMutationBinding(
     #endif
 }
 
-private extension DatabaseTransactionalOperationCoordinatorStagedTests {
-    enum PreparationFailure: Error {
+extension DatabaseTransactionalOperationCoordinatorStagedTests {
+    fileprivate enum PreparationFailure: Error {
         case rejected
     }
 
-    final class Counter: Sendable {
+    fileprivate final class Counter: Sendable {
         private let storage = Mutex(0)
 
         var value: Int {
@@ -364,7 +365,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
         }
     }
 
-    struct CoordinatedMutationContext {
+    fileprivate struct CoordinatedMutationContext {
         static let idempotencyKey = "staged-operation"
 
         let container: DBContainer
@@ -384,7 +385,11 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
                     storageEngine: engine
                 ),
                 runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-tests",
+                        revision: 1
+                    ),
+                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
                 ),
                 security: .testingDisabled
             )
@@ -415,7 +420,7 @@ private extension DatabaseTransactionalOperationCoordinatorStagedTests {
             ) async throws -> Int
         ) async throws -> DatabaseCoordinatedOperationResponse {
             let baseContext = container.testBaseContext()
-#if MultipleBases
+#if MultiBase
             let operationContext = DatabaseOperationContext(
                 container: container,
                 target: .base(baseContext.baseID),

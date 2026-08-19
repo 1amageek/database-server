@@ -105,13 +105,13 @@ summary_number() {
 
 case "$TEST_TRAITS" in
   "")
-    default_expected_test_count=279
+    default_expected_test_count=295
     ;;
-  "MultipleBases")
-    default_expected_test_count=305
+  "MultiBase")
+    default_expected_test_count=321
     ;;
   *)
-    echo "error: DATABASE_SERVER_TEST_TRAITS must be empty or MultipleBases" >&2
+    echo "error: DATABASE_SERVER_TEST_TRAITS must be empty or MultiBase" >&2
     exit 2
     ;;
 esac
@@ -165,7 +165,7 @@ if [[ -n "$TEST_TRAITS" ]]; then
     --exclude '*.xcresult' \
     "$ROOT_DIR/" "$source_root/"
   perl -0pi -e '
-    my $replacement = q{.default(enabledTraits: ["AllRuntimeFeatures", "SQLiteBackend", "MultipleBases"])};
+    my $replacement = q{.default(enabledTraits: ["AllRuntimeFeatures", "SQLiteBackend", "MultiBase"])};
     my $count = s/\.default\(enabledTraits:\s*\[[^\]]*\]\)/$replacement/s;
     die "expected one default trait declaration\n" unless $count == 1;
   ' "$source_root/Package.swift"

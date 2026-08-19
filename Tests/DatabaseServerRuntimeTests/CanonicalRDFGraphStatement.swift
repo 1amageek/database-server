@@ -16,12 +16,14 @@ struct CanonicalRDFGraphStatement {
     var weight: Double
 
     #Index(
-        .rdfDataset,
-        from: \CanonicalRDFGraphStatement.subject,
-        edge: \CanonicalRDFGraphStatement.predicate,
-        to: \CanonicalRDFGraphStatement.object,
-        graph: \CanonicalRDFGraphStatement.graph,
-        storedFields: [\CanonicalRDFGraphStatement.weight],
-        name: "rdf-graph"
-    )
+        .graph(
+            name: "rdf-graph",
+            definition: .rdf(
+                subject: \CanonicalRDFGraphStatement.subject,
+                predicate: \CanonicalRDFGraphStatement.predicate,
+                object: \CanonicalRDFGraphStatement.object,
+        graph: \CanonicalRDFGraphStatement.graph
+            ),
+            includedFields: [\CanonicalRDFGraphStatement.weight]
+        ))
 }

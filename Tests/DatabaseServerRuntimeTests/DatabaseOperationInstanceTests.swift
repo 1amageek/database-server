@@ -1,15 +1,16 @@
-import DatabaseKit
-import TestSupport
-import DatabaseRuntime
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseMutationOperations
-@testable import DatabaseServerRuntime
+import DatabaseRuntime
 import DatabaseServerFoundation
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
+
+@testable import DatabaseServerRuntime
 
 @Suite("Database operation runtime", .serialized)
 struct DatabaseOperationInstanceTests {
@@ -54,7 +55,7 @@ struct DatabaseOperationInstanceTests {
                 try JobOperationIdentifier(
                     family: .commandExecute,
                     kind: "database.test.runtime-job"
-                ),
+                )
             ]
         )
     }
@@ -232,7 +233,7 @@ struct DatabaseOperationInstanceTests {
             requiredAccess: .read,
             configuration: .readOnly
         ) { transaction in
-            #if MultipleBases
+            #if MultiBase
             let binding = try DatabaseMutationStateAccess(stateStore).binding(
                 for: runtimeTestTarget(baseContext)
             )
@@ -302,7 +303,7 @@ struct DatabaseOperationInstanceTests {
         try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DatabaseEndpointEntity.schemaEntity,
+                    try DatabaseEndpointEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
@@ -310,7 +311,11 @@ struct DatabaseOperationInstanceTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -348,7 +353,7 @@ struct DatabaseOperationInstanceTests {
         request: Request,
         limits: DatabaseWireLimits = .default
     ) throws -> ByteString {
-        #if MultipleBases
+        #if MultiBase
         return try DatabaseWireEncoder(limits: limits).encodeRequest(
             operation,
             requestID: requestID,
@@ -407,7 +412,7 @@ struct DatabaseOperationInstanceTests {
         CommandRequest(
             command: declaration,
             input: try FieldObject([
-                (key: "value", value: .string(value)),
+                (key: "value", value: .string(value))
             ])
         )
     }
@@ -545,8 +550,8 @@ struct DatabaseOperationInstanceTests {
         private var startWaiters: [CheckedContinuation<Void, Never>] = []
         private var workContinuation: CheckedContinuation<Void, Never>?
 
-        #if MultipleBases
-        nonisolated func baseAdmission(
+        #if MultiBase
+        nonisolated func startBaseAdmission(
             for operation: JobOperationIdentifier
         ) throws -> DatabaseBaseAdmissionKind {
             _ = operation
@@ -661,12 +666,12 @@ struct DatabaseOperationInstanceTests {
                 try JobOperationIdentifier(
                     family: .commandExecute,
                     kind: "database.test.runtime-job"
-                ),
+                )
             ]
         }
 
-        #if MultipleBases
-        func baseAdmission(
+        #if MultiBase
+        func startBaseAdmission(
             for operation: JobOperationIdentifier
         ) throws -> DatabaseBaseAdmissionKind {
             _ = operation
@@ -739,7 +744,7 @@ struct DatabaseOperationInstanceTests {
 }
 
 private func runtimeTestTarget() throws -> TestDataRootTarget {
-#if MultipleBases
+#if MultiBase
     .base(try TestBaseEnvironment.id())
 #else
     .database
@@ -749,7 +754,7 @@ private func runtimeTestTarget() throws -> TestDataRootTarget {
 private func runtimeTestTarget(
     _ context: DatabaseContext
 ) -> TestDataRootTarget {
-#if MultipleBases
+#if MultiBase
     .base(context.baseID)
 #else
     _ = context

@@ -1,10 +1,11 @@
 import DatabaseKit
-import TestSupport
-@_spi(DatabaseExecution) @testable import DatabaseEngine
 import DatabaseRuntime
 import DatabaseTypes
 import StorageKit
+import TestSupport
 import Testing
+
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Suite("Database Partition Catalog Tests", .serialized)
 struct DatabasePartitionCatalogTests {
@@ -120,7 +121,11 @@ struct DatabasePartitionCatalogTests {
             ),
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .testingDisabled
         )

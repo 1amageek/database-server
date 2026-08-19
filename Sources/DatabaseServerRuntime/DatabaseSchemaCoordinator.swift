@@ -1,13 +1,13 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
-import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseGraphOperations
+import DatabaseJobRuntime
 import DatabaseKit
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
+import DatabaseOperationCore
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
 @_spi(DatabaseExecution) import DatabaseWire
 
 public actor DatabaseSchemaCoordinator {
@@ -75,7 +75,7 @@ public actor DatabaseSchemaCoordinator {
         guard let persistentJobService = jobService else {
             throw DatabaseSchemaExecutionError.persistentJobServiceUnavailable
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let startRequest = try DatabaseSchemaApplyResumableOperation.job()
             .makeStartRequest(
                 SchemaExecuteOperation.Request(
@@ -174,7 +174,7 @@ public actor DatabaseSchemaCoordinator {
         do {
             runtimeConfiguration = try await runtimeFactory
                 .makeOperationConfiguration(for: manifest.schema)
-            try container.validateSchemaGeneration(
+            _ = try container.prepareSchemaGeneration(
                 manifest.schema,
                 runtimeConfiguration: runtimeConfiguration
             )
@@ -184,7 +184,7 @@ public actor DatabaseSchemaCoordinator {
             if case .unsupportedStorageCapability(
                 _,
                 let indexName,
-                let kindIdentifier,
+                let indexType,
                 let capability
             ) = error {
                 let capabilityName: String
@@ -195,7 +195,7 @@ public actor DatabaseSchemaCoordinator {
                 throw DatabaseSchemaExecutionError
                     .storageCapabilityUnavailable(
                         indexName: indexName,
-                        kindIdentifier: kindIdentifier,
+                        indexType: indexType,
                         capability: capabilityName
                     )
             }

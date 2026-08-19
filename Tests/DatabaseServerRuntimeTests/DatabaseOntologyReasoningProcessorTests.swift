@@ -1,14 +1,14 @@
-import DatabaseKit
-import TestSupport
-import DatabaseRuntime
-import GraphIndex
 @_spi(DatabaseExecution) import DatabaseEngine
-import DatabaseServerRuntime
+import DatabaseKit
+import DatabaseRuntime
 import DatabaseServerFoundation
+import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
+import GraphIndex
 import OntologyIndex
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Database ontology reasoning processor", .serialized)
@@ -21,7 +21,7 @@ struct DatabaseOntologyReasoningProcessorTests {
                 ontology: "urn:base",
                 axioms: [
                     try ontologyDeclaration("urn:base"),
-                    try classDeclaration("urn:Person")
+                    try classDeclaration("urn:Person"),
                 ]
             ),
             key: "base-1",
@@ -36,7 +36,7 @@ struct DatabaseOntologyReasoningProcessorTests {
                     try classDeclaration("urn:Employee"),
                     try subclass("urn:Employee", of: "urn:Person"),
                     try individualDeclaration("urn:Alice"),
-                    try type("urn:Alice", class: "urn:Employee")
+                    try type("urn:Alice", class: "urn:Employee"),
                 ]
             ),
             key: "calendar-1",
@@ -119,7 +119,7 @@ struct DatabaseOntologyReasoningProcessorTests {
                         subject: "urn:event:1",
                         predicate: "urn:title",
                         object: .literal(literal)
-                    )
+                    ),
                 ]
             ),
             key: "literal-1",
@@ -181,7 +181,7 @@ struct DatabaseOntologyReasoningProcessorTests {
                             lexicalForm: "urn:Event",
                             datatype: .xsdString
                         ))
-                    )
+                    ),
                 ]
             ),
             key: "invalid-rule-1",
@@ -221,7 +221,7 @@ struct DatabaseOntologyReasoningProcessorTests {
                     try ontologyDeclaration("urn:base"),
                     try classDeclaration("urn:Agent"),
                     try classDeclaration("urn:Person"),
-                    try subclass("urn:Person", of: "urn:Agent")
+                    try subclass("urn:Person", of: "urn:Agent"),
                 ]
             ),
             key: "base-1",
@@ -234,7 +234,7 @@ struct DatabaseOntologyReasoningProcessorTests {
                 axioms: [
                     try ontologyDeclaration("urn:calendar"),
                     try classDeclaration("urn:Employee"),
-                    try subclass("urn:Employee", of: "urn:Person")
+                    try subclass("urn:Employee", of: "urn:Person"),
                 ]
             ),
             key: "calendar-1",
@@ -269,7 +269,7 @@ struct DatabaseOntologyReasoningProcessorTests {
                     try classDeclaration("urn:Agent"),
                     try classDeclaration("urn:Person"),
                     try subclass("urn:Person", of: "urn:Agent"),
-                    try subclass("urn:Agent", of: "urn:Entity")
+                    try subclass("urn:Agent", of: "urn:Entity"),
                 ]
             ),
             expectedRevision: 1,
@@ -378,13 +378,17 @@ struct DatabaseOntologyReasoningProcessorTests {
         let container = try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DatabaseEndpointEntity.schemaEntity,
+                    try DatabaseEndpointEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -434,7 +438,7 @@ struct DatabaseOntologyReasoningProcessorTests {
         key: String?,
         reasoningContext: OntologyReasoningContext
     ) async throws -> OntologyExecuteOperation.Response {
-#if MultipleBases
+#if MultiBase
         let requirement = DatabaseOperationRequirement(
             acceptedTargets: .base,
             access: .write,

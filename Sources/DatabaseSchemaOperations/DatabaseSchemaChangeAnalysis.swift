@@ -5,7 +5,6 @@ import DatabaseKit
 package struct DatabaseSchemaChangeAnalysis: Sendable {
     package let compatibility: SchemaExecuteOperation.Compatibility
     package let issues: [SchemaExecuteOperation.CompatibilityIssue]
-    package let indexBuilds: [DatabaseSchemaIndexBuildDeclaration]
 
     package static func analyze(
         current: Schema,
@@ -14,15 +13,13 @@ package struct DatabaseSchemaChangeAnalysis: Sendable {
         if current.entities.isEmpty {
             return DatabaseSchemaChangeAnalysis(
                 compatibility: .initial,
-                issues: [],
-                indexBuilds: []
+                issues: []
             )
         }
         if current == target {
             return DatabaseSchemaChangeAnalysis(
                 compatibility: .compatible,
-                issues: [],
-                indexBuilds: []
+                issues: []
             )
         }
 
@@ -30,7 +27,6 @@ package struct DatabaseSchemaChangeAnalysis: Sendable {
             .allIssues
             .map(wireIssue)
         var advisoryIssues: [SchemaExecuteOperation.CompatibilityIssue] = []
-        var indexBuilds: [DatabaseSchemaIndexBuildDeclaration] = []
         if target.version <= current.version {
             migrationIssues.append(
                 issue(
@@ -83,15 +79,6 @@ package struct DatabaseSchemaChangeAnalysis: Sendable {
                     message: "Polymorphic projection membership changed"
                 ))
             }
-            let indexAnalysis = indexAnalysis(
-                current: currentEntity,
-                target: targetEntity,
-                entityPath: entityPath
-            )
-            migrationIssues.append(contentsOf: indexAnalysis.migrationIssues)
-            advisoryIssues.append(contentsOf: indexAnalysis.advisoryIssues)
-            indexBuilds.append(contentsOf: indexAnalysis.builds)
-
             let report = targetEntity.compatibilityReport(from: currentEntity)
             for field in report.addedFields where !field.isOptional {
                 migrationIssues.append(issue(
@@ -112,94 +99,82 @@ package struct DatabaseSchemaChangeAnalysis: Sendable {
             }
         }
 
+        advisoryIssues.append(
+            contentsOf: indexIssues(
+                target.indexChanges(from: current)
+            ))
+        advisoryIssues.append(
+            contentsOf: polymorphicIndexIssues(
+                target.polymorphicIndexChanges(from: current)
+            ))
+
         let uniqueMigrationIssues = deduplicate(migrationIssues)
         let uniqueIssues = deduplicate(migrationIssues + advisoryIssues)
         return DatabaseSchemaChangeAnalysis(
             compatibility: uniqueMigrationIssues.isEmpty
                 ? .compatible
                 : .requiresMigration,
-            issues: uniqueIssues,
-            indexBuilds: indexBuilds.sorted {
-                if $0.entity != $1.entity { return $0.entity < $1.entity }
-                return $0.index < $1.index
-            }
+            issues: uniqueIssues
         )
     }
 
-    package static func mergedIndexBuilds(
-        analyzed: [DatabaseSchemaIndexBuildDeclaration],
-        pending: [String: Set<String>],
-        schema: Schema
-    ) -> [DatabaseSchemaIndexBuildDeclaration] {
-        var builds = Set(analyzed)
-        for entity in schema.entities {
-            guard let pendingIndexes = pending[entity.name] else { continue }
-            for index in pendingIndexes {
-                builds.insert(
-                    DatabaseSchemaIndexBuildDeclaration(
-                        entity: entity.name,
-                        index: index,
-                        usesDynamicDirectory: entity.hasDynamicDirectory
-                    )
-                )
-            }
-        }
-        return builds.sorted {
-            if $0.entity != $1.entity { return $0.entity < $1.entity }
-            return $0.index < $1.index
-        }
-    }
-
-    private static func indexAnalysis(
-        current: Schema.Entity,
-        target: Schema.Entity,
-        entityPath: String
-    ) -> IndexAnalysis {
-        let currentByName = Dictionary(
-            uniqueKeysWithValues: current.indexes.map { ($0.name, $0) }
-        )
-        let targetByName = Dictionary(
-            uniqueKeysWithValues: target.indexes.map { ($0.name, $0) }
-        )
-        var migrationIssues: [SchemaExecuteOperation.CompatibilityIssue] = []
-        var advisoryIssues: [SchemaExecuteOperation.CompatibilityIssue] = []
-        var builds: [DatabaseSchemaIndexBuildDeclaration] = []
-        for name in currentByName.keys.sorted() where targetByName[name] == nil {
-            migrationIssues.append(issue(
-                code: "index-removed",
-                path: "\(entityPath).indexes.\(name)",
-                message: "Removing an index requires an explicit migration"
-            ))
-        }
-        for name in targetByName.keys.sorted() {
-            guard let currentIndex = currentByName[name] else {
-                advisoryIssues.append(issue(
+    private static func indexIssues(
+        _ changes: [IndexChange]
+    ) -> [SchemaExecuteOperation.CompatibilityIssue] {
+        changes.map { change in
+            let identity = change.identity
+            let path = "entities.\(identity.entityName).indexes.\(identity.name)"
+            switch change {
+            case .added:
+                return issue(
                     code: "index-build-required",
-                    path: "\(entityPath).indexes.\(name)",
-                    message: "Adding an index to an existing entity requires a persistent build job"
-                ))
-                builds.append(
-                    DatabaseSchemaIndexBuildDeclaration(
-                        entity: target.name,
-                        index: name,
-                        usesDynamicDirectory: target.hasDynamicDirectory
-                    )
+                    path: path,
+                    message: "The added index will be built before schema application completes"
                 )
-                continue
-            }
-            if currentIndex != targetByName[name] {
-                migrationIssues.append(issue(
-                    code: "index-definition-changed",
-                    path: "\(entityPath).indexes.\(name)",
-                    message: "Changing an index definition requires an explicit migration"
-                ))
+            case .removed:
+                return issue(
+                    code: "index-removed",
+                    path: path,
+                    message: "The removed index is no longer visible to the target schema"
+                )
+            case .replaced:
+                return issue(
+                    code: "index-rebuild-required",
+                    path: path,
+                    message: "The replacement index generation will be built before schema application completes"
+                )
             }
         }
-        return IndexAnalysis(
-            migrationIssues: migrationIssues,
-            advisoryIssues: advisoryIssues,
-            builds: builds
-        )
+    }
+
+    private static func polymorphicIndexIssues(
+        _ changes: [PolymorphicIndexChange]
+    ) -> [SchemaExecuteOperation.CompatibilityIssue] {
+        changes.map { change in
+            let identity = change.identity
+            let path = "polymorphicGroups.\(identity.groupIdentifier).indexes.\(identity.name)"
+            switch change {
+            case .added:
+                return issue(
+                    code: "polymorphic-index-build-required",
+                    path: path,
+                    message: "The added polymorphic index will be built before schema application completes"
+                )
+            case .removed:
+                return issue(
+                    code: "polymorphic-index-removed",
+                    path: path,
+                    message: "The removed polymorphic index is no longer visible to the target schema"
+                )
+            case .replaced:
+                return issue(
+                    code: "polymorphic-index-rebuild-required",
+                    path: path,
+                    message:
+                        "The replacement polymorphic index generation will be built before schema application completes"
+                )
+            }
+        }
     }
 
     private static func wireIssue(
@@ -213,9 +188,9 @@ package struct DatabaseSchemaChangeAnalysis: Sendable {
                 message: issueValue.description
             )
         case .removedField(let entityName, let fieldName, _),
-             .renumberedField(let entityName, let fieldName, _, _),
-             .changedFieldEncoding(let entityName, let fieldName, _, _),
-             .nonAppendOnlyFieldAddition(let entityName, let fieldName, _, _):
+            .renumberedField(let entityName, let fieldName, _, _),
+            .changedFieldEncoding(let entityName, let fieldName, _, _),
+            .nonAppendOnlyFieldAddition(let entityName, let fieldName, _, _):
             return issue(
                 code: schemaIssueCode(issueValue),
                 path: "entities.\(entityName).fields.\(fieldName)",
@@ -256,26 +231,4 @@ package struct DatabaseSchemaChangeAnalysis: Sendable {
             seen.insert("\($0.code)\u{0}\($0.path)").inserted
         }
     }
-}
-
-package struct DatabaseSchemaIndexBuildDeclaration: Sendable, Hashable {
-    package let entity: String
-    package let index: String
-    package let usesDynamicDirectory: Bool
-
-    package init(
-        entity: String,
-        index: String,
-        usesDynamicDirectory: Bool
-    ) {
-        self.entity = entity
-        self.index = index
-        self.usesDynamicDirectory = usesDynamicDirectory
-    }
-}
-
-private struct IndexAnalysis {
-    let migrationIssues: [SchemaExecuteOperation.CompatibilityIssue]
-    let advisoryIssues: [SchemaExecuteOperation.CompatibilityIssue]
-    let builds: [DatabaseSchemaIndexBuildDeclaration]
 }

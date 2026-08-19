@@ -12,7 +12,7 @@ import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
 
-#if DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_SERVER_MULTI_BASE
 private typealias DatabaseSnapshotCompositionMembers = [Base.ID]
 #else
 private struct DatabaseSnapshotCompositionMembers: Sendable {}
@@ -21,7 +21,7 @@ private struct DatabaseSnapshotCompositionMembers: Sendable {}
 /// Durable fixed-result paging for query results whose storage read point
 /// cannot be restored across independent requests.
 package struct DatabaseQuerySnapshotStore: Sendable {
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     fileprivate enum Target: Sendable, Equatable {
         case resource(Security.Resource, generation: UInt64)
         case composition(
@@ -203,7 +203,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         authorization: AuthorizationContext,
         transaction: (any TransactionAccess)? = nil
     ) async throws -> WriteReservation {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return try await beginWrite(
             resource: lease.resource,
             dataGeneration: lease.generation,
@@ -555,7 +555,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         self.expirations = root.subspace("expirations")
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package func beginWrite(
         resource: Security.Resource,
         dataGeneration: UInt64,
@@ -597,7 +597,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         queryFingerprint: ByteString,
         authorization: AuthorizationContext
     ) async throws -> QueryRowPage {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return try await load(
             continuation: continuation,
             resource: lease.resource,
@@ -624,7 +624,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         queryFingerprint: ByteString,
         authorization: AuthorizationContext
     ) async throws -> RDFGraphPage {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return try await loadRDFGraph(
             continuation: continuation,
             resource: lease.resource,
@@ -644,7 +644,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         #endif
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package func beginWrite(
         composition: CompositionResolution,
         basePlacementGenerations: [Base.ID: UInt64],
@@ -716,7 +716,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     }
 
     private static func isValid(target: Target) -> Bool {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch target {
         case .resource(.database, _):
             return true
@@ -980,7 +980,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         }
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     func load(
         continuation: ByteString,
         resource: Security.Resource,
@@ -1070,7 +1070,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     }
     #endif
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     func load(
         continuation: ByteString,
         composition: CompositionResolution,
@@ -1287,7 +1287,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
         let next: ByteString?
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let provenance: CompositionPageProvenance?
         switch response {
         case .rows(let page):
@@ -1549,7 +1549,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         _ target: Target,
         transaction: any TransactionAccess
     ) async throws {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch target {
         case .resource(.database, _):
             return

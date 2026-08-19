@@ -1,6 +1,6 @@
 import DatabaseKit
-import DatabaseTypes
 import DatabaseKitFoundation
+import DatabaseTypes
 
 @Persistable
 struct DatabaseGraphQueryStatement {
@@ -16,11 +16,13 @@ struct DatabaseGraphQueryStatement {
     var graph: RDFTerm?
 
     #Index(
-        .rdfDataset,
-        from: \DatabaseGraphQueryStatement.subject,
-        edge: \DatabaseGraphQueryStatement.predicate,
-        to: \DatabaseGraphQueryStatement.object,
-        graph: \DatabaseGraphQueryStatement.graph,
-        name: "rdf_quad"
-    )
+        .graph(
+            name: "rdf_quad",
+            definition: .rdf(
+                subject: \DatabaseGraphQueryStatement.subject,
+                predicate: \DatabaseGraphQueryStatement.predicate,
+                object: \DatabaseGraphQueryStatement.object,
+        graph: \DatabaseGraphQueryStatement.graph
+            )
+        ))
 }

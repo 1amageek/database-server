@@ -1,23 +1,24 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
-@testable import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
+
+@testable import DatabaseServerRuntime
 
 private let maintenanceJobTestStorageLimits =
     DatabasePersistentJobStorageLimits(maximumStorageValueBytes: 1_048_576)
 private let maintenanceJobStartRequirement: DatabaseOperationRequirement = {
-    #if MultipleBases
+    #if MultiBase
     return DatabaseOperationRequirement(
     acceptedTargets: [.database, .base],
     access: .administer,
     transaction: .write,
-    baseAdmission: .activeData
+    baseAdmission: .administration
     )
     #else
     return DatabaseOperationRequirement(
@@ -32,7 +33,7 @@ private func maintenanceJobStartRequest(
     maximumSliceWorkUnits: UInt64,
     retryPolicy: JobStartOperation.RetryPolicy = .init()
 ) throws -> JobStartOperation.Request {
-    #if MultipleBases
+    #if MultiBase
     return JobStartOperation.Request(
         target: try testDataRootTarget(),
         operation: JobOperations.maintenance.identifier,
@@ -60,7 +61,11 @@ struct DatabaseMaintenanceOperationServiceTests {
             migrationPlan: MaintenanceMigrationPlan.self,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -136,7 +141,11 @@ struct DatabaseMaintenanceOperationServiceTests {
             migrationPlan: MaintenanceMigrationPlan.self,
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -421,7 +430,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             operations: [
                 AnyDatabaseResumableOperation(
                     DatabaseMaintenanceResumableOperation()
-                ),
+                )
             ]
         )
         let factory = try DatabasePersistentJobServiceFactory(
@@ -733,7 +742,7 @@ struct DatabaseMaintenanceOperationServiceTests {
             operations: [
                 AnyDatabaseResumableOperation(
                     DatabaseMaintenanceResumableOperation()
-                ),
+                )
             ]
         )
         let factory = try DatabasePersistentJobServiceFactory(
@@ -824,13 +833,17 @@ struct DatabaseMaintenanceOperationServiceTests {
         let container = try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try CatalogPartitionedEntity.schemaEntity,
+                    try CatalogPartitionedEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: .testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(CatalogPartitionedEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -879,7 +892,7 @@ struct DatabaseMaintenanceOperationServiceTests {
                         runtimeLimits:
                             maintenanceContext.serviceContext.runtimeLimits
                     )
-                ),
+                )
             ]
         )
         let factory = try DatabasePersistentJobServiceFactory(
@@ -970,7 +983,7 @@ struct DatabaseMaintenanceOperationServiceTests {
         _ tenant: String
     ) throws -> FieldObject {
         try FieldObject([
-            (key: "tenantID", value: .string(tenant)),
+            (key: "tenantID", value: .string(tenant))
         ])
     }
 
@@ -1164,7 +1177,7 @@ private enum MaintenanceSchemaV3: VersionedSchema {
 
 private enum MaintenanceInitialMigrationPlan: SchemaMigrationPlan {
     static let schemas: [any VersionedSchema.Type] = [
-        MaintenanceSchemaV1.self,
+        MaintenanceSchemaV1.self
     ]
     static let stages: [MigrationStage] = []
 }

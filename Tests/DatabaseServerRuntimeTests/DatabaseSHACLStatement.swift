@@ -1,6 +1,6 @@
 import DatabaseKit
-import DatabaseTypes
 import DatabaseKitFoundation
+import DatabaseTypes
 
 @Persistable
 struct DatabaseSHACLStatement {
@@ -13,10 +13,13 @@ struct DatabaseSHACLStatement {
     var graph: RDFTerm
 
     #Index(
-        .rdfDataset,
-        from: \DatabaseSHACLStatement.subject,
-        edge: \DatabaseSHACLStatement.predicate,
-        to: \DatabaseSHACLStatement.object,
+        .graph(
+            name: "database_shacl_rdf",
+            definition: .rdf(
+                subject: \DatabaseSHACLStatement.subject,
+                predicate: \DatabaseSHACLStatement.predicate,
+                object: \DatabaseSHACLStatement.object,
         graph: \DatabaseSHACLStatement.graph
-    )
+            )
+        ))
 }

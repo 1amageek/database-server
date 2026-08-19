@@ -42,18 +42,17 @@ public struct FixedTestWallClock: WallClock {
     }
 }
 
-public extension DBConfiguration {
+extension DBConfiguration {
     /// Creates an explicitly clocked configuration for tests.
-    static func testing(
+    public static func testing(
         name: String? = nil,
         databaseIdentifier: String = "test",
         storageEngine: any StorageEngine,
-        indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
     ) throws -> DBConfiguration {
-        #if MultipleBases
+        #if MultiBase
         let domainID = try DatabaseStorageDomain.ID("test-primary")
         let domain = try DatabaseStorageDomain(
             id: domainID,
@@ -84,7 +83,6 @@ public extension DBConfiguration {
             wallClock: FixedTestWallClock(),
             testingBaseID: baseID,
             testingPrincipal: principal,
-            indexConfigurations: indexConfigurations,
             itemStorage: itemStorage,
             logging: logging,
             metrics: metrics
@@ -96,7 +94,6 @@ public extension DBConfiguration {
             databaseRoot: Subspace(),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
-            indexConfigurations: indexConfigurations,
             itemStorage: itemStorage,
             logging: logging,
             metrics: metrics
@@ -105,11 +102,11 @@ public extension DBConfiguration {
     }
 }
 
-#if MultipleBases
-public extension DatabaseStorageTopology {
+#if MultiBase
+extension DatabaseStorageTopology {
     /// Creates the canonical single-domain topology used by test hosts that
     /// own the topology directly instead of constructing a DBConfiguration.
-    static func testing(
+    public static func testing(
         storageEngine: any StorageEngine
     ) throws -> DatabaseStorageTopology {
         let domainID = try DatabaseStorageDomain.ID("test-primary")
@@ -121,14 +118,14 @@ public extension DatabaseStorageTopology {
                     id: domainID,
                     namespacePath: ["database", "test"],
                     storageEngine: storageEngine
-                ),
+                )
             ],
             placements: [
                 try DatabaseStoragePlacement(
                     id: placementID,
                     domainID: domainID,
                     path: ["bases"]
-                ),
+                )
             ],
             defaultPlacementID: placementID
         )
@@ -139,7 +136,7 @@ public extension DatabaseStorageTopology {
 /// Explicit test-only Base identity and authorization used by behavioral
 /// fixtures that are not themselves testing authorization.
 public enum TestBaseEnvironment {
-    #if MultipleBases
+    #if MultiBase
     public static func id() throws -> Base.ID {
         try Base.ID("test")
     }
@@ -155,30 +152,30 @@ public enum TestBaseEnvironment {
     }
 }
 
-public extension SecurityConfiguration {
+extension SecurityConfiguration {
     /// TestSupport-only spelling for the SPI policy bypass. Persisted Grants
     /// remain active and are installed by `testBaseContext`.
-    static var testingDisabled: SecurityConfiguration {
+    public static var testingDisabled: SecurityConfiguration {
         .disabledForTesting
     }
 }
 
-public extension DBContainer {
+extension DBContainer {
     /// Returns the engine shared by the control and fixed test-Base domains in
     /// `DBConfiguration.testing`. Tests for distinct physical domains must use
     /// their explicit topology instead of this fixture helper.
-    func testDataEngine() throws -> any StorageEngine {
+    public func testDataEngine() throws -> any StorageEngine {
         controlStorage().engine
     }
 
     /// Returns a context bound to the explicitly bootstrapped test Base.
     /// Production code cannot access this helper because TestSupport is never
     /// linked into production products.
-    func testBaseContext(
+    public func testBaseContext(
         authorization: AuthorizationContext = TestBaseEnvironment.authorization,
         autosaveEnabled: Bool = false
     ) -> DatabaseContext {
-        #if MultipleBases
+        #if MultiBase
         do {
             return session(authorization: authorization)
                 .base(try TestBaseEnvironment.id())
@@ -194,10 +191,10 @@ public extension DBContainer {
         #endif
     }
 
-    #if MultipleBases
+    #if MultiBase
     /// Persists access for one test subject through the same Base-local Grant
     /// transaction used by production authorization.
-    func grantTestBaseAccess(
+    public func grantTestBaseAccess(
         to subject: Security.Subject,
         access: Security.Access
     ) async throws {
@@ -214,7 +211,7 @@ public extension DBContainer {
 
     /// Persists database access for one test subject through the production
     /// control-domain Grant transaction.
-    func grantTestDatabaseAccess(
+    public func grantTestDatabaseAccess(
         to subject: Security.Subject,
         access: Security.Access
     ) async throws {
@@ -231,8 +228,8 @@ public extension DBContainer {
 
     /// Returns administrative APIs bound to the explicitly bootstrapped test
     /// Base and test principal.
-    func testBaseAdmin() -> AdminContext {
-        #if MultipleBases
+    public func testBaseAdmin() -> AdminContext {
+        #if MultiBase
         do {
             return session(authorization: TestBaseEnvironment.authorization)
                 .base(try TestBaseEnvironment.id())
@@ -248,7 +245,7 @@ public extension DBContainer {
     /// Executes a test-only operation while retaining the explicit test Base
     /// lease. This is for low-level behavioral fixtures that must inspect
     /// Base-local storage metadata without adding such access to production API.
-    func withTestBaseOperation<Result: Sendable>(
+    public func withTestBaseOperation<Result: Sendable>(
         _ operation: @Sendable () async throws -> Result
     ) async throws -> Result {
         try await testBaseContext().withDataOperation(operation)
@@ -256,7 +253,7 @@ public extension DBContainer {
 
     /// Runs a low-level storage assertion in the explicit test Base and the
     /// same authorized transaction boundary used by production contexts.
-    func withTestBaseTransaction<Result: Sendable>(
+    public func withTestBaseTransaction<Result: Sendable>(
         _ operation: @Sendable @escaping (
             any TransactionAccess
         ) async throws -> Result
@@ -267,7 +264,7 @@ public extension DBContainer {
     }
 
     /// Resolves a model directory inside the explicit test Base.
-    func testBaseDirectory<Model: Persistable>(
+    public func testBaseDirectory<Model: Persistable>(
         for type: Model.Type,
         path: DirectoryPath<Model> = DirectoryPath()
     ) async throws -> Subspace {
@@ -277,7 +274,7 @@ public extension DBContainer {
     }
 
     /// Resolves a runtime schema directory inside the explicit test Base.
-    func testBaseDirectory(
+    public func testBaseDirectory(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil
     ) async throws -> Subspace {
@@ -287,32 +284,34 @@ public extension DBContainer {
     }
 
     /// Installs one historical schema snapshot in the explicit test Base.
-    func installTestBaseSchemaSnapshot(
+    public func installTestBaseSchemaSnapshot(
         for version: Schema.Version
     ) async throws {
         let context = testBaseContext()
-        try await context.withDataOperation {
-            try await self.installSchemaSnapshotForTesting(for: version)
+        try await withMigrationMaintenanceAccess {
+            try await context.withDataOperation {
+                try await self.installSchemaSnapshotForTesting(for: version)
+            }
         }
     }
 
     /// Reads the schema version stored in the explicit test Base.
-    func testBaseCurrentSchemaVersion() async throws -> Schema.Version? {
+    public func testBaseCurrentSchemaVersion() async throws -> Schema.Version? {
         try await testBaseAdmin().migrationStatus().currentVersion
     }
 
     /// Reads the durable database-wide entity catalog through the production
     /// control-domain namespace while keeping the SPI out of feature tests.
-    func testPersistedControlSchemaEntities() async throws -> [Schema.Entity] {
+    public func testPersistedControlSchemaEntities() async throws -> [Schema.Entity] {
         try await persistedControlSchemaEntitiesForTesting()
     }
 }
 
-public extension DatabaseContext {
+extension DatabaseContext {
     /// Executes a server-runtime test transaction while preserving the
     /// production distinction between the lightweight single-database runtime
     /// and the optional persisted-Grant runtime.
-    func withTestServerTransaction<Result: Sendable>(
+    public func withTestServerTransaction<Result: Sendable>(
         requiredAccess: Security.Access,
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
@@ -320,7 +319,7 @@ public extension DatabaseContext {
             DatabaseTransaction
         ) async throws -> Result
     ) async throws -> Result {
-        #if MultipleBases
+        #if MultiBase
         try await withExecutionTransaction(
             requiredAccess: requiredAccess,
             configuration: configuration,

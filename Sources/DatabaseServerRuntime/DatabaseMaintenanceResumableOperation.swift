@@ -27,6 +27,14 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         JobOperations.maintenance
     }
 
+    #if DATABASE_SERVER_MULTI_BASE
+    /// Maintenance compilation uses a Base-administration transaction so an
+    /// offline migration can be created after ordinary data admission closes.
+    /// Durable slices retain the default `.activeData` lifecycle admission;
+    /// index rebuilds and compaction must not run against an inactive Base.
+    public var startBaseAdmission: DatabaseBaseAdmissionKind { .administration }
+    #endif
+
     private let runtimeLimits: DatabaseOperationLimits
 
     public init(

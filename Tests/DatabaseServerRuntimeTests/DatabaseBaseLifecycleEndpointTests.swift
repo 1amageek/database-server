@@ -1,4 +1,4 @@
-#if MultipleBases
+#if MultiBase
 import DatabaseKit
 import DatabaseRuntime
 @_spi(DatabaseExecution) @testable import DatabaseEngine
@@ -247,10 +247,14 @@ struct DatabaseBaseLifecycleEndpointTests {
             for: schema,
             configuration: .testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         DatabaseEndpointEntity.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled

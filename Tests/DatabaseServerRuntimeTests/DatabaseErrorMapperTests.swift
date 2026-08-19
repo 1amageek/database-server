@@ -1,6 +1,5 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire
@@ -8,12 +7,164 @@ import GraphIndex
 import OntologyIndex
 import RelationshipIndex
 import StorageKit
+import TestSupport
 import Testing
+
 @testable import DatabaseServerRuntime
 
 @Suite("Database error mapper")
 struct DatabaseErrorMapperTests {
-    #if MultipleBases
+    @Test("Migration admission failures preserve retry semantics")
+    func migrationAdmissionFailures() async throws {
+        let context = try await makeContext()
+        let mapper = CanonicalDatabaseErrorMapper()
+
+        let required = mapper.remoteError(
+            for: DatabaseMigrationAdmissionError.migrationRequired,
+            context: context
+        )
+        expect(
+            required,
+            category: .unavailable,
+            code: "DATABASE_MIGRATION_REQUIRED",
+            retryability: .backoff
+        )
+
+        let inProgress = mapper.remoteError(
+            for: DatabaseMigrationAdmissionError.migrationInProgress,
+            context: context
+        )
+        expect(
+            inProgress,
+            category: .unavailable,
+            code: "DATABASE_MIGRATION_IN_PROGRESS",
+            retryability: .backoff
+        )
+
+        let staleGeneration = mapper.remoteError(
+            for: DatabaseMigrationAdmissionError.staleSchemaGeneration(
+                required: 4,
+                actual: 3
+            ),
+            context: context
+        )
+        expect(
+            staleGeneration,
+            category: .unavailable,
+            code: "DATABASE_SCHEMA_GENERATION_STALE",
+            retryability: .immediate
+        )
+
+        let overflow = mapper.remoteError(
+            for: DatabaseMigrationAdmissionError.operationLimitExceeded,
+            context: context
+        )
+        expect(
+            overflow,
+            category: .internalFailure,
+            code: "DATABASE_MIGRATION_ADMISSION_FAILURE"
+        )
+        #expect(overflow.retryability == .never)
+
+        let sliceTimeout = mapper.remoteError(
+            for: DatabaseJobRuntimeError.sliceTimedOut(
+                timeoutMilliseconds: 250
+            ),
+            context: context
+        )
+        expect(
+            sliceTimeout,
+            category: .resourceLimit,
+            code: "JOB_SLICE_TIMED_OUT",
+            retryability: .backoff
+        )
+    }
+
+    @Test("Index provider preflight has a stable request error code")
+    func indexProviderPreflightFailure() async throws {
+        let context = try await makeContext()
+        let mapper = CanonicalDatabaseErrorMapper()
+        let remote = mapper.remoteError(
+            for: IndexRuntimeConfigurationError.providerRejected(
+                indexName: "entries_by_vector",
+                indexType: .vector,
+                reason: "invalid provider policy"
+            ),
+            context: context
+        )
+
+        expect(
+            remote,
+            category: .invalidRequest,
+            code: "SCHEMA_INDEX_RUNTIME_CONFIGURATION_INVALID"
+        )
+
+        let missingGroup = mapper.remoteError(
+            for: DatabaseIndexRebuildError.polymorphicGroupNotFound("events"),
+            context: context
+        )
+        expect(
+            missingGroup,
+            category: .notFound,
+            code: "INDEX_TARGET_NOT_FOUND"
+        )
+
+        let generationMismatch = mapper.remoteError(
+            for: DatabaseIndexRebuildError.indexGenerationMismatch(
+                "events_by_date"
+            ),
+            context: context
+        )
+        expect(
+            generationMismatch,
+            category: .conflict,
+            code: "INDEX_GENERATION_MISMATCH"
+        )
+
+        let invalidGroup = mapper.remoteError(
+            for: DatabaseIndexRebuildError.polymorphicGroupHasNoMembers(
+                "events"
+            ),
+            context: context
+        )
+        expect(
+            invalidGroup,
+            category: .internalFailure,
+            code: "INDEX_REBUILD_FAILURE"
+        )
+    }
+
+    @Test("Schema physical-layout drift has a stable conflict code")
+    func schemaPhysicalLayoutDrift() async throws {
+        let context = try await makeContext()
+        let mapper = CanonicalDatabaseErrorMapper()
+        let remote = mapper.remoteError(
+            for: DatabaseSchemaApplyJobError.physicalLayoutChanged,
+            context: context
+        )
+
+        expect(
+            remote,
+            category: .conflict,
+            code: "SCHEMA_PHYSICAL_LAYOUT_CHANGED"
+        )
+
+        let generationConflict = mapper.remoteError(
+            for: DatabaseSchemaPublicationError.generationConflict(
+                expected: 4,
+                actual: 5
+            ),
+            context: context
+        )
+        expect(
+            generationConflict,
+            category: .conflict,
+            code: "SCHEMA_GENERATION_CONFLICT"
+        )
+
+    }
+
+    #if MultiBase
     @Test("Schema application reports Base lifecycle and generation conflicts")
     func schemaBaseConflicts() async throws {
         let context = try await makeContext()
@@ -906,7 +1057,7 @@ struct DatabaseErrorMapperTests {
                 (
                     key: "backendCode",
                     value: .int64(Int64(backendCode))
-                ),
+                )
             ])
             #expect(remote.details == expectedDetails)
         }
@@ -1018,7 +1169,7 @@ struct DatabaseErrorMapperTests {
             (
                 key: "timeoutMilliseconds",
                 value: .uint64(500)
-            ),
+            )
         ])
         #expect(remote.details == expectedDetails)
 
@@ -1118,7 +1269,7 @@ struct DatabaseErrorMapperTests {
             (
                 key: "cancellationErrors",
                 value: .array([
-                    .object(try remoteFields(mappedCancellation)),
+                    .object(try remoteFields(mappedCancellation))
                 ])
             ),
         ])
@@ -1259,11 +1410,15 @@ struct DatabaseErrorMapperTests {
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )
-        #if MultipleBases
+        #if MultiBase
         return DatabaseOperationContext(
             container: container,
             target: .database,
@@ -1332,11 +1487,12 @@ struct DatabaseErrorMapperTests {
     private func expect(
         _ remote: RemoteOperationError,
         category: OperationErrorCategory,
-        code: String
+        code: String,
+        retryability: OperationRetryability = .never
     ) {
         #expect(remote.category == category)
         #expect(remote.code == code)
-        #expect(remote.retryability == .never)
+        #expect(remote.retryability == retryability)
     }
 }
 

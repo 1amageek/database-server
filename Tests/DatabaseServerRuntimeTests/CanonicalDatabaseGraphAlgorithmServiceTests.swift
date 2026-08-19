@@ -1,6 +1,5 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseServerRuntime
 import DatabaseTypes
@@ -8,6 +7,7 @@ import DatabaseWire
 import GraphIndex
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
 
 @Suite("Canonical graph algorithm service")
@@ -28,7 +28,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         let container: DBContainer
         let databaseContext: DatabaseContext
         let service: CanonicalDatabaseGraphAlgorithmService
-        let maintainer: GraphIndexMaintainer<CanonicalPropertyGraphEdge>
+        let maintainer: any IndexMaintainer<CanonicalPropertyGraphEdge>
     }
 
     private final class CountingEngine: StorageEngine, Sendable {
@@ -387,7 +387,12 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             ),
             configuration: DBConfiguration.testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self), try DatabaseFrameworkRuntime.entity(CanonicalPropertyGraphEdge.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self), try DatabaseFrameworkRuntime.entity(CanonicalPropertyGraphEdge.self),
+                ]
             ),
             security: .testingDisabled
         )
@@ -397,49 +402,34 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
                 .subspace("test-indexes")
                 .subspace("canonical-graph-service")
         }
-        let kind = IndexKindMetadata(
-            identifier: "graph",
-            subspaceStructure: .hierarchical,
-            fields: [
-                IndexFieldMetadata(
-                    identity: FieldIdentity(name: "source", number: 2)
-                ),
-                IndexFieldMetadata(
-                    identity: FieldIdentity(name: "label", number: 3)
-                ),
-                IndexFieldMetadata(
-                    identity: FieldIdentity(name: "target", number: 4)
-                ),
-            ],
-            metadata: [
-                "strategy": .string("tripleStore"),
-                "hasEdgeField": .bool(true),
-                "hasGraphField": .bool(false),
-            ]
+        let descriptor = try #require(
+            CanonicalPropertyGraphEdge.indexDescriptors.first {
+                $0.type == .graph(.property)
+            }
         )
-        let metadata = try PropertyGraphIndexMetadata(canonical: kind)
-        let index = Index(
-            name: "graph",
-            kind: kind,
+        let index = ResolvedIndex(
+            descriptor: descriptor,
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "source"),
                 FieldKeyExpression(fieldName: "label"),
                 FieldKeyExpression(fieldName: "target"),
             ]),
-            itemTypes: Set([CanonicalPropertyGraphEdge.persistableType]),
-            storedFieldNames: ["weight"]
+            itemTypes: Set([CanonicalPropertyGraphEdge.persistableType])
         )
-        let maintainer = try GraphIndexMaintainer<CanonicalPropertyGraphEdge>(
-            index: index,
+        let maintainer: any IndexMaintainer<CanonicalPropertyGraphEdge> =
+            try GraphIndexMaintainerProvider()
+            .makeIndexMaintainer(
+                index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            metadata: metadata
-        )
+                configurations: [],
+                wallClock: FixedTestWallClock()
+            )
         let resolvedSource = ResolvedDatabaseGraphSource(
                 entityName: CanonicalPropertyGraphEdge.persistableType,
             indexName: index.name,
             indexSubspace: indexSubspace,
-            storedFieldNames: index.storedFieldNames,
+            storedFieldNames: index.includedFieldNames,
             layout: .propertyGraph(
                 ResolvedDatabaseGraphSource.PropertyGraphLayout(
                     strategy: .tripleStore,

@@ -8,7 +8,7 @@ public final class DatabaseHostedRuntime: Sendable {
     private let operationInstance: DatabaseOperationInstance
     private let wireEndpoint: DatabaseWireEndpoint
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     public static func open(
         application: AnyDatabaseOperationApplication,
         storageTopology: DatabaseStorageTopology,

@@ -1,11 +1,11 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Statement admission endpoint", .serialized)
@@ -57,7 +57,7 @@ struct DatabaseStatementAdmissionEndpointTests {
                 parameters: []
             )
         )
-        #if MultipleBases
+        #if MultiBase
         let frame = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperationCatalog.mutationExecute,
             requestID: 1,
@@ -106,7 +106,11 @@ struct DatabaseStatementAdmissionEndpointTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )

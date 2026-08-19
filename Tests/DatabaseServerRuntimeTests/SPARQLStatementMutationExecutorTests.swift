@@ -1,13 +1,14 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire
 @_spi(DatabaseExecution) import GraphIndex
 import StorageKit
 import Synchronization
+import TestSupport
 import Testing
+
 @testable import DatabaseServerRuntime
 
 @Suite("SPARQL statement mutation executor")
@@ -145,9 +146,9 @@ struct SPARQLStatementMutationExecutorTests {
                                 subject: .variable("subject"),
                                 predicate: .iri(predicate),
                                 object: .literal(.string("new"))
+                                )
                             )
-                        ),
-                    ]),
+                        ]),
                     wherePattern: .basic([match])
                 )
             ),
@@ -325,7 +326,7 @@ struct SPARQLStatementMutationExecutorTests {
                                 predicate: .iri(predicate),
                                 object: .literal(.string("old"))
                             )
-                        ),
+                        )
                     ]
                 )
             ),
@@ -387,7 +388,7 @@ struct SPARQLStatementMutationExecutorTests {
                                     predicate: .iri(predicate),
                                     object: .literal(.string("old"))
                                 )
-                            ),
+                            )
                         ],
                         insert: [
                             Quad(
@@ -396,7 +397,7 @@ struct SPARQLStatementMutationExecutorTests {
                                     predicate: .iri(predicate),
                                     object: .variable("value")
                                 )
-                            ),
+                            )
                         ]
                     ),
                     using: [GraphRef(iri: source)],
@@ -405,7 +406,7 @@ struct SPARQLStatementMutationExecutorTests {
                             subject: .iri(subject),
                             predicate: .iri(predicate),
                             object: .variable("value")
-                        ),
+                        )
                     ])
                 )
             ),
@@ -455,7 +456,7 @@ struct SPARQLStatementMutationExecutorTests {
                                 predicate: .iri("https://example.test/value"),
                                 object: .literal(.string("value"))
                             )
-                        ),
+                        )
                     ]
                 )
             ),
@@ -626,7 +627,7 @@ struct SPARQLStatementMutationExecutorTests {
                                 ),
                                 object: .literal(.string("source"))
                             )
-                        ),
+                        )
                     ]
                 )
             ),
@@ -744,7 +745,7 @@ struct SPARQLStatementMutationExecutorTests {
                     additionalOperations: [
                         .insertData(
                             InsertDataQuery(quads: [quad("second")])
-                        ),
+                        )
                     ]
                 ),
                 executor: executor,
@@ -781,7 +782,7 @@ struct SPARQLStatementMutationExecutorTests {
                 SPARQLUpdateRequest(
                     firstOperation: .insertData(InsertDataQuery(quads: [quad])),
                     additionalOperations: [
-                        .insertData(InsertDataQuery(quads: [quad])),
+                        .insertData(InsertDataQuery(quads: [quad]))
                     ]
                 ),
                 executor: CanonicalDatabaseStatementMutationExecutor(),
@@ -825,7 +826,7 @@ struct SPARQLStatementMutationExecutorTests {
                         LoadQuery(source: "https://source.test/data")
                     ),
                     additionalOperations: [
-                        .deleteData(DeleteDataQuery(quads: [invalidDelete])),
+                        .deleteData(DeleteDataQuery(quads: [invalidDelete]))
                     ]
                 ),
                 executor: executor,
@@ -866,7 +867,7 @@ struct SPARQLStatementMutationExecutorTests {
                             "https://example.test/value"
                         ),
                         object: .literal(.string("loaded"))
-                    ),
+                    )
                 ]
             )
         }
@@ -1039,7 +1040,7 @@ struct SPARQLStatementMutationExecutorTests {
                             "https://example.test/value"
                         ),
                         object: .literal(.string("value"))
-                    ),
+                    )
                 ]
             )
         }
@@ -1119,7 +1120,7 @@ struct SPARQLStatementMutationExecutorTests {
                                 predicate: .iri(predicate),
                                 object: .literal(.string("old"))
                             )
-                        ),
+                        )
                     ]
                 )
             ),
@@ -1137,14 +1138,14 @@ struct SPARQLStatementMutationExecutorTests {
                                 predicate: .iri(predicate),
                                 object: .literal(.string("new"))
                             )
-                        ),
+                        )
                     ]),
                     wherePattern: .basic([
                         TriplePattern(
                             subject: .variable("subject"),
                             predicate: .iri(predicate),
                             object: .literal(.string("old"))
-                        ),
+                        )
                     ])
                 )
             ),
@@ -1183,7 +1184,7 @@ struct SPARQLStatementMutationExecutorTests {
                                 predicate: .iri("https://example.test/value"),
                                 object: .literal(.string("value"))
                             )
-                        ),
+                        )
                     ]
                 )
             ),
@@ -1254,13 +1255,17 @@ struct SPARQLStatementMutationExecutorTests {
         try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DatabaseEndpointEntity.schemaEntity,
+                    try DatabaseEndpointEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -1343,7 +1348,7 @@ struct SPARQLStatementMutationExecutorTests {
         idempotencyKey: String,
         endpoint: DatabaseWireEndpoint
     ) async throws -> MutationExecuteOperation.Response {
-        #if MultipleBases
+        #if MultiBase
         let request = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperationCatalog.mutationExecute,
             requestID: requestID,

@@ -4,7 +4,7 @@ import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 
 package struct DatabasePersistentJobSpecification: DatabaseRuntimePayloadValue, Sendable, Hashable {
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private static let formatVersion: UInt8 = 4
     #else
     private static let formatVersion: UInt8 = 5
@@ -12,7 +12,7 @@ package struct DatabasePersistentJobSpecification: DatabaseRuntimePayloadValue, 
 
     package let jobID: DatabaseTypes.UUID
     package let operation: JobOperationIdentifier
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package let target: DatabaseOperationTarget
     #endif
     package let requestDigest: ByteString
@@ -45,7 +45,7 @@ package struct DatabasePersistentJobSpecification: DatabaseRuntimePayloadValue, 
         writer.writeUInt8(Self.formatVersion)
         try jobID.encode(into: &writer)
         try operation.encode(into: &writer)
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         try target.encode(into: &writer)
         #endif
         try writer.writeBytes(requestDigest)
@@ -71,7 +71,7 @@ package struct DatabasePersistentJobSpecification: DatabaseRuntimePayloadValue, 
         }
         let jobID = try DatabaseTypes.UUID(from: &reader)
         let operation = try JobOperationIdentifier(from: &reader)
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let target = try DatabaseOperationTarget(from: &reader)
         #endif
         let requestDigest = try reader.readBytes()
@@ -87,7 +87,7 @@ package struct DatabasePersistentJobSpecification: DatabaseRuntimePayloadValue, 
         } catch {
             throw .invalidJobOperationKind
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         self.init(
             jobID: jobID,
             operation: operation,
@@ -129,7 +129,7 @@ package struct DatabasePersistentJobSpecification: DatabaseRuntimePayloadValue, 
         #endif
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package init(
         jobID: DatabaseTypes.UUID,
         operation: JobOperationIdentifier,

@@ -1,13 +1,13 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
-import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseGraphOperations
+import DatabaseJobRuntime
 import DatabaseKit
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
+import DatabaseOperationCore
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
 import StorageKit
 
 /// Immutable application composition consumed by a storage-owning host.
@@ -18,12 +18,11 @@ public struct DatabaseContainerDefinition: Sendable {
     public let databaseName: String?
     public let monotonicClock: any StorageMonotonicClock
     public let wallClock: any WallClock
-    public let indexConfigurations: [any IndexRuntimeConfiguration]
     public let itemStorage: ItemStorageConfiguration
     public let logging: DatabaseLoggingConfiguration
     public let metrics: DatabaseMetricsConfiguration
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private let openContainer: @Sendable (
         DatabaseStorageTopology
     ) async throws -> DBContainer
@@ -42,7 +41,6 @@ public struct DatabaseContainerDefinition: Sendable {
         databaseName: String? = nil,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
-        indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -52,11 +50,10 @@ public struct DatabaseContainerDefinition: Sendable {
         self.databaseName = databaseName
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
-        self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         self.openContainer = { storageTopology in
             try await DBContainer.open(
                 for: schema,
@@ -65,7 +62,6 @@ public struct DatabaseContainerDefinition: Sendable {
                     storageTopology: storageTopology,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
-                    indexConfigurations: indexConfigurations,
                     itemStorage: itemStorage,
                     logging: logging,
                     metrics: metrics
@@ -84,7 +80,6 @@ public struct DatabaseContainerDefinition: Sendable {
                     databaseRoot: databaseRoot,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
-                    indexConfigurations: indexConfigurations,
                     itemStorage: itemStorage,
                     logging: logging,
                     metrics: metrics
@@ -105,7 +100,6 @@ public struct DatabaseContainerDefinition: Sendable {
         databaseName: String? = nil,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
-        indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -115,11 +109,10 @@ public struct DatabaseContainerDefinition: Sendable {
         self.databaseName = databaseName
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
-        self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         self.openContainer = { storageTopology in
             try await DBContainer.open(
                 for: schema,
@@ -129,7 +122,6 @@ public struct DatabaseContainerDefinition: Sendable {
                     storageTopology: storageTopology,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
-                    indexConfigurations: indexConfigurations,
                     itemStorage: itemStorage,
                     logging: logging,
                     metrics: metrics
@@ -149,7 +141,6 @@ public struct DatabaseContainerDefinition: Sendable {
                     databaseRoot: databaseRoot,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
-                    indexConfigurations: indexConfigurations,
                     itemStorage: itemStorage,
                     logging: logging,
                     metrics: metrics
@@ -168,7 +159,6 @@ public struct DatabaseContainerDefinition: Sendable {
         databaseName: String? = nil,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
-        indexConfigurations: [any IndexRuntimeConfiguration] = [],
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -178,11 +168,10 @@ public struct DatabaseContainerDefinition: Sendable {
         self.databaseName = databaseName
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
-        self.indexConfigurations = indexConfigurations
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         self.openContainer = { storageTopology in
             try await DBContainer.openRestoringSchema(
                 configuration: DBConfiguration(
@@ -190,7 +179,6 @@ public struct DatabaseContainerDefinition: Sendable {
                     storageTopology: storageTopology,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
-                    indexConfigurations: indexConfigurations,
                     itemStorage: itemStorage,
                     logging: logging,
                     metrics: metrics
@@ -211,7 +199,6 @@ public struct DatabaseContainerDefinition: Sendable {
                     databaseRoot: databaseRoot,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
-                    indexConfigurations: indexConfigurations,
                     itemStorage: itemStorage,
                     logging: logging,
                     metrics: metrics
@@ -230,7 +217,7 @@ public struct DatabaseContainerDefinition: Sendable {
         declaredSchema == nil
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     /// Opens the single-use definition with the host-selected storage topology.
     public func open(
         storageTopology: DatabaseStorageTopology

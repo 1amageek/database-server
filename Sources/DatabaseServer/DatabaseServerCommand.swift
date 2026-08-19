@@ -98,7 +98,7 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
     )
     var foundationDBDirectory: [String] = []
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     @Option(
         name: .customLong("domain-namespace"),
         help: "One non-FoundationDB domain namespace component; repeat for nested paths."
@@ -192,7 +192,7 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
         return try storage.runtimeStorage()
     }
 
-    #if !DATABASE_SERVER_MULTIPLE_BASES
+    #if !DATABASE_SERVER_MULTI_BASE
     func launchDatabaseRoot(
         for storage: DatabaseServerLaunchConfiguration.Storage
     ) throws -> DatabaseServerLaunchConfiguration.DatabaseRoot {
@@ -217,7 +217,7 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
         return try launchDatabaseRoot(for: storage).runtimeRoot(for: storage)
     }
     #else
-    func multipleBasesNamespace(
+    func multiBaseNamespace(
         for storage: DatabaseServerLaunchConfiguration.Storage
     ) throws -> [String] {
         let components: [String]
@@ -235,7 +235,7 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
         guard !components.isEmpty,
               !components.contains(where: \.isEmpty) else {
             throw ValidationError(
-                "MultipleBases requires an explicit storage namespace."
+                "MultiBase requires an explicit storage namespace."
             )
         }
         return components
@@ -243,7 +243,7 @@ private struct DatabaseServerStorageOptions: ParsableArguments {
     #endif
 
     private var hasExplicitSelection: Bool {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         storage != nil
             || memory
             || path != nil
@@ -336,10 +336,10 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 if let requested = try storageOptions.launchStorage(
                     required: false
                 ) {
-                    #if DATABASE_SERVER_MULTIPLE_BASES
+                    #if DATABASE_SERVER_MULTI_BASE
                     let matches = launchConfiguration.matchesSingleStorage(
                         requested,
-                        namespace: try storageOptions.multipleBasesNamespace(
+                        namespace: try storageOptions.multiBaseNamespace(
                             for: requested
                         )
                     )
@@ -367,13 +367,13 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 let registryURL = configurationURL
                     .deletingLastPathComponent()
                     .appendingPathComponent("tokens.json")
-                #if DATABASE_SERVER_MULTIPLE_BASES
+                #if DATABASE_SERVER_MULTI_BASE
                 launchConfiguration = DatabaseServerLaunchConfiguration(
                     controlDomain: "primary",
                     domains: [
                         .init(
                             id: "primary",
-                            namespace: try storageOptions.multipleBasesNamespace(
+                            namespace: try storageOptions.multiBaseNamespace(
                                 for: storage
                             ),
                             storage: storage
@@ -511,7 +511,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 port: port
             )
             let routingIdentity = try launchConfiguration.routingIdentity()
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: launchConfiguration.runtimeStorageTopology(),
                 authenticator: registry,
@@ -565,7 +565,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             let wireLimits = try DatabaseServerHostConfiguration.wireLimits(
                 maximumFrameBytes: maximumFrameBytes
             )
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             guard let selectedStorage = try storageOptions.launchStorage(
                 required: true
             ) else {
@@ -574,7 +574,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: .single(
                     storage: try selectedStorage.runtimeStorage(),
-                    namespacePath: try storageOptions.multipleBasesNamespace(
+                    namespacePath: try storageOptions.multiBaseNamespace(
                         for: selectedStorage
                     )
                 ),
@@ -695,7 +695,7 @@ private func writeBootstrapResponse(
 }
 
 private enum DatabaseServerBuild {
-    static let version = "26.0818.0"
+    static let version = "26.0819.0"
 }
 
 private struct LocalProcessAuthenticator: DatabaseServerAuthenticator {

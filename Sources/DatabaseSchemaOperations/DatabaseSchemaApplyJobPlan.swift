@@ -1,3 +1,4 @@
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseJobRuntime
 import DatabaseKit
 import DatabaseTypes
@@ -9,12 +10,12 @@ public struct DatabaseSchemaApplyJobPlan:
     Hashable
 {
     package struct DataTarget: Sendable, Hashable {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         package let resource: Security.Resource
         #endif
         package let generation: UInt64
 
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         package init(resource: Security.Resource, generation: UInt64) {
             self.resource = resource
             self.generation = generation
@@ -26,35 +27,17 @@ public struct DatabaseSchemaApplyJobPlan:
         #endif
     }
 
-    package struct IndexTarget: Sendable, Hashable {
-        package let entity: String
-        package let index: String
-        package let usesDynamicDirectory: Bool
-
-        package init(
-            entity: String,
-            index: String,
-            usesDynamicDirectory: Bool
-        ) {
-            self.entity = entity
-            self.index = index
-            self.usesDynamicDirectory = usesDynamicDirectory
-        }
-    }
-
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    private static let formatVersion: UInt8 = 3
-    #else
-    private static let formatVersion: UInt8 = 4
-    #endif
+    private static let formatVersion: UInt8 = 11
 
     package let previousFingerprint: SchemaFingerprint
     package let targetFingerprint: SchemaFingerprint
+    package let indexPhysicalFingerprint: ByteString
     package let schemaVersion: Schema.Version
     package let idempotencyKey: String
     package let manifestBytes: ByteString
     package let dataTargets: [DataTarget]
-    package let indexes: [IndexTarget]
+    package let indexBuilds: [DatabaseIndexTransitionPlan.Target]
+    package let indexRetirements: [DatabaseIndexTransitionPlan.Target]
     package let maximumWorkUnitsPerSlice: UInt64
 
     package var manifest: SchemaManifest {
@@ -66,7 +49,7 @@ public struct DatabaseSchemaApplyJobPlan:
     public func persistentJobValue()
         throws(PersistentJobPayloadError) -> FieldValue {
         do {
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             let encodedDataTargets = try dataTargets.map { target in
                 let kind: UInt8
                 let baseID: FieldValue
@@ -86,23 +69,64 @@ public struct DatabaseSchemaApplyJobPlan:
             }
             #else
             let encodedDataTargets = try dataTargets.map { target in
-                FieldValue.object(try FieldObject([
-                    (key: "generation", value: .uint64(target.generation)),
-                ]))
+                return FieldValue.object(try FieldObject([
+                    (key: "generation", value: .uint64(target.generation))
+                    ]))
             }
             #endif
-            let encodedIndexes = try indexes.map { target in
-                FieldValue.object(try FieldObject([
-                    (key: "entity", value: .string(target.entity)),
-                    (key: "index", value: .string(target.index)),
+            let encodedIndexBuilds = try indexBuilds.map { target in
+                let scope = Self.persistentScope(target.scope)
+                return FieldValue.object(try FieldObject([
+                    (key: "scopeKind", value: .uint8(scope.kind)),
+                        (
+                            key: "scopeIdentifier",
+                            value: .string(scope.identifier)
+                        ),
+                        (key: "index", value: .string(target.identity.name)),
                     (
-                        key: "usesDynamicDirectory",
-                        value: .bool(target.usesDynamicDirectory)
-                    ),
-                ]))
+                            key: "directory",
+                            value: scope.directory
+                        ),
+                        (
+                            key: "definitionFingerprint",
+                            value: .bytes(
+                                target.identity.definitionFingerprint.bytes
+                            )
+                        ),
+                    (
+                            key: "layoutFingerprint",
+                            value: .bytes(target.identity.layoutFingerprint)
+                        ),
+                    ]))
             }
-            return .object(try FieldObject([
-                (key: "version", value: .uint8(Self.formatVersion)),
+            let encodedIndexRetirements = try indexRetirements.map { target in
+                let scope = Self.persistentScope(target.scope)
+                return FieldValue.object(try FieldObject([
+                (key: "scopeKind", value: .uint8(scope.kind)),
+                        (
+                            key: "scopeIdentifier",
+                            value: .string(scope.identifier)
+                        ),
+                        (key: "index", value: .string(target.identity.name)),
+                        (
+                            key: "directory",
+                            value: scope.directory
+                        ),
+                        (
+                            key: "definitionFingerprint",
+                            value: .bytes(
+                                target.identity.definitionFingerprint.bytes
+                            )
+                        ),
+                        (
+                            key: "layoutFingerprint",
+                            value: .bytes(target.identity.layoutFingerprint)
+                        ),
+                    ]))
+            }
+            return .object(
+                try FieldObject([
+                    (key: "version", value: .uint8(Self.formatVersion)),
                 (
                     key: "previousFingerprint",
                     value: .bytes(previousFingerprint.bytes)
@@ -111,11 +135,19 @@ public struct DatabaseSchemaApplyJobPlan:
                     key: "targetFingerprint",
                     value: .bytes(targetFingerprint.bytes)
                 ),
-                (key: "schemaVersion", value: Self.value(schemaVersion)),
+                (
+                        key: "indexPhysicalFingerprint",
+                        value: .bytes(indexPhysicalFingerprint)
+                    ),
+                    (key: "schemaVersion", value: Self.value(schemaVersion)),
                 (key: "idempotencyKey", value: .string(idempotencyKey)),
                 (key: "manifest", value: .bytes(manifestBytes)),
                 (key: "dataTargets", value: .array(encodedDataTargets)),
-                (key: "indexes", value: .array(encodedIndexes)),
+                (key: "indexBuilds", value: .array(encodedIndexBuilds)),
+                    (
+                        key: "indexRetirements",
+                        value: .array(encodedIndexRetirements)
+                    ),
                 (
                     key: "maximumWorkUnitsPerSlice",
                     value: .uint64(maximumWorkUnitsPerSlice)
@@ -130,16 +162,22 @@ public struct DatabaseSchemaApplyJobPlan:
         persistentJobValue: FieldValue
     ) throws(PersistentJobPayloadError) {
         guard let fields = persistentJobValue.objectValue,
-              fields.count == 9,
-              fields["version"]?.uint8Value == Self.formatVersion,
+              fields.count == 11,
+            fields["version"]?.uint8Value == Self.formatVersion,
               let previousBytes = fields["previousFingerprint"]?.bytesValue,
               let targetBytes = fields["targetFingerprint"]?.bytesValue,
-              let schemaVersion = Self.schemaVersion(fields["schemaVersion"]),
+            let indexPhysicalFingerprint =
+                fields["indexPhysicalFingerprint"]?.bytesValue,
+            indexPhysicalFingerprint.count
+                == SHA256Accumulator.digestByteCount,
+            let schemaVersion = Self.schemaVersion(fields["schemaVersion"]),
               let idempotencyKey = fields["idempotencyKey"]?.stringValue,
               !idempotencyKey.isEmpty,
               let manifestBytes = fields["manifest"]?.bytesValue,
               let dataTargetValues = fields["dataTargets"]?.arrayValue,
-              let indexValues = fields["indexes"]?.arrayValue,
+            let indexBuildValues = fields["indexBuilds"]?.arrayValue,
+            let indexRetirementValues =
+                fields["indexRetirements"]?.arrayValue,
               let maximumWorkUnitsPerSlice =
                 fields["maximumWorkUnitsPerSlice"]?.uint64Value,
               maximumWorkUnitsPerSlice > 0 else {
@@ -163,7 +201,7 @@ public struct DatabaseSchemaApplyJobPlan:
         var dataTargets: [DataTarget] = []
         dataTargets.reserveCapacity(dataTargetValues.count)
         for value in dataTargetValues {
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             guard let fields = value.objectValue,
                   fields.count == 3,
                   let kind = fields["kind"]?.uint8Value,
@@ -199,7 +237,7 @@ public struct DatabaseSchemaApplyJobPlan:
             dataTargets.append(DataTarget(generation: generation))
             #endif
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard dataTargets == dataTargets.sorted(by: Self.dataTargetLessThan),
               Set(dataTargets.map { $0.resource }).count == dataTargets.count else {
             throw .invalidValue("Schema apply data targets are not canonical")
@@ -210,56 +248,161 @@ public struct DatabaseSchemaApplyJobPlan:
         }
         #endif
 
-        var indexes: [IndexTarget] = []
-        indexes.reserveCapacity(indexValues.count)
-        for value in indexValues {
+        var indexBuilds: [DatabaseIndexTransitionPlan.Target] = []
+        indexBuilds.reserveCapacity(indexBuildValues.count)
+        for value in indexBuildValues {
             guard let fields = value.objectValue,
-                  fields.count == 3,
-                  let entity = fields["entity"]?.stringValue,
-                  !entity.isEmpty,
+                  fields.count == 6,
+                let scopeKind = fields["scopeKind"]?.uint8Value,
+                let scopeIdentifier =
+                    fields["scopeIdentifier"]?.stringValue,
+                !scopeIdentifier.isEmpty,
                   let index = fields["index"]?.stringValue,
                   !index.isEmpty,
-                  let dynamic = fields["usesDynamicDirectory"]?.boolValue else {
+                let directory = fields["directory"],
+                let definitionBytes =
+                    fields["definitionFingerprint"]?.bytesValue,
+                let layoutFingerprint =
+                    fields["layoutFingerprint"]?.bytesValue,
+                layoutFingerprint.count
+                    == SHA256Accumulator.digestByteCount
+            else {
                 throw .invalidValue("Invalid schema apply index target")
             }
-            indexes.append(
-                IndexTarget(
-                    entity: entity,
+            let definitionFingerprint: SchemaFingerprint
+            do {
+                definitionFingerprint = try SchemaFingerprint(definitionBytes)
+            } catch {
+                throw .invalidValue("Invalid schema apply index target")
+            }
+            let scope = try Self.indexScope(
+                kind: scopeKind,
+                identifier: scopeIdentifier,
+                directory: directory
+            )
+            indexBuilds.append(
+                try Self.indexTarget(
+                    scope: scope,
                     index: index,
-                    usesDynamicDirectory: dynamic
+                    definitionFingerprint: definitionFingerprint,
+                    layoutFingerprint: layoutFingerprint
                 )
             )
         }
-        guard indexes == indexes.sorted(by: Self.indexLessThan),
-              Set(indexes).count == indexes.count else {
-            throw .invalidValue("Schema apply index targets are not canonical")
+        guard indexBuilds == indexBuilds.sorted(by: Self.indexBuildLessThan),
+            Set(indexBuilds).count == indexBuilds.count,
+            Set(indexBuilds.map(\.identity.name)).count
+                == indexBuilds.count else {
+            throw .invalidValue("Schema apply index builds are not canonical")
+        }
+
+        var indexRetirements: [DatabaseIndexTransitionPlan.Target] = []
+        indexRetirements.reserveCapacity(indexRetirementValues.count)
+        for value in indexRetirementValues {
+            guard let fields = value.objectValue,
+                fields.count == 6,
+                let scopeKind = fields["scopeKind"]?.uint8Value,
+                let scopeIdentifier =
+                    fields["scopeIdentifier"]?.stringValue,
+                !scopeIdentifier.isEmpty,
+                let index = fields["index"]?.stringValue,
+                !index.isEmpty,
+                let directory = fields["directory"],
+                let fingerprintValue =
+                    fields["definitionFingerprint"],
+                let layoutFingerprint =
+                    fields["layoutFingerprint"]?.bytesValue,
+                layoutFingerprint.count
+                    == SHA256Accumulator.digestByteCount
+            else {
+                throw .invalidValue("Invalid schema apply index retirement")
+            }
+            let scope = try Self.indexScope(
+                kind: scopeKind,
+                identifier: scopeIdentifier,
+                directory: directory
+            )
+            guard let bytes = fingerprintValue.bytesValue else {
+                throw .invalidValue(
+                    "Invalid schema apply retirement fingerprint"
+                )
+            }
+            let fingerprint: SchemaFingerprint
+            do {
+                fingerprint = try SchemaFingerprint(bytes)
+            } catch {
+                throw .invalidValue(
+                    "Invalid schema apply retirement fingerprint"
+                )
+            }
+            indexRetirements.append(
+                try Self.indexTarget(
+                    scope: scope,
+                    index: index,
+                    definitionFingerprint: fingerprint,
+                    layoutFingerprint: layoutFingerprint
+                )
+            )
+        }
+        guard
+            indexRetirements
+                == indexRetirements.sorted(
+                    by: Self.indexRetirementLessThan
+                ), Set(indexRetirements).count == indexRetirements.count,
+            Set(indexRetirements.map(\.identity.name)).count
+                == indexRetirements.count,
+            Set(indexBuilds).isDisjoint(with: Set(indexRetirements))
+        else {
+            throw .invalidValue(
+                "Schema apply index retirements are not canonical"
+            )
         }
 
         self.previousFingerprint = previousFingerprint
         self.targetFingerprint = targetFingerprint
+        self.indexPhysicalFingerprint = indexPhysicalFingerprint
         self.schemaVersion = schemaVersion
         self.idempotencyKey = idempotencyKey
         self.manifestBytes = manifestBytes
         self.dataTargets = dataTargets
-        self.indexes = indexes
+        self.indexBuilds = indexBuilds
+        self.indexRetirements = indexRetirements
         self.maximumWorkUnitsPerSlice = maximumWorkUnitsPerSlice
     }
 
     package init(
         previousFingerprint: SchemaFingerprint,
         targetFingerprint: SchemaFingerprint,
+        indexPhysicalFingerprint: ByteString,
         manifest: SchemaManifest,
         idempotencyKey: String,
         dataTargets: [DataTarget],
-        indexes: [IndexTarget],
+        indexBuilds: [DatabaseIndexTransitionPlan.Target],
+        indexRetirements: [DatabaseIndexTransitionPlan.Target],
         maximumWorkUnitsPerSlice: UInt64
     ) throws {
+        guard !idempotencyKey.isEmpty,
+            maximumWorkUnitsPerSlice > 0,
+            try manifest.fingerprint() == targetFingerprint,
+            indexPhysicalFingerprint.count
+                == SHA256Accumulator.digestByteCount,
+            Set(indexBuilds).count == indexBuilds.count,
+            Set(indexBuilds.map(\.identity.name)).count
+                == indexBuilds.count,
+            Set(indexRetirements).count == indexRetirements.count,
+            Set(indexRetirements.map(\.identity.name)).count
+                == indexRetirements.count,
+            Set(indexBuilds).isDisjoint(with: Set(indexRetirements))
+        else {
+            throw DatabaseSchemaApplyJobError.corruptedPlan
+        }
         self.previousFingerprint = previousFingerprint
         self.targetFingerprint = targetFingerprint
+        self.indexPhysicalFingerprint = indexPhysicalFingerprint
         self.schemaVersion = manifest.schema.version
         self.idempotencyKey = idempotencyKey
         self.manifestBytes = try manifest.canonicalBytes()
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         self.dataTargets = dataTargets.sorted(by: Self.dataTargetLessThan)
         #else
         guard dataTargets.count == 1 else {
@@ -267,18 +410,132 @@ public struct DatabaseSchemaApplyJobPlan:
         }
         self.dataTargets = dataTargets
         #endif
-        self.indexes = indexes.sorted(by: Self.indexLessThan)
+        self.indexBuilds = indexBuilds.sorted(by: Self.indexBuildLessThan)
+        self.indexRetirements = indexRetirements.sorted(
+            by: Self.indexRetirementLessThan
+        )
         self.maximumWorkUnitsPerSlice = maximumWorkUnitsPerSlice
     }
 
-    private static func indexLessThan(
-        _ lhs: IndexTarget,
-        _ rhs: IndexTarget
+    private static func indexBuildLessThan(
+        _ lhs: DatabaseIndexTransitionPlan.Target,
+        _ rhs: DatabaseIndexTransitionPlan.Target
     ) -> Bool {
-        (lhs.entity, lhs.index) < (rhs.entity, rhs.index)
+        DatabaseIndexTransitionPlan.Target.stableLessThan(lhs, rhs)
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    private static func indexRetirementLessThan(
+        _ lhs: DatabaseIndexTransitionPlan.Target,
+        _ rhs: DatabaseIndexTransitionPlan.Target
+    ) -> Bool {
+        DatabaseIndexTransitionPlan.Target.stableLessThan(lhs, rhs)
+    }
+
+    private static func persistentScope(
+        _ scope: DatabaseIndexStorageScope
+    ) -> (kind: UInt8, identifier: String, directory: FieldValue) {
+        switch scope {
+        case .entity(let name, let components):
+            return (
+                0,
+                name,
+                .array(
+                    components.map { component in
+                        switch component {
+                        case .staticPath(let value):
+                            return .array([.uint8(0), .string(value)])
+                        case .dynamicField(let name):
+                            return .array([.uint8(1), .string(name)])
+                        }
+                    })
+            )
+        case .polymorphicGroup(let identifier, let path):
+            return (
+                1,
+                identifier,
+                .array(
+                    path.map {
+                        .array([.uint8(0), .string($0)])
+                    })
+            )
+        }
+    }
+
+    private static func indexScope(
+        kind: UInt8,
+        identifier: String,
+        directory: FieldValue
+    ) throws(PersistentJobPayloadError) -> DatabaseIndexStorageScope {
+        guard let values = directory.arrayValue else {
+            throw .invalidValue("Invalid schema apply index directory")
+        }
+        var components: [DirectoryPathComponent] = []
+        components.reserveCapacity(values.count)
+        for value in values {
+            guard let pair = value.arrayValue,
+                pair.count == 2,
+                let componentKind = pair[0].uint8Value,
+                let componentValue = pair[1].stringValue,
+                !componentValue.isEmpty
+            else {
+                throw .invalidValue("Invalid schema apply index directory")
+            }
+            switch componentKind {
+            case 0:
+                components.append(.staticPath(componentValue))
+            case 1:
+                components.append(.dynamicField(fieldName: componentValue))
+            default:
+                throw .invalidValue("Invalid schema apply index directory")
+            }
+        }
+        switch kind {
+        case 0:
+            return .entity(
+                name: identifier,
+                directoryComponents: components
+            )
+        case 1:
+            var path: [String] = []
+            path.reserveCapacity(components.count)
+            for component in components {
+                guard case .staticPath(let value) = component else {
+                    throw .invalidValue(
+                        "Invalid polymorphic schema apply directory"
+                    )
+                }
+                path.append(value)
+            }
+            return .polymorphicGroup(
+                identifier: identifier,
+                directoryPath: path
+            )
+        default:
+            throw .invalidValue("Invalid schema apply index scope")
+        }
+    }
+
+    private static func indexTarget(
+        scope: DatabaseIndexStorageScope,
+        index: String,
+        definitionFingerprint: SchemaFingerprint,
+        layoutFingerprint: ByteString
+    ) throws(PersistentJobPayloadError) -> DatabaseIndexTransitionPlan.Target {
+        do {
+            return try DatabaseIndexTransitionPlan.Target(
+                scope: scope,
+                identity: try DatabaseIndexStorageIdentity(
+                    name: index,
+                    definitionFingerprint: definitionFingerprint,
+                    layoutFingerprint: layoutFingerprint
+                )
+            )
+        } catch {
+            throw .invalidValue("Invalid schema apply index identity")
+        }
+    }
+
+    #if DATABASE_SERVER_MULTI_BASE
     private static func dataTargetLessThan(
         _ lhs: DataTarget,
         _ rhs: DataTarget

@@ -1,12 +1,13 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
+import DatabaseGraphOperations
+import DatabaseJobRuntime
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
 import DatabaseOperationCore
-#if DATABASE_SERVER_MULTIPLE_BASES
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
+
+#if DATABASE_SERVER_MULTI_BASE
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
@@ -135,52 +136,6 @@ package final class BaseOperationExecutor: Sendable {
         DatabaseIndexMaintenanceRuntime(container: container)
     }
 
-    package func pendingSchemaIndexBuilds(
-        in schema: Schema,
-        transaction: any TransactionAccess
-    ) async throws -> [String: Set<String>] {
-        try await container.pendingSchemaIndexBuilds(
-            in: schema,
-            transaction: transaction
-        )
-    }
-
-    package func partitionCatalogPage(
-        entity: String,
-        continuation: ByteString?,
-        limit: Int,
-        transaction: any TransactionAccess
-    ) async throws -> DatabasePartitionCatalogPage {
-        try await container.executionPartitionCatalogPage(
-            entity: entity,
-            continuation: continuation,
-            limit: limit,
-            transaction: transaction
-        )
-    }
-
-    package func completeSchemaIndexBuild(
-        entity: String,
-        index: String,
-        transaction: any TransactionAccess
-    ) throws {
-        try container.completeSchemaIndexBuild(
-            entity: entity,
-            index: index,
-            transaction: transaction
-        )
-    }
-
-    package func installSchemaSnapshot(
-        _ schema: Schema,
-        transaction: any TransactionAccess
-    ) throws {
-        try container.installDataRootSchemaSnapshot(
-            schema,
-            transaction: transaction
-        )
-    }
-
     func indexStatusPage(
         entity: String?,
         index: String?,
@@ -208,25 +163,29 @@ package final class BaseOperationExecutor: Sendable {
         transaction: any TransactionAccess
     ) async throws -> DatabaseMigrationStatus {
         let context = try requireDataContext()
-        return try await context.withExecutionDataOperation {
+        return try await container.withMigrationMaintenanceAccess {
+            try await context.withExecutionDataOperation {
             try await self.container.migrationStatus(
                 targetVersion: targetVersion,
                 transaction: transaction
-            )
+                )
+            }
         }
     }
 
     package func migrationStatus(
         targetVersion: Schema.Version? = nil
     ) async throws -> DatabaseMigrationStatus {
-        try await withStorageTransaction(
+        try await container.withMigrationMaintenanceAccess {
+            try await self.withStorageTransaction(
             requiredAccess: .administer,
             configuration: .readOnly
         ) { transaction in
             try await self.container.migrationStatus(
                 targetVersion: targetVersion,
                 transaction: transaction
-            )
+                )
+            }
         }
     }
 
@@ -234,13 +193,15 @@ package final class BaseOperationExecutor: Sendable {
         targetVersion: Schema.Version? = nil,
         maximumStageCount: UInt64
     ) async throws -> DatabaseMigrationExecutionResult {
-        try await authorize(.administer)
-        let context = try requireDataContext()
+        try await container.withMigrationMaintenanceAccess {
+            try await self.authorize(.administer)
+        let context = try self.requireDataContext()
         return try await context.withExecutionDataOperation {
             try await self.container.runMigrations(
                 targetVersion: targetVersion,
                 maximumStageCount: maximumStageCount
-            )
+                )
+            }
         }
     }
 

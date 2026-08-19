@@ -1,16 +1,106 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
-import DatabaseServerFoundation
+import DatabaseGraphOperations
+import DatabaseKit
+import DatabaseOperationCore
 import DatabaseRuntime
+import DatabaseServerFoundation
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Canonical graph query paging")
 struct DatabaseGraphQueryPagingTests {
+    @Test("a restorable graph cursor binds its schema generation")
+    func restorableGraphCursorBindsSchemaGeneration() throws {
+        let requestFingerprint = ByteString(
+            repeating: 0x31,
+            count: DatabaseRequestDigest.byteCount
+        )
+        let resultFingerprint = ByteString(
+            repeating: 0x32,
+            count: DatabaseRequestDigest.byteCount
+        )
+        #if MultiBase
+        let cursor = DatabaseGraphQueryPageCursor(
+            kind: .construct,
+            resource: .base(try TestBaseEnvironment.id()),
+            schemaGeneration: 23,
+            dataGeneration: 29,
+            requestFingerprint: requestFingerprint,
+            restorableReadPosition: .version(17),
+            resultFingerprint: resultFingerprint,
+            tripleOffset: 1
+        )
+        #else
+        let cursor = DatabaseGraphQueryPageCursor(
+            kind: .construct,
+            schemaGeneration: 23,
+            dataGeneration: 29,
+            requestFingerprint: requestFingerprint,
+            restorableReadPosition: .version(17),
+            resultFingerprint: resultFingerprint,
+            tripleOffset: 1
+        )
+        #endif
+
+        let decoded = try DatabaseGraphQueryPageCursor.decode(
+            cursor.encode(limits: .default),
+            limits: .default
+        )
+        #expect(decoded.schemaGeneration == 23)
+        #expect(decoded.dataGeneration == 29)
+        #expect(decoded.restorableReadPosition == .version(17))
+    }
+
+    @Test("an execution identity change invalidates graph continuations")
+    func executionIdentityChangeInvalidatesGraphContinuation() async throws {
+        let container = try await makeContainer()
+        let query = constructQuery()
+        let first = try graphPage(
+            try await execute(
+                request(.construct(query), limit: 1),
+                container: container
+            )
+        )
+        let continuation = try #require(first.continuation)
+        let schema = container.schema
+        let firstGeneration = container.schemaGeneration
+        let nextRuntime = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 2
+            ),
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    DatabaseGraphQueryStatement.self
+                )
+            ]
+        )
+        let publication = try await container.publishSchema(
+            schema,
+            fingerprint: try SchemaManifest(schema: schema).fingerprint(),
+            expectedFingerprint: container.schemaFingerprint.detached(),
+            idempotencyKey: "graph-execution-identity-invalidation",
+            authorization: TestBaseEnvironment.authorization,
+            runtimeConfiguration: nextRuntime
+        )
+        #expect(publication.generation == firstGeneration + 1)
+
+        await #expect(throws: DatabaseQueryExecutionError.self) {
+            _ = try await execute(
+                request(
+                    .construct(query),
+                    limit: 1,
+                    continuation: continuation
+                ),
+                container: container
+            )
+        }
+    }
+
     @Test("CONSTRUCT uses durable paging without historical reads")
     func constructUsesDurableNonHistoricalContinuation() async throws {
         let container = try await makeContainer()
@@ -471,7 +561,7 @@ struct DatabaseGraphQueryPagingTests {
                         runtimeLimits: .default,
                         querySnapshotStore: snapshotStore
                     )
-                ),
+                )
             ],
             requiredOperations: [.queryExecute]
         )
@@ -485,7 +575,7 @@ struct DatabaseGraphQueryPagingTests {
         let operationRequest = request(.construct(constructQuery()), limit: 2)
         let encoder = DatabaseWireEncoder()
         let decoder = DatabaseWireDecoder()
-        #if MultipleBases
+        #if MultiBase
         let frame = try encoder.encodeRequest(
             DatabaseOperationCatalog.queryExecute,
             requestID: 77,
@@ -523,7 +613,7 @@ struct DatabaseGraphQueryPagingTests {
         #expect(header.requestID == 77)
         #expect(page.triples.count == 2)
         #expect(page.continuation != nil)
-        #if MultipleBases
+        #if MultiBase
         if case .transactional = page.consistency {
         } else {
             Issue.record("Expected one transactional Base read point")
@@ -991,13 +1081,17 @@ struct DatabaseGraphQueryPagingTests {
         try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DatabaseGraphQueryStatement.schemaEntity,
+                    try DatabaseGraphQueryStatement.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration.testing(storageEngine: engine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphQueryStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphQueryStatement.self)]
             ),
             security: .testingDisabled
         )
@@ -1122,7 +1216,7 @@ struct DatabaseGraphQueryPagingTests {
         guard case .rdfGraph(let page) = response else {
             throw GraphQueryResponseAssertionError.expectedGraphPage
         }
-        #if MultipleBases
+        #if MultiBase
         return MaterializedGraphPage(
             triples: try page.materializedQuads(
                 maximumCount: page.quadCount
@@ -1147,7 +1241,7 @@ struct DatabaseGraphQueryPagingTests {
         guard case .rows(let page) = response else {
             throw GraphQueryResponseAssertionError.expectedRowPage
         }
-        #if MultipleBases
+        #if MultiBase
         return MaterializedRowPage(
             columns: page.columns,
             rows: try page.materializedRows(
@@ -1183,7 +1277,7 @@ struct DatabaseGraphQueryPagingTests {
     private struct MaterializedGraphPage {
         let triples: [RDFQuad]
         let continuation: ByteString?
-        #if MultipleBases
+        #if MultiBase
         let consistency: DatabaseKit.DatabaseReadConsistency
         #else
         let snapshotVersion: Int64?
@@ -1194,7 +1288,7 @@ struct DatabaseGraphQueryPagingTests {
         let columns: [QueryColumn]
         let rows: [DatabaseWire.QueryRow]
         let continuation: ByteString?
-        #if MultipleBases
+        #if MultiBase
         let consistency: DatabaseKit.DatabaseReadConsistency
         #else
         let snapshotVersion: UInt64?
@@ -1207,7 +1301,7 @@ struct DatabaseGraphQueryPagingTests {
         guard case .boolean(let value) = response else {
             throw GraphQueryResponseAssertionError.expectedBoolean
         }
-        #if MultipleBases
+        #if MultiBase
         return value.value
         #else
         return value

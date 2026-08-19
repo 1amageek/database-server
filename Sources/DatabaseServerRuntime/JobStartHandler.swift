@@ -27,12 +27,12 @@ public struct JobStartHandler: DatabaseOperationEndpointHandler {
     public func requirement(
         for request: JobStartOperation.Request
     ) throws -> DatabaseOperationRequirement {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         DatabaseOperationRequirement(
             acceptedTargets: [.database, .base],
             access: .administer,
             transaction: .write,
-            baseAdmission: try service.baseAdmission(for: request.operation)
+            baseAdmission: try service.startBaseAdmission(for: request.operation)
         )
         #else
         _ = request

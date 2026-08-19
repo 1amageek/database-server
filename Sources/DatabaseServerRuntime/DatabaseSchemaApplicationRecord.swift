@@ -36,7 +36,7 @@ package struct DatabaseSchemaApplicationRecord:
         encoder.writeUInt64(job.jobID.low)
         encoder.writeUInt32(UInt32(job.operation.family.rawValue))
         try encoder.writeString(job.operation.kind)
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard job.target == .database else { throw .invalidValue }
         #endif
     }
@@ -66,7 +66,7 @@ package struct DatabaseSchemaApplicationRecord:
                 family: family,
                 kind: decoder.readString()
             )
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             let job = JobIdentity(
                 jobID: jobID,
                 operation: operation,

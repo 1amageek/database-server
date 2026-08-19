@@ -1,13 +1,13 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
-import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseGraphOperations
+import DatabaseJobRuntime
 import DatabaseKit
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
+import DatabaseOperationCore
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
@@ -20,8 +20,9 @@ public struct DatabaseSchemaApplyResumableOperation:
     private let runtimeFactory: AnyDatabaseSchemaRuntimeFactory
     private let runtimeLimits: DatabaseOperationLimits
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    public var baseAdmission: DatabaseBaseAdmissionKind { .administration }
+    #if DATABASE_SERVER_MULTI_BASE
+    public var startBaseAdmission: DatabaseBaseAdmissionKind { .administration }
+    public var sliceBaseAdmission: DatabaseBaseAdmissionKind { .administration }
     #endif
 
     public init(
@@ -48,11 +49,15 @@ public struct DatabaseSchemaApplyResumableOperation:
         DatabaseSchemaApplyJobPlan,
         DatabaseSchemaApplyJobState
     > {
-        guard case let .apply(
-            manifest,
-            expectedFingerprint,
-            idempotencyKey
-        ) = request.invocation else {
+        guard
+            case .apply(
+                let
+                    manifest,
+                let
+                    expectedFingerprint,
+                let
+                    idempotencyKey
+            ) = request.invocation else {
             throw DatabaseSchemaApplyJobError.invalidInvocation
         }
         let executor = try context.operationContext.requireControlExecutor()
@@ -73,6 +78,12 @@ public struct DatabaseSchemaApplyResumableOperation:
                 analysis.issues
             )
         }
+        let transition = executor.makeSchemaTransitionExecutor(
+            runtimeFactory: runtimeFactory
+        )
+        let preparedRuntime = try await transition.preflight(
+            schema: manifest.schema
+        )
         let maximumWorkUnits = min(
             context.maximumSliceWorkUnits,
             runtimeLimits.maximumWorkUnits,
@@ -81,7 +92,7 @@ public struct DatabaseSchemaApplyResumableOperation:
         guard maximumWorkUnits > 0 else {
             throw DatabaseSchemaApplyJobError.sliceMadeNoProgress
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let baseRecords = try await executor.loadBases(
             transaction: context.transaction
         )
@@ -110,26 +121,24 @@ public struct DatabaseSchemaApplyResumableOperation:
         let dataTargets = [
             DatabaseSchemaApplyJobPlan.DataTarget(
                 generation: 0
-            ),
+            )
         ]
         #endif
-        let indexes = manifest.schema.entities.flatMap { entity in
-            entity.indexDescriptors.map { descriptor in
-                DatabaseSchemaApplyJobPlan.IndexTarget(
-                    entity: entity.name,
-                    index: descriptor.name,
-                    usesDynamicDirectory: entity.hasDynamicDirectory
-                )
-            }
-        }
+        let indexTransition = try transition.planIndexTransition(
+            targetSchema: manifest.schema,
+            preparedGeneration: preparedRuntime.generation
+        )
         return DatabasePreparedResumableJob(
             plan: try DatabaseSchemaApplyJobPlan(
                 previousFingerprint: currentFingerprint,
                 targetFingerprint: manifest.fingerprint(),
+                indexPhysicalFingerprint:
+                    preparedRuntime.generation.indexPhysicalFingerprint,
                 manifest: manifest,
                 idempotencyKey: idempotencyKey,
                 dataTargets: dataTargets,
-                indexes: indexes,
+                indexBuilds: indexTransition.builds,
+                indexRetirements: indexTransition.retirements,
                 maximumWorkUnitsPerSlice: maximumWorkUnits
             ),
             initialState: DatabaseSchemaApplyJobState(),
@@ -195,10 +204,17 @@ public struct DatabaseSchemaApplyResumableOperation:
                 throw DatabaseJobRuntimeError.corruptedState
             }
             if offset < plan.dataTargets.count {
+                let preparedRuntime = try await transition.preflight(
+                    schema: manifest.schema,
+                    expectedIndexPhysicalFingerprint:
+                        plan.indexPhysicalFingerprint
+                )
                 try await transition.stage(
                     plan.dataTargets[offset],
-                    previousSchema: executor.schema,
-                    targetSchema: manifest.schema
+                    targetSchema: manifest.schema,
+                    physicalLayouts:
+                        preparedRuntime.generation.indexPhysicalLayouts,
+                    retirements: plan.indexRetirements
                 )
                 return .incomplete(
                     completedWorkUnits: 1,
@@ -220,10 +236,14 @@ public struct DatabaseSchemaApplyResumableOperation:
                 manifest: manifest,
                 expectedFingerprint: plan.previousFingerprint,
                 targetFingerprint: plan.targetFingerprint,
+                expectedIndexPhysicalFingerprint:
+                    plan.indexPhysicalFingerprint,
                 idempotencyKey: plan.idempotencyKey
             )
             guard publication.fingerprint == plan.targetFingerprint,
-                  publication.schemaVersion == plan.schemaVersion else {
+                publication.indexPhysicalFingerprint
+                    == plan.indexPhysicalFingerprint,
+                publication.schemaVersion == plan.schemaVersion else {
                 throw DatabaseSchemaApplyJobError.publishedSchemaMismatch
             }
             return .incomplete(
@@ -232,6 +252,11 @@ public struct DatabaseSchemaApplyResumableOperation:
             )
 
         case .installing:
+            _ = try await transition.preflight(
+                schema: manifest.schema,
+                expectedIndexPhysicalFingerprint:
+                    plan.indexPhysicalFingerprint
+            )
             guard executor.schemaFingerprint == plan.targetFingerprint,
                   executor.schema.version == plan.schemaVersion else {
                 throw DatabaseSchemaApplyJobError.publishedSchemaMismatch
@@ -263,6 +288,11 @@ public struct DatabaseSchemaApplyResumableOperation:
             )
 
         case .building:
+            _ = try await transition.preflight(
+                schema: manifest.schema,
+                expectedIndexPhysicalFingerprint:
+                    plan.indexPhysicalFingerprint
+            )
             guard executor.schemaFingerprint == plan.targetFingerprint,
                   executor.schema.version == plan.schemaVersion else {
                 throw DatabaseSchemaApplyJobError.publishedSchemaMismatch
@@ -279,7 +309,34 @@ public struct DatabaseSchemaApplyResumableOperation:
                 state: progress.state
             )
 
+        case .retiring:
+            _ = try await transition.preflight(
+                schema: manifest.schema,
+                expectedIndexPhysicalFingerprint:
+                    plan.indexPhysicalFingerprint
+            )
+            guard executor.schemaFingerprint == plan.targetFingerprint,
+                executor.schema.version == plan.schemaVersion
+            else {
+                throw DatabaseSchemaApplyJobError.publishedSchemaMismatch
+            }
+            let progress = try await retireSlice(
+                plan: plan,
+                state: state,
+                targetSchema: manifest.schema,
+                transition: transition
+            )
+            return .incomplete(
+                completedWorkUnits: progress.completedWorkUnits,
+                state: progress.state
+            )
+
         case .finishing:
+            _ = try await transition.preflight(
+                schema: manifest.schema,
+                expectedIndexPhysicalFingerprint:
+                    plan.indexPhysicalFingerprint
+            )
             let job = try Self.jobIdentity(context.jobID)
             try await transition.finish(job: job)
             return .complete(
@@ -307,8 +364,8 @@ public struct DatabaseSchemaApplyResumableOperation:
               let dataTargetOffset = Int(exactly: state.dataTargetOffset),
               plan.dataTargets.indices.contains(dataTargetOffset),
               let indexOffset = Int(exactly: state.indexOffset),
-              plan.indexes.indices.contains(indexOffset),
-              let partitions = state.activePartitions else {
+            plan.indexBuilds.indices.contains(indexOffset)
+        else {
             return
         }
         let detail: String
@@ -322,7 +379,8 @@ public struct DatabaseSchemaApplyResumableOperation:
         let transition = control.makeSchemaTransitionExecutor(
             runtimeFactory: runtimeFactory
         )
-        let target = plan.indexes[indexOffset]
+        let target = plan.indexBuilds[indexOffset]
+        let expectedIdentity = target.identity
         try await transition.withDataTarget(
             plan.dataTargets[dataTargetOffset]
         ) { executor in
@@ -330,14 +388,32 @@ public struct DatabaseSchemaApplyResumableOperation:
                 requiredAccess: .administer,
                 configuration: .batch
             ) { transaction in
-                try await executor.makeIndexMaintenanceRuntime().markFailed(
-                    entity: target.entity,
-                    index: target.index,
-                    partitions: partitions,
-                    generation: context.jobID,
+                switch target.scope {
+                case .entity(let entity, _):
+                    guard let partitions = state.activePartitions else {
+                        throw DatabaseJobRuntimeError.corruptedState
+                    }
+                    try await executor.makeIndexMaintenanceRuntime().markFailed(
+                        entity: entity,
+                        index: target.identity.name,
+                        partitions: partitions,
+                        generation: context.jobID,
+                        detail: detail,
+                        expectedIdentity: expectedIdentity,
+                        transaction: transaction.executionStorageAccess
+                    )
+                case .polymorphicGroup(let identifier, _):
+                    try await executor
+                        .makePolymorphicIndexMaintenanceRuntime()
+                        .markFailed(
+                            group: identifier,
+                            index: target.identity.name,
+                            generation: context.jobID,
                     detail: detail,
-                    transaction: transaction.executionStorageAccess
-                )
+                            expectedIdentity: expectedIdentity,
+                            transaction: transaction.executionStorageAccess
+                        )
+                }
             }
         }
     }
@@ -361,7 +437,7 @@ public struct DatabaseSchemaApplyResumableOperation:
     private static func jobIdentity(
         _ jobID: DatabaseTypes.UUID
     ) throws -> JobIdentity {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         JobIdentity(
             jobID: jobID,
             operation: try Self.job().identifier,
@@ -381,26 +457,26 @@ public struct DatabaseSchemaApplyResumableOperation:
         maximumWorkUnits: UInt64,
         transition: DatabaseSchemaTransitionExecutor,
         jobID: DatabaseTypes.UUID
-    ) async throws -> BuildProgress {
+    ) async throws -> IndexWorkProgress {
         guard let dataTargetOffset = Int(exactly: state.dataTargetOffset),
               dataTargetOffset <= plan.dataTargets.count,
               let indexOffset = Int(exactly: state.indexOffset),
-              indexOffset <= plan.indexes.count else {
+              indexOffset <= plan.indexBuilds.count else {
             throw DatabaseJobRuntimeError.corruptedState
         }
         guard dataTargetOffset < plan.dataTargets.count else {
-            return BuildProgress(
-                state: DatabaseSchemaApplyJobState(phase: .finishing),
+            return IndexWorkProgress(
+                state: stateAfterBuilds(),
                 completedWorkUnits: 1
             )
         }
-        guard indexOffset < plan.indexes.count else {
+        guard indexOffset < plan.indexBuilds.count else {
             let nextTarget = try increment(state.dataTargetOffset)
-            return BuildProgress(
-                state: DatabaseSchemaApplyJobState(
-                    phase: nextTarget == UInt64(plan.dataTargets.count)
-                        ? .finishing
-                        : .building,
+            return IndexWorkProgress(
+                state: nextTarget == UInt64(plan.dataTargets.count)
+                    ? stateAfterBuilds()
+                    : DatabaseSchemaApplyJobState(
+                        phase: .building,
                     dataTargetOffset: nextTarget
                 ),
                 completedWorkUnits: 1
@@ -433,29 +509,64 @@ public struct DatabaseSchemaApplyResumableOperation:
         executor: DatabaseDataOperationExecutor,
         jobID: DatabaseTypes.UUID,
         transaction: any TransactionAccess
-    ) async throws -> BuildProgress {
+    ) async throws -> IndexWorkProgress {
         guard let offset = Int(exactly: state.indexOffset),
-              plan.indexes.indices.contains(offset) else {
+            plan.indexBuilds.indices.contains(offset) else {
             throw DatabaseJobRuntimeError.corruptedState
         }
-        let target = plan.indexes[offset]
+        let target = plan.indexBuilds[offset]
+        let expectedIdentity = target.identity
+        if case .polymorphicGroup(let groupIdentifier, _) = target.scope {
+            return try await buildPolymorphicIndexSlice(
+                plan: plan,
+                state: state,
+                maximumWorkUnits: maximumWorkUnits,
+                executor: executor,
+                groupIdentifier: groupIdentifier,
+                target: target,
+                expectedIdentity: expectedIdentity,
+                jobID: jobID,
+                transaction: transaction
+            )
+        }
+        guard case .entity(let entityName, _) = target.scope else {
+            throw DatabaseJobRuntimeError.corruptedState
+        }
+        let usesDynamicDirectory = target.scope.usesDynamicDirectory
         var nextContinuation = state.nextPartitionContinuation
         var activePartitions = state.activePartitions
         var activeIsLast = state.activePartitionIsLast
         let activeStarted = state.activeBuildStarted
 
         if activePartitions == nil {
-            if target.usesDynamicDirectory {
+            if usesDynamicDirectory {
                 let page = try await executor.partitionCatalogPage(
-                    entity: target.entity,
+                    entity: entityName,
                     continuation: nextContinuation,
                     limit: 1,
                     transaction: transaction
                 )
                 guard let entry = page.entries.first else {
                     try executor.completeSchemaIndexBuild(
-                        entity: target.entity,
-                        index: target.index,
+                        target,
+                        transaction: transaction
+                    )
+                    return advancedIndexState(plan: plan, state: state)
+                }
+                guard target.scope.accepts(partitions: entry.partitions) else {
+                    if let continuation = page.continuation {
+                        return IndexWorkProgress(
+                            state: DatabaseSchemaApplyJobState(
+                                phase: .building,
+                                dataTargetOffset: state.dataTargetOffset,
+                                indexOffset: state.indexOffset,
+                                nextPartitionContinuation: continuation
+                            ),
+                            completedWorkUnits: 1
+                        )
+                    }
+                    try executor.completeSchemaIndexBuild(
+                        target,
                         transaction: transaction
                     )
                     return advancedIndexState(plan: plan, state: state)
@@ -476,9 +587,10 @@ public struct DatabaseSchemaApplyResumableOperation:
         let maintenance = executor.makeIndexMaintenanceRuntime()
         if !activeStarted {
             let status = try await maintenance.status(
-                entity: target.entity,
-                index: target.index,
+                entity: entityName,
+                index: target.identity.name,
                 partitions: partitions,
+                expectedIdentity: expectedIdentity,
                 transaction: transaction
             )
             if status.indexState == .readable {
@@ -495,12 +607,13 @@ public struct DatabaseSchemaApplyResumableOperation:
         }
 
         let slice = try await maintenance.runRebuildSlice(
-            entity: target.entity,
-            index: target.index,
+            entity: entityName,
+            index: target.identity.name,
             partitions: partitions,
             generation: jobID,
             mode: activeStarted ? .resume : .start,
             maximumWorkUnits: maximumWorkUnits,
+            expectedIdentity: expectedIdentity,
             transaction: transaction
         )
         guard slice.completedWorkUnits <= maximumWorkUnits else {
@@ -514,7 +627,7 @@ public struct DatabaseSchemaApplyResumableOperation:
             guard slice.completedWorkUnits > 0 else {
                 throw DatabaseSchemaApplyJobError.sliceMadeNoProgress
             }
-            return BuildProgress(
+            return IndexWorkProgress(
                 state: DatabaseSchemaApplyJobState(
                     phase: .building,
                     dataTargetOffset: state.dataTargetOffset,
@@ -536,7 +649,7 @@ public struct DatabaseSchemaApplyResumableOperation:
             executor: executor,
             transaction: transaction
         )
-        return BuildProgress(
+        return IndexWorkProgress(
             state: progress.state,
             completedWorkUnits: chargedWork
         )
@@ -545,21 +658,20 @@ public struct DatabaseSchemaApplyResumableOperation:
     private func finishedPartitionState(
         plan: DatabaseSchemaApplyJobPlan,
         state: DatabaseSchemaApplyJobState,
-        target: DatabaseSchemaApplyJobPlan.IndexTarget,
+        target: DatabaseIndexTransitionPlan.Target,
         isLast: Bool,
         nextContinuation: ByteString?,
         executor: DatabaseDataOperationExecutor,
         transaction: any TransactionAccess
-    ) throws -> BuildProgress {
+    ) throws -> IndexWorkProgress {
         if isLast {
             try executor.completeSchemaIndexBuild(
-                entity: target.entity,
-                index: target.index,
+                target,
                 transaction: transaction
             )
             return advancedIndexState(plan: plan, state: state)
         }
-        return BuildProgress(
+        return IndexWorkProgress(
             state: DatabaseSchemaApplyJobState(
                 phase: .building,
                 dataTargetOffset: state.dataTargetOffset,
@@ -570,28 +682,274 @@ public struct DatabaseSchemaApplyResumableOperation:
         )
     }
 
+    private func buildPolymorphicIndexSlice(
+        plan: DatabaseSchemaApplyJobPlan,
+        state: DatabaseSchemaApplyJobState,
+        maximumWorkUnits: UInt64,
+        executor: DatabaseDataOperationExecutor,
+        groupIdentifier: String,
+        target: DatabaseIndexTransitionPlan.Target,
+        expectedIdentity: DatabaseIndexStorageIdentity,
+        jobID: DatabaseTypes.UUID,
+        transaction: any TransactionAccess
+    ) async throws -> IndexWorkProgress {
+        let maintenance = executor.makePolymorphicIndexMaintenanceRuntime()
+        if !state.activeBuildStarted {
+            let status = try await maintenance.status(
+                group: groupIdentifier,
+                index: target.identity.name,
+                expectedIdentity: expectedIdentity,
+                transaction: transaction
+            )
+            if status.indexState == .readable {
+                try executor.completeSchemaIndexBuild(
+                    target,
+                    transaction: transaction
+                )
+                return advancedIndexState(plan: plan, state: state)
+            }
+        }
+        let slice = try await maintenance.runRebuildSlice(
+            group: groupIdentifier,
+            index: target.identity.name,
+            generation: jobID,
+            mode: state.activeBuildStarted ? .resume : .start,
+            maximumWorkUnits: maximumWorkUnits,
+            expectedIdentity: expectedIdentity,
+            transaction: transaction
+        )
+        guard slice.completedWorkUnits <= maximumWorkUnits else {
+            throw DatabaseJobRuntimeError.sliceExceededBudget(
+                actual: slice.completedWorkUnits,
+                maximum: maximumWorkUnits
+            )
+        }
+        let chargedWork = max(UInt64(1), slice.completedWorkUnits)
+        guard slice.isComplete else {
+            guard slice.completedWorkUnits > 0 else {
+                throw DatabaseSchemaApplyJobError.sliceMadeNoProgress
+            }
+            return IndexWorkProgress(
+                state: DatabaseSchemaApplyJobState(
+                    phase: .building,
+                    dataTargetOffset: state.dataTargetOffset,
+                    indexOffset: state.indexOffset,
+                    activeBuildStarted: true
+                ),
+                completedWorkUnits: chargedWork
+            )
+        }
+        try executor.completeSchemaIndexBuild(
+            target,
+            transaction: transaction
+        )
+        return IndexWorkProgress(
+            state: advancedIndexState(plan: plan, state: state).state,
+            completedWorkUnits: chargedWork
+        )
+    }
+
     private func advancedIndexState(
         plan: DatabaseSchemaApplyJobPlan,
         state: DatabaseSchemaApplyJobState
-    ) -> BuildProgress {
+    ) -> IndexWorkProgress {
         let nextIndex = state.indexOffset + 1
-        if nextIndex == UInt64(plan.indexes.count) {
+        if nextIndex == UInt64(plan.indexBuilds.count) {
             let nextTarget = state.dataTargetOffset + 1
-            return BuildProgress(
-                state: DatabaseSchemaApplyJobState(
-                    phase: nextTarget == UInt64(plan.dataTargets.count)
-                        ? .finishing
-                        : .building,
-                    dataTargetOffset: nextTarget
-                ),
+            return IndexWorkProgress(
+                state: nextTarget == UInt64(plan.dataTargets.count)
+                    ? stateAfterBuilds()
+                    : DatabaseSchemaApplyJobState(
+                        phase: .building,
+                        dataTargetOffset: nextTarget
+                    ),
                 completedWorkUnits: 1
             )
         }
-        return BuildProgress(
+        return IndexWorkProgress(
             state: DatabaseSchemaApplyJobState(
                 phase: .building,
                 dataTargetOffset: state.dataTargetOffset,
                 indexOffset: nextIndex
+            ),
+            completedWorkUnits: 1
+        )
+    }
+
+    private func stateAfterBuilds() -> DatabaseSchemaApplyJobState {
+        return DatabaseSchemaApplyJobState(phase: .retiring)
+    }
+
+    private func retireSlice(
+        plan: DatabaseSchemaApplyJobPlan,
+        state: DatabaseSchemaApplyJobState,
+        targetSchema: Schema,
+        transition: DatabaseSchemaTransitionExecutor
+    ) async throws -> IndexWorkProgress {
+        guard let dataTargetOffset = Int(exactly: state.dataTargetOffset),
+            dataTargetOffset <= plan.dataTargets.count,
+            state.indexOffset == 0
+        else {
+            throw DatabaseJobRuntimeError.corruptedState
+        }
+        guard dataTargetOffset < plan.dataTargets.count else {
+            return IndexWorkProgress(
+                state: DatabaseSchemaApplyJobState(phase: .finishing),
+                completedWorkUnits: 1
+            )
+        }
+
+        let hasPendingRetirement = try await transition.withDataTarget(
+            plan.dataTargets[dataTargetOffset]
+        ) { executor in
+            try await executor.withDataTransaction(
+                requiredAccess: .administer,
+                configuration: .readOnly
+            ) { transaction in
+                let pending = try await executor.pendingSchemaIndexRetirements(
+                    validFor: targetSchema,
+                    transaction: transaction.executionStorageAccess
+                )
+                return !pending.isEmpty
+            }
+        }
+        guard hasPendingRetirement else {
+            return try advancedRetirementTargetState(
+                plan: plan,
+                state: state
+            )
+        }
+
+        // Physical generations remain readable until every request admitted
+        // under a schema older than the published target has released its
+        // lease. The wait is deliberately outside a storage transaction and
+        // outside the target's Base/data-root lease.
+        try await transition.waitForRetiredSchemaRequestsToDrain(
+            expectedFingerprint: plan.targetFingerprint,
+            expectedVersion: plan.schemaVersion,
+            expectedIndexPhysicalFingerprint: plan.indexPhysicalFingerprint
+        )
+
+        return try await transition.withDataTarget(
+            plan.dataTargets[dataTargetOffset]
+        ) { executor in
+            try await executor.withDataTransaction(
+                requiredAccess: .administer,
+                configuration: .batch
+            ) { transaction in
+                let pending = try await executor.pendingSchemaIndexRetirements(
+                    validFor: targetSchema,
+                    transaction: transaction.executionStorageAccess
+                )
+                guard let target = pending.first else {
+                    return try advancedRetirementTargetState(
+                        plan: plan,
+                        state: state
+                    )
+                }
+                switch target.scope {
+                case .entity(let entity, _):
+                    if target.scope.usesDynamicDirectory {
+                        let page = try await executor.partitionCatalogPage(
+                            entity: entity,
+                            continuation: state.nextPartitionContinuation,
+                            limit: 1,
+                            transaction: transaction.executionStorageAccess
+                        )
+                        guard let entry = page.entries.first else {
+                            try executor.completeSchemaIndexRetirement(
+                                target,
+                                transaction: transaction.executionStorageAccess
+                            )
+                            return completedRetirementState(state: state)
+                        }
+                        guard
+                            target.scope.accepts(
+                                partitions: entry.partitions
+                            )
+                        else {
+                            if let continuation = page.continuation {
+                                return IndexWorkProgress(
+                                    state: DatabaseSchemaApplyJobState(
+                                        phase: .retiring,
+                                        dataTargetOffset:
+                                            state.dataTargetOffset,
+                                        indexOffset: state.indexOffset,
+                                        nextPartitionContinuation: continuation
+                                    ),
+                                    completedWorkUnits: 1
+                                )
+                            }
+                            try executor.completeSchemaIndexRetirement(
+                                target,
+                                transaction:
+                                    transaction.executionStorageAccess
+                            )
+                            return completedRetirementState(state: state)
+                        }
+                        try executor.retireSchemaIndexStorage(
+                            target,
+                            partitions: entry.partitions,
+                            transaction: transaction.executionStorageAccess
+                        )
+                        if let continuation = page.continuation {
+                            return IndexWorkProgress(
+                                state: DatabaseSchemaApplyJobState(
+                                    phase: .retiring,
+                                    dataTargetOffset: state.dataTargetOffset,
+                                    indexOffset: state.indexOffset,
+                                    nextPartitionContinuation: continuation
+                                ),
+                                completedWorkUnits: 1
+                            )
+                        }
+                    } else {
+                        try executor.retireSchemaIndexStorage(
+                            target,
+                            partitions: FieldObject(),
+                            transaction: transaction.executionStorageAccess
+                        )
+                    }
+
+                case .polymorphicGroup:
+                    try executor.retireSchemaIndexStorage(
+                        target,
+                        partitions: FieldObject(),
+                        transaction: transaction.executionStorageAccess
+                    )
+                }
+                try executor.completeSchemaIndexRetirement(
+                    target,
+                    transaction: transaction.executionStorageAccess
+                )
+                return completedRetirementState(state: state)
+            }
+        }
+    }
+
+    private func advancedRetirementTargetState(
+        plan: DatabaseSchemaApplyJobPlan,
+        state: DatabaseSchemaApplyJobState
+    ) throws -> IndexWorkProgress {
+        let nextTarget = try increment(state.dataTargetOffset)
+        return IndexWorkProgress(
+            state: nextTarget == UInt64(plan.dataTargets.count)
+                ? DatabaseSchemaApplyJobState(phase: .finishing)
+                : DatabaseSchemaApplyJobState(
+                    phase: .retiring,
+                    dataTargetOffset: nextTarget
+                ),
+                completedWorkUnits: 1
+        )
+    }
+
+    private func completedRetirementState(
+        state: DatabaseSchemaApplyJobState
+    ) -> IndexWorkProgress {
+        IndexWorkProgress(
+            state: DatabaseSchemaApplyJobState(
+                phase: .retiring,
+                dataTargetOffset: state.dataTargetOffset
             ),
             completedWorkUnits: 1
         )
@@ -606,7 +964,7 @@ public struct DatabaseSchemaApplyResumableOperation:
     }
 }
 
-private struct BuildProgress: Sendable {
+private struct IndexWorkProgress: Sendable {
     let state: DatabaseSchemaApplyJobState
     let completedWorkUnits: UInt64
 }

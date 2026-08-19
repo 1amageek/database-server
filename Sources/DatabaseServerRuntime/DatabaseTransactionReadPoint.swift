@@ -16,7 +16,7 @@ import StorageKit
 enum DatabaseTransactionReadPoint {
     struct Value: Sendable, Hashable {
         let position: DatabaseStorageReadPosition
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let domainID: String
 
         init(position: DatabaseStorageReadPosition, domainID: String) {
@@ -65,13 +65,13 @@ enum DatabaseTransactionReadPoint {
             guard let version = UInt64(exactly: signedVersion) else {
                 throw Error.invalidVersion(signedVersion)
             }
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             return Value(position: .version(version), domainID: domainID)
             #else
             return Value(position: .version(version))
             #endif
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return Value(
             position: .opaque(makeOpaqueIdentifier()),
             domainID: domainID

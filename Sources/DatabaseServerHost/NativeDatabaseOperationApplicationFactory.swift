@@ -1,7 +1,7 @@
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseRuntime
-import DatabaseServerRuntime
 import DatabaseServerFoundation
+import DatabaseServerRuntime
 import StorageKitSystemClock
 
 public enum NativeDatabaseOperationApplicationFactory {
@@ -9,7 +9,12 @@ public enum NativeDatabaseOperationApplicationFactory {
         version: String
     ) throws -> AnyDatabaseOperationApplication {
         let schemaRuntimeFactory = AnyDatabaseSchemaRuntimeFactory(
-            SchemaDrivenDatabaseRuntimeFactory()
+            SchemaDrivenDatabaseRuntimeFactory(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-server.schema-driven@\(version)",
+                    revision: 1
+                )
+            )
         )
         let runtimeLimits = DatabaseOperationLimits.default
         let identifierGenerator = RandomDatabaseUUIDGenerator()
@@ -19,7 +24,7 @@ public enum NativeDatabaseOperationApplicationFactory {
                     DatabaseMaintenanceResumableOperation(
                         runtimeLimits: runtimeLimits
                     )
-                ),
+                )
             ]
         )
         let services = CanonicalDatabaseOperationServiceFactory(

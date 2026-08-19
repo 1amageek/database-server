@@ -1,4 +1,4 @@
-#if MultipleBases
+#if MultiBase
 @_spi(DatabaseExecution) import DatabaseEngine
 @testable import DatabaseEngine
 import DatabaseKit
@@ -173,7 +173,7 @@ struct DatabaseCompositionQueryTests {
                     .column(
                         ColumnRef(table: "lhs", column: "priority")
                     )
-                ),
+                )
             ]
         )
 
@@ -615,10 +615,14 @@ struct DatabaseCompositionQueryTests {
                 version: Schema.Version(1, 0, 0)
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         DatabaseCompositionVectorEntity.self
-                    ),
+                    )
                 ]
             )
         )
@@ -717,7 +721,7 @@ struct DatabaseCompositionQueryTests {
                 )
             ),
             orderBy: [
-                SortKey(.variable(Variable("subject"))),
+                SortKey(.variable(Variable("subject")))
             ]
         )
 
@@ -827,7 +831,7 @@ struct DatabaseCompositionQueryTests {
                     object: .iri(
                         validating: "urn:composition:ask-object"
                     )
-                ),
+                )
             ],
             into: fixture.secondaryBaseID,
             container: fixture.container
@@ -838,7 +842,7 @@ struct DatabaseCompositionQueryTests {
                     subject: .variable("subject"),
                     predicate: .iri("urn:composition:ask-predicate"),
                     object: .variable("object")
-                ),
+                )
             ])
         )
         let localResult = try await fixture.container.session(
@@ -885,7 +889,7 @@ struct DatabaseCompositionQueryTests {
                     subject: .variable("subject"),
                     predicate: .iri("urn:composition:missing-predicate"),
                     object: .variable("object")
-                ),
+                )
             ])
         )
         let missingResponse = try await invoke(
@@ -983,14 +987,14 @@ struct DatabaseCompositionQueryTests {
                     subject: .variable("subject"),
                     predicate: .iri("urn:composition:construct-derived"),
                     object: .variable("object")
-                ),
+                )
             ],
             pattern: .basic([
                 TriplePattern(
                     subject: .variable("subject"),
                     predicate: .iri("urn:composition:construct-source"),
                     object: .variable("object")
-                ),
+                )
             ])
         )
         var continuation: ByteString?
@@ -1035,7 +1039,7 @@ struct DatabaseCompositionQueryTests {
                             ),
                             predicate: sourcePredicate,
                             object: object
-                        ),
+                        )
                     ],
                     into: fixture.primaryBaseID,
                     container: fixture.container
@@ -1308,10 +1312,14 @@ struct DatabaseCompositionQueryTests {
         )
         let resolvedRuntime = try runtimeConfiguration
             ?? DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         DatabaseEndpointEntity.self
-                    ),
+                    )
                 ]
             )
         let container = try await DBContainer.open(
@@ -1333,7 +1341,7 @@ struct DatabaseCompositionQueryTests {
                     subject: .principal(principal.identifier),
                     resource: .base(primaryBaseID),
                     access: .all
-                ),
+                )
             ],
             expectedRevision: 0
         )
@@ -1346,7 +1354,7 @@ struct DatabaseCompositionQueryTests {
                     subject: .principal("test-runner"),
                     resource: .base(secondaryBaseID),
                     access: .all
-                ),
+                )
             ],
             expectedRevision: 0
         )
@@ -1379,7 +1387,7 @@ struct DatabaseCompositionQueryTests {
                         runtimeLimits: .default,
                         querySnapshotStore: snapshotStore
                     )
-                ),
+                )
             ],
             requiredOperations: [.queryExecute]
         )
@@ -1562,7 +1570,7 @@ struct DatabaseCompositionQueryTests {
                 .select(
                     SelectQuery(
                         projection: .distinctItems([
-                            .column("priority"),
+                            .column("priority")
                         ]),
                         source: .table(
                             TableRef(DatabaseEndpointEntity.persistableType)
@@ -1597,7 +1605,7 @@ struct DatabaseCompositionQueryTests {
                             IndexScanSource(
                                 indexName:
                                     "DatabaseCompositionVectorEntity_embedding",
-                                kindIdentifier: "vector",
+                                indexType: .vector,
                                 parameters: [
                                     "fieldName": .string("embedding"),
                                     "dimensions": .int64(2),

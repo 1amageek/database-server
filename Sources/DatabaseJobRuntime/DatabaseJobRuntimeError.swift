@@ -28,6 +28,7 @@ public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
     case workUnitOverflow
     case sliceExceededBudget(actual: UInt64, maximum: UInt64)
     case sliceMadeNoProgress
+    case sliceTimedOut(timeoutMilliseconds: UInt32)
     case responseTooLarge(actual: Int, maximum: Int)
     case duplicateJobIdentifier(DatabaseTypes.UUID)
     case commitModelMismatch
@@ -78,6 +79,8 @@ public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
             return "Job slice exceeded its work budget: \(actual) > \(maximum)"
         case .sliceMadeNoProgress:
             return "Job slice cannot execute with a zero work budget"
+        case .sliceTimedOut(let timeoutMilliseconds):
+            return "Job slice exceeded its \(timeoutMilliseconds)ms execution deadline"
         case .responseTooLarge(let actual, let maximum):
             return "Job response is too large: \(actual) > \(maximum)"
         case .duplicateJobIdentifier(let jobID):

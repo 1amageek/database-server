@@ -31,10 +31,10 @@ private struct RestartSchemaBuildAccountV2 {
         "accounts"
     )
     #Index(
-        .scalar,
-        fields: [\RestartSchemaBuildAccountV2.email],
-        name: "restart_schema_build_account_email"
-    )
+        .ordered(
+            name: "restart_schema_build_account_email",
+            keys: [.ascending(\RestartSchemaBuildAccountV2.email)]
+        ))
 
     var id: String = ""
     var email: String = ""
@@ -64,10 +64,14 @@ struct SchemaIndexJobRestartSQLiteTests {
                 )
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         RestartSchemaBuildAccountV1.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -124,7 +128,12 @@ struct SchemaIndexJobRestartSQLiteTests {
             ),
             security: .testingDisabled
         ) { schema in
-            try DatabaseFrameworkRuntime.configuration(schema: schema)
+            try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                schema: schema)
         }
         defer { await reopened.shutdown() }
         #expect(reopened.schema == targetSchema)
@@ -153,7 +162,7 @@ struct SchemaIndexJobRestartSQLiteTests {
                     DatabaseMaintenanceResumableOperation(
                         runtimeLimits: runtimeLimits
                     )
-                ),
+                )
             ]
         )
         let serviceFactory = CanonicalDatabaseOperationServiceFactory(
@@ -182,7 +191,12 @@ struct SchemaIndexJobRestartSQLiteTests {
                     UnrestrictedDatabaseOperationAdmissionPolicy()
                 ),
                 schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory(
-                    SchemaDrivenDatabaseRuntimeFactory()
+                    SchemaDrivenDatabaseRuntimeFactory(
+                        executionIdentity: DatabaseExecutionRuntimeIdentity(
+                            identifier: "database-server-tests",
+                            revision: 1
+                        ),
+                    )
                 ),
                 runtimeLimits: runtimeLimits
             ),
@@ -244,7 +258,7 @@ struct SchemaIndexJobRestartSQLiteTests {
         requestID: UInt64,
         runtime: DatabaseOperationInstance
     ) async throws -> Response {
-        #if MultipleBases
+        #if MultiBase
         let requestBytes = try DatabaseWireEncoder().encodeRequest(
             operation,
             requestID: requestID,

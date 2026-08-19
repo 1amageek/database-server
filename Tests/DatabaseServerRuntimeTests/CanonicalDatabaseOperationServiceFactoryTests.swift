@@ -1,11 +1,11 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
-import DatabaseServerRuntime
 import DatabaseServerFoundation
+import DatabaseServerRuntime
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Canonical database operation service factory")
@@ -19,7 +19,11 @@ struct CanonicalDatabaseOperationServiceFactoryTests {
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseGraphSourceEdge.self)]
             ),
             security: .testingDisabled
         )
@@ -61,8 +65,8 @@ struct CanonicalDatabaseOperationServiceFactoryTests {
         DatabaseJobService {
         var jobOperations: [JobOperationIdentifier] { [] }
 
-        #if MultipleBases
-        func baseAdmission(
+        #if MultiBase
+        func startBaseAdmission(
             for operation: JobOperationIdentifier
         ) throws -> DatabaseBaseAdmissionKind {
             _ = operation

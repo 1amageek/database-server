@@ -9,7 +9,6 @@ let runtimeFeatureNames: Set<String> = [
     "RankIndexes",
     "BitmapIndexes",
     "VersionIndexes",
-    "PermutedIndexes",
     "GraphIndexes",
     "AggregationIndexes",
     "LeaderboardIndexes",
@@ -29,7 +28,7 @@ let runtimeTraits = Set(runtimeFeatureNames.map { Trait.trait(name: $0) })
                 "FoundationDBBackend",
             ]
         ),
-        .trait(name: "MultipleBases"),
+        .trait(name: "MultiBase"),
         .trait(
             name: "AllRuntimeFeatures",
             enabledTraits: runtimeFeatureNames
@@ -58,41 +57,41 @@ let frameworkTraits = Set(
         condition: .when(traits: ["FoundationDBBackend"])
     ),
     .trait(
-        name: "MultipleBases",
-        condition: .when(traits: ["MultipleBases"])
+        name: "MultiBase",
+        condition: .when(traits: ["MultiBase"])
     ),
 ])
 
 let databaseKitTraits: Set<Package.Dependency.Trait> = [
     .trait(
-        name: "MultipleBases",
-        condition: .when(traits: ["MultipleBases"])
-    ),
+        name: "MultiBase",
+        condition: .when(traits: ["MultiBase"])
+    )
 ]
 
 let foundationDBClientLinkerSettings: [LinkerSetting] = [
     .unsafeFlags(
         ["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"],
         .when(platforms: [.macOS], traits: ["FoundationDBBackend"])
-    ),
+    )
 ]
 
 let package = Package(
     name: "database-server",
     platforms: [
-        .macOS(.v26),
+        .macOS(.v26)
     ],
     products: [
         .executable(
             name: "database-server",
             targets: ["DatabaseServer"]
-        ),
+        )
     ],
     traits: runtimeTraits,
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0818.0",
+            from: "26.0819.1",
             traits: frameworkTraits
         ),
         .package(
@@ -105,7 +104,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0818.0",
+            from: "26.0819.0",
             traits: databaseKitTraits
         ),
         .package(
@@ -166,9 +165,9 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
-                ),
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
+                )
             ]
         ),
         // DatabaseCommandOperations - Application command contracts and registries
@@ -200,8 +199,8 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
                     "DATABASE_QUERY_OPERATIONS_GRAPH_INDEXES",
@@ -223,8 +222,8 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
                     "DATABASE_MUTATION_OPERATIONS_GRAPH_INDEXES",
@@ -257,8 +256,8 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
                     "DATABASE_GRAPH_OPERATIONS_ENABLED",
@@ -279,9 +278,9 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
-                ),
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
+                )
             ]
         ),
         // DatabaseSchemaOperations - Schema compatibility and runtime assembly
@@ -297,9 +296,9 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
-                ),
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
+                )
             ]
         ),
         // DatabaseMaintenanceOperations - Index and maintenance state/planning
@@ -326,12 +325,12 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
                     "DATABASE_ADMINISTRATION_OPERATIONS_ENABLED",
-                    .when(traits: ["MultipleBases"])
+                    .when(traits: ["MultiBase"])
                 ),
             ]
         ),
@@ -349,7 +348,7 @@ let package = Package(
                 "DatabaseMaintenanceOperations",
                 .target(
                     name: "DatabaseAdministrationOperations",
-                    condition: .when(traits: ["MultipleBases"])
+                    condition: .when(traits: ["MultiBase"])
                 ),
                 .product(
                     name: "DatabaseMath",
@@ -381,8 +380,8 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
                     "DATABASE_OPERATIONS_GRAPH_INDEXES",
@@ -421,8 +420,8 @@ let package = Package(
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDBBackend"])),
                 .define("POSTGRESQL", .when(traits: ["PostgreSQLBackend"])),
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
             ]
         ),
@@ -457,8 +456,8 @@ let package = Package(
             swiftSettings: [
                 .define("SQLITE", .when(traits: ["SQLiteBackend"])),
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
                     "DATABASE_OPERATIONS_TEST_GRAPH_INDEXES",
@@ -528,12 +527,12 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
-                    "DATABASE_SERVER_HOST_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_HOST_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
                     "DATABASE_SERVER_SQLITE_BACKEND",
@@ -553,7 +552,7 @@ let package = Package(
                     "-L/usr/local/lib",
                     "-Xlinker", "-rpath",
                     "-Xlinker", "/usr/local/lib",
-                ]),
+                ])
             ]
         ),
         .executableTarget(
@@ -569,9 +568,9 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
-                ),
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
+                )
             ]
         ),
         .testTarget(
@@ -591,12 +590,12 @@ let package = Package(
             ],
             swiftSettings: [
                 .define(
-                    "DATABASE_SERVER_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
                 .define(
-                    "DATABASE_SERVER_HOST_MULTIPLE_BASES",
-                    .when(traits: ["MultipleBases"])
+                    "DATABASE_SERVER_HOST_MULTI_BASE",
+                    .when(traits: ["MultiBase"])
                 ),
             ]
         ),

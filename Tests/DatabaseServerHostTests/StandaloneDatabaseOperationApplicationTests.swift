@@ -1,18 +1,24 @@
 import DatabaseEngine
-import DatabaseServerFoundation
 import DatabaseKit
 import DatabaseRuntime
+import DatabaseServerFoundation
 import DatabaseServerRuntime
 import StorageKit
-@testable import DatabaseServerHost
 import Testing
+
+@testable import DatabaseServerHost
 
 @Suite("Standalone database application")
 struct StandaloneDatabaseOperationApplicationTests {
     @Test("Accepts a schema-driven definition with schema execution")
     func acceptsCoherentComposition() async throws {
         let schemaFactory = AnyDatabaseSchemaRuntimeFactory(
-            SchemaDrivenDatabaseRuntimeFactory()
+            SchemaDrivenDatabaseRuntimeFactory(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-server-tests",
+                    revision: 1
+                ),
+            )
         )
         let definition = DatabaseContainerDefinition(
             schemaRuntimeFactory: schemaFactory,
@@ -42,13 +48,22 @@ struct StandaloneDatabaseOperationApplicationTests {
         let definition = DatabaseContainerDefinition(
             schema: emptySchema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 schema: emptySchema
             ),
             monotonicClock: FixedMonotonicClock(),
             wallClock: RealtimeDatabaseWallClock()
         )
         let schemaFactory = AnyDatabaseSchemaRuntimeFactory(
-            SchemaDrivenDatabaseRuntimeFactory()
+            SchemaDrivenDatabaseRuntimeFactory(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-server-tests",
+                    revision: 1
+                ),
+            )
         )
 
         #expect(
@@ -66,7 +81,12 @@ struct StandaloneDatabaseOperationApplicationTests {
     @Test("Rejects an operation configuration without schema execution")
     func rejectsMissingSchemaExecution() throws {
         let schemaFactory = AnyDatabaseSchemaRuntimeFactory(
-            SchemaDrivenDatabaseRuntimeFactory()
+            SchemaDrivenDatabaseRuntimeFactory(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-server-tests",
+                    revision: 1
+                ),
+            )
         )
         let definition = DatabaseContainerDefinition(
             schemaRuntimeFactory: schemaFactory,

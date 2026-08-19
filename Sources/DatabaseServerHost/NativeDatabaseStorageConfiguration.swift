@@ -48,7 +48,7 @@ public enum NativeDatabaseStorageConfiguration: Sendable, Hashable {
     case foundationDB(clusterFilePath: String)
 }
 
-#if DATABASE_SERVER_HOST_MULTIPLE_BASES
+#if DATABASE_SERVER_HOST_MULTI_BASE
 /// Host-owned description of one independently transacted storage domain.
 public struct NativeDatabaseStorageDomainConfiguration: Sendable, Hashable {
     public let id: String

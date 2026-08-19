@@ -73,7 +73,7 @@ package struct DatabaseMutationStateAccess: Sendable {
         )
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package func binding(
         for target: DatabaseOperationTarget
     ) throws -> DatabaseMutationStateBinding {

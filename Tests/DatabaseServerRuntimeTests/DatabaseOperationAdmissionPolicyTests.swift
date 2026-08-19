@@ -1,11 +1,11 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Database operation admission policy")
@@ -34,7 +34,7 @@ struct DatabaseOperationAdmissionPolicyTests {
             ),
             middlewares: [AnyDatabaseRequestMiddleware(middleware)]
         )
-        #if MultipleBases
+        #if MultiBase
         let request = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperationCatalog.capabilitiesDescribe,
             requestID: 700,
@@ -108,7 +108,7 @@ struct DatabaseOperationAdmissionPolicyTests {
             )
         )
         let encoder = DatabaseWireEncoder()
-        #if MultipleBases
+        #if MultiBase
         let aliceRequest = try encoder.encodeRequest(
             DatabaseOperationCatalog.capabilitiesDescribe,
             requestID: 701,
@@ -171,7 +171,7 @@ struct DatabaseOperationAdmissionPolicyTests {
         try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DatabaseEndpointEntity.schemaEntity,
+                    try DatabaseEndpointEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
@@ -179,7 +179,11 @@ struct DatabaseOperationAdmissionPolicyTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )

@@ -33,7 +33,7 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
     private let backendShutdown: @Sendable () async -> Void
     private let backendShutdownState = BackendShutdown()
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     public static func open(
         storageTopology configuration:
             NativeDatabaseStorageTopologyConfiguration,
@@ -88,7 +88,7 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
                 jobAuthorizationValidator:
                     AnyDatabaseJobAuthorizationValidator(authenticator)
             )
-            #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+            #if DATABASE_SERVER_HOST_MULTI_BASE
             let runtime = try await DatabaseHostedRuntime.open(
                 application: application,
                 storageTopology: openedStorage.topology,
@@ -122,7 +122,7 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
         } catch {
             await scheduler.shutdown()
             // DatabaseHostedRuntime transfers the single engine, or the
-            // MultipleBases topology, to DBContainer. Definition and open
+            // MultiBase topology, to DBContainer. Definition and open
             // failures complete authoritative engine shutdown before return.
             await openedStorage.backendShutdown()
             throw error
@@ -163,7 +163,7 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
 
 private extension NativeDatabaseRuntimeEnvironment {
     struct OpenedStorage: Sendable {
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         let topology: DatabaseStorageTopology
         #else
         let engine: any StorageEngine
@@ -172,7 +172,7 @@ private extension NativeDatabaseRuntimeEnvironment {
         let backendShutdown: @Sendable () async -> Void
     }
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     static func openStorageTopology(
         _ configuration: NativeDatabaseStorageTopologyConfiguration
     ) async throws -> OpenedStorage {
@@ -382,7 +382,7 @@ private extension NativeDatabaseRuntimeEnvironment {
         }
     }
 
-    #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+    #if DATABASE_SERVER_HOST_MULTI_BASE
     static func validatePhysicalBackends(
         _ domains: [NativeDatabaseStorageDomainConfiguration]
     ) throws {

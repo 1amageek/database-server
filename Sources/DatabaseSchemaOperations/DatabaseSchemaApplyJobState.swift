@@ -11,10 +11,11 @@ public struct DatabaseSchemaApplyJobState:
         case publishing
         case installing
         case building
+        case retiring
         case finishing
     }
 
-    private static let formatVersion: UInt8 = 4
+    private static let formatVersion: UInt8 = 5
 
     package let phase: Phase
     package let dataTargetOffset: UInt64
@@ -89,14 +90,27 @@ public struct DatabaseSchemaApplyJobState:
         } else {
             throw .invalidValue("Invalid active schema build partition")
         }
-        guard activePartitions != nil || !activeBuildStarted,
-              phase == .building
-                || (indexOffset == 0
-                    && nextPartitionContinuation == nil
-                    && activePartitions == nil
+        let hasIndexedWorkState =
+            indexOffset != 0
+            || nextPartitionContinuation != nil
+            || activePartitions != nil
+            || activePartitionIsLast
+            || activeBuildStarted
+        let phaseStateIsValid: Bool
+        switch phase {
+        case .building:
+            phaseStateIsValid = activePartitions != nil || !activeBuildStarted
+        case .retiring:
+            phaseStateIsValid =
+                indexOffset == 0
+                && activePartitions == nil
                     && !activePartitionIsLast
-                    && !activeBuildStarted) else {
-            throw .invalidValue("Schema apply phase contains build state")
+                    && !activeBuildStarted
+        case .staging, .publishing, .installing, .finishing:
+            phaseStateIsValid = !hasIndexedWorkState
+        }
+        guard phaseStateIsValid else {
+            throw .invalidValue("Schema apply phase contains invalid index work state")
         }
         self.phase = phase
         self.dataTargetOffset = dataTargetOffset

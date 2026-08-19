@@ -17,7 +17,7 @@ import StorageKit
 package final class DatabaseControlExecutor: Sendable {
     private let container: DBContainer
     package let authorization: AuthorizationContext
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package let dataExecutor: DatabaseDataOperationExecutor?
     #else
     package let dataExecutor: DatabaseDataOperationExecutor
@@ -29,7 +29,7 @@ package final class DatabaseControlExecutor: Sendable {
     ) {
         self.container = container
         self.authorization = authorization
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         self.dataExecutor = nil
         #else
         let context = container.makeExecutionContext(
@@ -91,7 +91,7 @@ package final class DatabaseControlExecutor: Sendable {
         )
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package var grantStore: DatabaseGrantStore {
         container.executionDatabaseGrantStore
     }
@@ -169,7 +169,7 @@ package final class DatabaseControlExecutor: Sendable {
         )
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package func loadBase(_ id: Base.ID) async throws -> DatabaseBaseRecord? {
         try await withMetadataTransaction(configuration: .readOnly) {
             transaction in

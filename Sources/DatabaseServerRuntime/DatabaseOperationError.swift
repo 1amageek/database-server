@@ -15,7 +15,7 @@ public enum DatabaseOperationError: Error, Sendable, CustomStringConvertible {
     )
     case responseRequestIDMismatch(expected: UInt64, actual: UInt64)
     case missingHandler(DatabaseOperationIdentifier)
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     case targetKindNotAccepted(DatabaseOperationTarget)
     #endif
     case dataRootLeaseMismatch
@@ -28,7 +28,7 @@ public enum DatabaseOperationError: Error, Sendable, CustomStringConvertible {
             return "Database response request ID \(actual) does not match request \(expected)"
         case .missingHandler(let identifier):
             return "Database operation \(identifier) has no registered handler"
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .targetKindNotAccepted(let target):
             return "Database operation does not accept target \(target)"
         #endif

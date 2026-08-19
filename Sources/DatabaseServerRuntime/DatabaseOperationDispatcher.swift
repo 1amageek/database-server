@@ -97,7 +97,7 @@ package final class DatabaseOperationDispatcher: Sendable {
                 )
             )
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard prepared.requirement.acceptedTargets.accepts(request.target) else {
             let context = makeContext(
                 request: request,
@@ -115,7 +115,7 @@ package final class DatabaseOperationDispatcher: Sendable {
             )
         }
         #endif
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let admissionRequest = DatabaseOperationAdmissionRequest(
             requestID: request.requestID,
             operation: request.operation,
@@ -167,7 +167,7 @@ package final class DatabaseOperationDispatcher: Sendable {
         executionContext: DatabaseRequestExecutionContext,
         wireLimits: DatabaseWireLimits
     ) async throws -> DatabaseOperationDispatchOutcome {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch request.target {
         case .database:
             let context = makeContext(
@@ -269,7 +269,7 @@ package final class DatabaseOperationDispatcher: Sendable {
         #endif
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private static func baseUnavailableError() -> RemoteOperationError {
         RemoteOperationError(
             category: .authorization,
@@ -286,7 +286,7 @@ package final class DatabaseOperationDispatcher: Sendable {
         requirement: DatabaseOperationRequirement,
         wireLimits: DatabaseWireLimits
     ) -> DatabaseOperationContext {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return DatabaseOperationContext(
             container: container,
             target: request.target,
@@ -316,7 +316,7 @@ package final class DatabaseOperationDispatcher: Sendable {
         #endif
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private func makeBaseContext(
         request: DatabaseWireRequestEnvelope,
         executionContext: DatabaseRequestExecutionContext,

@@ -12,7 +12,7 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
             options: [.fragmentsAllowed]
         )
         let root = try object(value)
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         let rootKeys: Set<String> = [
                 "formatVersion",
                 "controlDomain",
@@ -41,7 +41,7 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
         #endif
         try requireOnly(root, keys: rootKeys)
 
-        #if DATABASE_SERVER_HOST_MULTIPLE_BASES
+        #if DATABASE_SERVER_HOST_MULTI_BASE
         if let domains = root["domains"] as? [Any] {
             for value in domains {
                 let domain = try object(value)

@@ -13,8 +13,8 @@ import DatabaseOperationCore
 public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
     public let jobOperations: [JobOperationIdentifier]
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    private let resolveBaseAdmission: @Sendable (
+    #if DATABASE_SERVER_MULTI_BASE
+    private let resolveStartBaseAdmission: @Sendable (
         JobOperationIdentifier
     ) throws -> DatabaseBaseAdmissionKind
     #endif
@@ -110,9 +110,9 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
         recoverJobSchedule: (@Sendable () async throws -> Void)?
     ) {
         self.jobOperations = service.jobOperations
-        #if DATABASE_SERVER_MULTIPLE_BASES
-        self.resolveBaseAdmission = { operation in
-            try service.baseAdmission(for: operation)
+        #if DATABASE_SERVER_MULTI_BASE
+        self.resolveStartBaseAdmission = { operation in
+            try service.startBaseAdmission(for: operation)
         }
         #endif
         self.startJob = { request, context in
@@ -144,11 +144,11 @@ public final class AnyDatabaseJobService: DatabaseJobService, Sendable {
         try await startJob(request, context)
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    public func baseAdmission(
+    #if DATABASE_SERVER_MULTI_BASE
+    public func startBaseAdmission(
         for operation: JobOperationIdentifier
     ) throws -> DatabaseBaseAdmissionKind {
-        try resolveBaseAdmission(operation)
+        try resolveStartBaseAdmission(operation)
     }
     #endif
 

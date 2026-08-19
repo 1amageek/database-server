@@ -1,16 +1,46 @@
-import DatabaseKit
-import TestSupport
 @_spi(DatabaseExecution) import DatabaseEngine
-import DatabaseServerFoundation
+import DatabaseKit
+import DatabaseOperationCore
+import DatabaseQueryOperations
 import DatabaseRuntime
+import DatabaseServerFoundation
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Canonical query continuation endpoint", .serialized)
 struct DatabaseQueryContinuationEndpointTests {
+    @Test("a restorable cursor binds its schema generation")
+    func restorableCursorBindsSchemaGeneration() throws {
+        #if MultiBase
+        let cursor = DatabaseQueryPageCursor(
+            resource: .base(try TestBaseEnvironment.id()),
+            restorableReadPosition: .version(17),
+            schemaGeneration: 23,
+            dataGeneration: 29,
+            continuation: ByteString(utf8: "next")
+        )
+        #else
+        let cursor = DatabaseQueryPageCursor(
+            restorableReadPosition: .version(17),
+            schemaGeneration: 23,
+            dataGeneration: 29,
+            continuation: ByteString(utf8: "next")
+        )
+        #endif
+
+        let decoded = try DatabaseQueryPageCursor.decode(
+            cursor.encode(limits: .default),
+            limits: .default
+        )
+        #expect(decoded.schemaGeneration == 23)
+        #expect(decoded.dataGeneration == 29)
+        #expect(decoded.restorableReadPosition == .version(17))
+    }
+
     @Test("a backend without historical reads serves a durable continuation")
     func nonHistoricalBackendUsesDurableContinuation() async throws {
         let endpoint = try await makeEndpoint()
@@ -22,7 +52,7 @@ struct DatabaseQueryContinuationEndpointTests {
             endpoint: endpoint
         )
         let continuation = try #require(first.continuation)
-        #if MultipleBases
+        #if MultiBase
         guard case .transactional(let readPoint) = first.consistency else {
             Issue.record("Expected one transactional read point")
             return
@@ -170,6 +200,54 @@ struct DatabaseQueryContinuationEndpointTests {
         #expect(third.continuation == nil)
     }
 
+    @Test("an execution identity change makes durable continuations stale")
+    func executionIdentityChangeMakesContinuationStale() async throws {
+        let container = try await makeContainer(seedCount: 3)
+        let endpoint = try makeEndpoint(container: container)
+        let query = tableQuery()
+        let firstGeneration = container.schemaGeneration
+        let first = try await successfulPage(
+            request(query: query, pageLimit: 1),
+            requestID: 33,
+            endpoint: endpoint
+        )
+        let continuation = try #require(first.continuation)
+        let schema = container.schema
+        let nextRuntime = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-query-continuation-tests",
+                revision: 2
+            ),
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    DatabaseEndpointEntity.self
+                )
+            ]
+        )
+        let publication = try await container.publishSchema(
+            schema,
+            fingerprint: try SchemaManifest(schema: schema).fingerprint(),
+            expectedFingerprint: container.schemaFingerprint.detached(),
+            idempotencyKey: "execution-identity-continuation-invalidation",
+            authorization: TestBaseEnvironment.authorization,
+            runtimeConfiguration: nextRuntime
+        )
+        #expect(publication.generation == firstGeneration + 1)
+
+        let error = try await remoteFailure(
+            request(
+                query: query,
+                pageLimit: 1,
+                continuation: continuation
+            ),
+            requestID: 34,
+            endpoint: endpoint
+        )
+        #expect(error.category == .conflict)
+        #expect(error.code == "QUERY_SNAPSHOT_STALE")
+        #expect(error.retryability == .never)
+    }
+
     @Test("malformed binary continuation bytes are rejected")
     func malformedContinuationFrameIsRejected() async throws {
         let endpoint = try await makeEndpoint()
@@ -211,7 +289,7 @@ struct DatabaseQueryContinuationEndpointTests {
                         runtimeLimits: .default,
                         querySnapshotStore: snapshotStore
                     )
-                ),
+                )
             ],
             requiredOperations: [.queryExecute]
         )
@@ -228,13 +306,17 @@ struct DatabaseQueryContinuationEndpointTests {
         let container = try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DatabaseEndpointEntity.schemaEntity,
+                    try DatabaseEndpointEntity.schemaEntity
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-query-continuation-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
             ),
             security: .testingDisabled
         )
@@ -279,7 +361,7 @@ struct DatabaseQueryContinuationEndpointTests {
 
     private func partition(_ value: String) throws -> FieldObject {
         try FieldObject([
-            (key: "calendar", value: .string(value)),
+            (key: "calendar", value: .string(value))
         ])
     }
 
@@ -334,7 +416,7 @@ struct DatabaseQueryContinuationEndpointTests {
         QueryExecuteOperation.Response,
         RemoteOperationError
     > {
-        #if MultipleBases
+        #if MultiBase
         let requestFrame = try DatabaseWireEncoder().encodeRequest(
             DatabaseOperationCatalog.queryExecute,
             requestID: requestID,

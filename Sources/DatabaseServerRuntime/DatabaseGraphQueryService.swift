@@ -141,20 +141,28 @@ struct DatabaseGraphQueryService: Sendable {
         guard cursor?.kind == nil || cursor?.kind == kind else {
             throw DatabaseGraphQueryError.invalidContinuation
         }
-        guard cursor?.requestFingerprint == nil
-                || cursor?.requestFingerprint == requestFingerprint else {
+        guard
+            cursor?.requestFingerprint == nil
+                || cursor?.requestFingerprint == requestFingerprint
+        else {
             throw DatabaseGraphQueryError.continuationDoesNotMatchRequest
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard cursor?.resource == nil || cursor?.resource == lease.resource,
-              cursor?.dataGeneration == nil
+            cursor?.schemaGeneration == nil
+                || cursor?.schemaGeneration == context.executor.schemaGeneration,
+            cursor?.dataGeneration == nil
                 || cursor?.dataGeneration == lease.generation
         else {
             throw DatabaseGraphQueryError.invalidContinuation
         }
         #else
-        guard cursor?.dataGeneration == nil
-                || cursor?.dataGeneration == lease.generation else {
+        guard
+            cursor?.schemaGeneration == nil
+                || cursor?.schemaGeneration == context.executor.schemaGeneration,
+            cursor?.dataGeneration == nil
+                || cursor?.dataGeneration == lease.generation
+        else {
             throw DatabaseGraphQueryError.invalidContinuation
         }
         #endif
@@ -163,12 +171,15 @@ struct DatabaseGraphQueryService: Sendable {
             return try await databaseContext.executeCanonicalRead {
                 transaction in
                 if let restorableReadPosition = cursor?
-                    .restorableReadPosition {
+                    .restorableReadPosition
+                {
                     do {
-                        guard try DatabaseTransactionReadPoint.restore(
-                            restorableReadPosition,
-                            transaction: transaction
-                        ) else {
+                        guard
+                            try DatabaseTransactionReadPoint.restore(
+                                restorableReadPosition,
+                                transaction: transaction
+                            )
+                        else {
                             throw DatabaseGraphQueryError
                                 .continuationSnapshotChanged
                         }
@@ -245,7 +256,8 @@ struct DatabaseGraphQueryService: Sendable {
                 }
                 let end = offset + min(pageLimit, graph.count - offset)
                 guard let emittedRows = UInt32(exactly: end - offset) else {
-                    throw DatabaseGraphQueryError
+                    throw
+                        DatabaseGraphQueryError
                         .pageLimitExceedsPlatformCapacity(
                             requested: request.page.limit
                         )
@@ -263,6 +275,7 @@ struct DatabaseGraphQueryService: Sendable {
                             : nil,
                         resultFingerprint: resultFingerprint,
                         tripleOffset: UInt64(end),
+                        schemaGeneration: context.executor.schemaGeneration,
                         lease: lease,
                         limits: wireLimits
                     )
@@ -422,7 +435,7 @@ struct DatabaseGraphQueryService: Sendable {
         continuation: ByteString?,
         readPoint: DatabaseTransactionReadPoint.Value
     ) throws -> RDFGraphPage {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return try RDFGraphPage(
             quads: consume quads,
             continuation: continuation,
@@ -446,13 +459,15 @@ struct DatabaseGraphQueryService: Sendable {
         readPoint: DatabaseStorageReadPosition?,
         resultFingerprint: ByteString,
         tripleOffset: UInt64,
+        schemaGeneration: UInt64,
         lease: DatabaseExecutionStorage,
         limits: DatabaseWireLimits
     ) throws -> ByteString {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         return try DatabaseGraphQueryPageCursor(
             kind: kind,
             resource: lease.resource,
+            schemaGeneration: schemaGeneration,
             dataGeneration: lease.generation,
             requestFingerprint: requestFingerprint,
             restorableReadPosition: readPoint,
@@ -462,6 +477,7 @@ struct DatabaseGraphQueryService: Sendable {
         #else
         return try DatabaseGraphQueryPageCursor(
             kind: kind,
+            schemaGeneration: schemaGeneration,
             dataGeneration: lease.generation,
             requestFingerprint: requestFingerprint,
             restorableReadPosition: readPoint,

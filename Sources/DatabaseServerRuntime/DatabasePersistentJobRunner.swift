@@ -1,13 +1,13 @@
-import DatabaseMaintenanceOperations
-import DatabaseSchemaOperations
-import DatabaseJobRuntime
-import DatabaseGraphOperations
-import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseCommandOperations
-import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseGraphOperations
+import DatabaseJobRuntime
 import DatabaseKit
+import DatabaseMaintenanceOperations
+import DatabaseMutationOperations
+import DatabaseOperationCore
+import DatabaseQueryOperations
+import DatabaseSchemaOperations
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
@@ -126,12 +126,12 @@ public actor DatabasePersistentJobRunner {
             authorization = .anonymous
             authorizationFailure = nil
         }
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let baseAdmission: DatabaseBaseAdmissionKind
         do {
             baseAdmission = try registry.resolve(
                 leasedSnapshot.specification.operation
-            ).baseAdmission
+            ).sliceBaseAdmission
         } catch {
             // Missing operation implementations still enter the lifecycle-safe
             // path so `run` can publish the typed registry failure without
@@ -594,112 +594,138 @@ public actor DatabasePersistentJobRunner {
         let clock = self.clock
         let leasedState = snapshot.state
 
-        let slice = try await operation.runCheckpointedSlice(
-            planPayload: snapshot.plan.payload,
-            statePayload: leasedState.operationStatePayload,
-            maximumWorkUnits: snapshot.specification.maximumSliceWorkUnits,
-            context: DatabaseCheckpointedResumableOperationContext(
-                jobID: snapshot.specification.jobID,
-                completedWorkUnitsBeforeSlice: leasedState.completedWorkUnits,
-                operationContext: operationContext
-            ),
-            limits: wireLimits,
-            storageLimits: storageLimits
+        let sliceTimeoutMilliseconds = snapshot.specification
+            .sliceTimeoutMilliseconds
+        let sliceDeadline = DatabaseExecutionDeadline(
+            timeoutMilliseconds: sliceTimeoutMilliseconds,
+            clock: container.monotonicClock
         )
-        try Self.validate(
-            slice,
-            maximumWorkUnits: snapshot.specification.maximumSliceWorkUnits
-        )
-
-        try await container.withControlMetadataTransaction(
-            configuration: Self.batchConfiguration(
-                timeoutMilliseconds: snapshot.specification
-                    .sliceTimeoutMilliseconds
-            )
-        ) { transactionContext in
-            let transaction = transactionContext.executionStorageAccess
-            let currentState = try await store.loadState(
-                snapshot.specification.jobID,
-                specificationDigest: snapshot.specificationDigest,
-                transaction: transaction
-            )
-            try Self.validateOperationLease(
-                currentState,
-                expected: leasedState,
-                runnerID: runnerID,
-                now: clock.now
-            )
-            let current = DatabasePersistentJobSnapshot(
-                specification: snapshot.specification,
-                specificationDigest: snapshot.specificationDigest,
-                plan: snapshot.plan,
-                state: currentState
-            )
-            let (cumulativeWorkUnits, overflow) = current.state
-                .completedWorkUnits
-                .addingReportingOverflow(slice.completedWorkUnits)
-            guard !overflow else {
-                throw DatabaseJobRuntimeError.workUnitOverflow
-            }
-            try Self.validateTotalWorkUnits(
-                existing: current.state.totalWorkUnits,
-                reported: slice.totalWorkUnits,
-                completed: cumulativeWorkUnits
-            )
-            let reportedTotalWorkUnits = slice.totalWorkUnits
-            let completedAt = max(clock.now, current.state.updatedAt)
-            let updated: DatabasePersistentJobState
-            switch slice.outcome {
-            case .complete(let responsePayload):
-                try await operation.applySuccessfulOutcome(
-                    planPayload: current.plan.payload,
-                    statePayload: current.state.operationStatePayload,
-                    context: DatabaseResumableOperationContext(
-                        jobID: current.specification.jobID,
-                        completedWorkUnitsBeforeSlice:
-                            current.state.completedWorkUnits,
-                        transaction: transactionContext,
+        let slice: AnyDatabaseResumableOperation.Slice
+        do {
+            slice = try await sliceDeadline.run {
+                try await operation.runCheckpointedSlice(
+                    planPayload: snapshot.plan.payload,
+                    statePayload: leasedState.operationStatePayload,
+                    maximumWorkUnits: snapshot.specification.maximumSliceWorkUnits,
+                    context: DatabaseCheckpointedResumableOperationContext(
+                        jobID: snapshot.specification.jobID,
+                        completedWorkUnitsBeforeSlice: leasedState.completedWorkUnits,
                         operationContext: operationContext
                     ),
                     limits: wireLimits,
                     storageLimits: storageLimits
                 )
-                let responseDigest = try await store.storeResult(
-                    responsePayload,
-                    snapshot: current,
-                    completedAt: completedAt,
+            }
+        } catch let error as DatabaseOperationLimitError {
+            guard case .executionTimedOut = error else {
+                throw error
+            }
+            throw DatabaseJobRuntimeError.sliceTimedOut(
+                timeoutMilliseconds: sliceTimeoutMilliseconds
+            )
+        }
+        try Self.validate(
+            slice,
+            maximumWorkUnits: snapshot.specification.maximumSliceWorkUnits
+        )
+
+        do {
+            try await container.withControlMetadataTransaction(
+                configuration: Self.batchConfiguration(
+                    timeoutMilliseconds: sliceTimeoutMilliseconds
+                ),
+                executionDeadline: sliceDeadline.transactionExecutionDeadline
+            ) { transactionContext in
+                let transaction = transactionContext.executionStorageAccess
+                let currentState = try await store.loadState(
+                    snapshot.specification.jobID,
+                    specificationDigest: snapshot.specificationDigest,
                     transaction: transaction
                 )
-                updated = try current.state.succeeding(
-                    cumulativeWorkUnits: cumulativeWorkUnits,
-                    totalWorkUnits: reportedTotalWorkUnits ?? cumulativeWorkUnits,
-                    resultDigest: responseDigest,
-                    updatedAt: completedAt
+                try Self.validateOperationLease(
+                    currentState,
+                    expected: leasedState,
+                    runnerID: runnerID,
+                    now: clock.now
                 )
-            case .incomplete(let operationStatePayload):
-                let totalWorkUnits = reportedTotalWorkUnits
-                    ?? current.state.totalWorkUnits
-                if current.state.cancellationRequested {
-                    updated = try current.state.schedulingCancellationOutcomeCommitAfterCheckpoint(
-                        operationStatePayload: operationStatePayload,
-                        cumulativeWorkUnits: cumulativeWorkUnits,
-                        totalWorkUnits: totalWorkUnits,
-                        updatedAt: completedAt
-                    )
-                } else {
-                    updated = try current.state.continuing(
-                        operationStatePayload: operationStatePayload,
-                        cumulativeWorkUnits: cumulativeWorkUnits,
-                        totalWorkUnits: totalWorkUnits,
-                        nextAttemptAt: completedAt,
-                        updatedAt: completedAt
-                    )
+                let current = DatabasePersistentJobSnapshot(
+                    specification: snapshot.specification,
+                    specificationDigest: snapshot.specificationDigest,
+                    plan: snapshot.plan,
+                    state: currentState
+                )
+                let (cumulativeWorkUnits, overflow) = current.state
+                    .completedWorkUnits
+                    .addingReportingOverflow(slice.completedWorkUnits)
+                guard !overflow else {
+                    throw DatabaseJobRuntimeError.workUnitOverflow
                 }
+                try Self.validateTotalWorkUnits(
+                    existing: current.state.totalWorkUnits,
+                    reported: slice.totalWorkUnits,
+                    completed: cumulativeWorkUnits
+                )
+                let reportedTotalWorkUnits = slice.totalWorkUnits
+                let completedAt = max(clock.now, current.state.updatedAt)
+                let updated: DatabasePersistentJobState
+                switch slice.outcome {
+                case .complete(let responsePayload):
+                    try await operation.applySuccessfulOutcome(
+                        planPayload: current.plan.payload,
+                        statePayload: current.state.operationStatePayload,
+                        context: DatabaseResumableOperationContext(
+                            jobID: current.specification.jobID,
+                            completedWorkUnitsBeforeSlice:
+                                current.state.completedWorkUnits,
+                            transaction: transactionContext,
+                            operationContext: operationContext
+                        ),
+                        limits: wireLimits,
+                        storageLimits: storageLimits
+                    )
+                    let responseDigest = try await store.storeResult(
+                        responsePayload,
+                        snapshot: current,
+                        completedAt: completedAt,
+                        transaction: transaction
+                    )
+                    updated = try current.state.succeeding(
+                        cumulativeWorkUnits: cumulativeWorkUnits,
+                        totalWorkUnits: reportedTotalWorkUnits ?? cumulativeWorkUnits,
+                        resultDigest: responseDigest,
+                        updatedAt: completedAt
+                    )
+                case .incomplete(let operationStatePayload):
+                    let totalWorkUnits =
+                        reportedTotalWorkUnits
+                        ?? current.state.totalWorkUnits
+                    if current.state.cancellationRequested {
+                        updated = try current.state
+                            .schedulingCancellationOutcomeCommitAfterCheckpoint(
+                                operationStatePayload: operationStatePayload,
+                                cumulativeWorkUnits: cumulativeWorkUnits,
+                                totalWorkUnits: totalWorkUnits,
+                                updatedAt: completedAt
+                            )
+                    } else {
+                        updated = try current.state.continuing(
+                            operationStatePayload: operationStatePayload,
+                            cumulativeWorkUnits: cumulativeWorkUnits,
+                            totalWorkUnits: totalWorkUnits,
+                            nextAttemptAt: completedAt,
+                            updatedAt: completedAt
+                        )
+                    }
+                }
+                try store.storeState(
+                    updated,
+                    replacing: current.state,
+                    transaction: transaction
+                )
             }
-            try store.storeState(
-                updated,
-                replacing: current.state,
-                transaction: transaction
+        } catch is TransactionExecutionDeadlineExceeded {
+            throw DatabaseJobRuntimeError.sliceTimedOut(
+                timeoutMilliseconds: sliceTimeoutMilliseconds
             )
         }
     }
@@ -956,7 +982,7 @@ public actor DatabasePersistentJobRunner {
         _ context: DatabaseOperationContext,
         snapshot: DatabasePersistentJobSnapshot
     ) async throws {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch context.target {
         case .database:
             try await container.withServerControlTransaction(
@@ -998,7 +1024,7 @@ public actor DatabasePersistentJobRunner {
         _ context: DatabaseOperationContext,
         transaction: any TransactionAccess
     ) async throws {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         switch context.target {
         case .database:
             try await container.executionDatabaseGrantStore.require(

@@ -14,9 +14,10 @@ struct DatabaseCompositionVectorEntity {
     var embedding: Vector
 
     #Index(
-        .vector(dimensions: 2, metric: .euclidean),
-        embedding: \DatabaseCompositionVectorEntity.embedding,
-        name: "DatabaseCompositionVectorEntity_embedding"
-    )
+        .vector(
+            name: "DatabaseCompositionVectorEntity_embedding",
+            embedding: \DatabaseCompositionVectorEntity.embedding,
+            dimensions: 2, metric: .euclidean
+        ))
 }
 #endif

@@ -1,8 +1,7 @@
 @_spi(DatabaseExecution) import DatabaseEngine
-@testable import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
-@testable import DatabaseServerRuntime
+import DatabaseSchemaOperations
 import DatabaseServerFoundation
 import DatabaseTypes
 import DatabaseWire
@@ -10,14 +9,17 @@ import StorageKit
 import TestSupport
 import Testing
 
+@testable import DatabaseEngine
+@testable import DatabaseServerRuntime
+
 @Persistable
 private struct SchemaExecuteAccount {
     #Directory<SchemaExecuteAccount>("schema-execute", "accounts")
     #Index(
-        .scalar,
-        fields: [\SchemaExecuteAccount.email],
-        name: "schema_execute_account_email"
-    )
+        .ordered(
+            name: "schema_execute_account_email",
+            keys: [.ascending(\SchemaExecuteAccount.email)]
+        ))
 
     var id: String = ""
     var email: String = ""
@@ -35,10 +37,23 @@ private struct SchemaBuildAccountV1 {
 private struct SchemaBuildAccountV2 {
     #Directory<SchemaBuildAccountV2>("schema-execute", "build-accounts")
     #Index(
-        .scalar,
-        fields: [\SchemaBuildAccountV2.email],
-        name: "schema_build_account_email"
-    )
+        .ordered(
+            name: "schema_build_account_email",
+            keys: [.ascending(\SchemaBuildAccountV2.email)]
+        ))
+
+    var id: String = ""
+    var email: String = ""
+}
+
+@Persistable(type: "SchemaBuildAccount")
+private struct SchemaBuildAccountV3 {
+    #Directory<SchemaBuildAccountV3>("schema-execute", "build-accounts")
+    #Index(
+        .ordered(
+            name: "schema_build_account_email",
+            keys: [.descending(\SchemaBuildAccountV3.email)]
+        ))
 
     var id: String = ""
     var email: String = ""
@@ -69,18 +84,313 @@ private struct SchemaBuildTenantAccountV2 {
         layer: .partition
     )
     #Index(
-        .scalar,
-        fields: [\SchemaBuildTenantAccountV2.email],
-        name: "schema_build_tenant_account_email"
-    )
+        .ordered(
+            name: "schema_build_tenant_account_email",
+            keys: [.ascending(\SchemaBuildTenantAccountV2.email)]
+        ))
 
     var id: String = ""
     var tenantID: String = ""
     var email: String = ""
 }
 
+private struct LayoutVersionedScalarIndexMaintainerProvider:
+    IndexMaintainerProvider
+{
+    let indexType: IndexType = .ordered
+    let revision: UInt32
+
+    private let base = ScalarIndexMaintainerProvider()
+
+    var physicalEntryCapabilities: IndexPhysicalEntryCapabilities? {
+        base.physicalEntryCapabilities
+    }
+
+    var supportsUniquenessConstraints: Bool {
+        base.supportsUniquenessConstraints
+    }
+
+    func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout {
+        guard configurations.isEmpty else {
+            throw IndexMaintainerProviderError.unhandledRuntimeConfiguration(
+                indexType: indexType,
+                indexName: index.name
+            )
+        }
+        return try IndexPhysicalLayout(
+            name: "test.layout-versioned-scalar",
+            revision: revision
+        )
+    }
+
+    func makeIndexMaintainer<Item: PersistedEntityValue>(
+        index: ResolvedIndex,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
+    ) throws -> any IndexMaintainer<Item> {
+        try base.makeIndexMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: configurations,
+            wallClock: wallClock
+        )
+    }
+
+    func makeIndexUniquenessMaintainer<Item: PersistedEntityValue>(
+        index: ResolvedIndex,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> any IndexUniquenessMaintainer<Item> {
+        try base.makeIndexUniquenessMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: configurations
+        )
+    }
+}
+
+private actor LayoutChangingSchemaRuntimeFactory:
+    DatabaseSchemaRuntimeFactory
+{
+    private var invocationCount = 0
+
+    func makeOperationConfiguration(
+        for schema: Schema
+    ) async throws -> DatabaseRuntimeConfiguration {
+        invocationCount += 1
+        return try layoutVersionedRuntimeConfiguration(
+            schema: schema,
+            revision: invocationCount >= 3 ? 2 : 1
+        )
+    }
+}
+
+private struct FixedLayoutSchemaRuntimeFactory: DatabaseSchemaRuntimeFactory {
+    let revision: UInt32
+
+    func makeOperationConfiguration(
+        for schema: Schema
+    ) async throws -> DatabaseRuntimeConfiguration {
+        try layoutVersionedRuntimeConfiguration(
+            schema: schema,
+            revision: revision
+        )
+    }
+}
+
+private actor QueryPolicyChangingSchemaRuntimeFactory:
+    DatabaseSchemaRuntimeFactory
+{
+    private var invocationCount = 0
+
+    func makeOperationConfiguration(
+        for schema: Schema
+    ) async throws -> DatabaseRuntimeConfiguration {
+        invocationCount += 1
+        let provider = QueryTunedScalarIndexMaintainerProvider()
+        var registrations: [EntityRuntimeRegistration] = []
+        registrations.reserveCapacity(schema.entities.count)
+        for entity in schema.entities {
+            var definition = EntityRuntimeDefinition(schemaDriven: entity)
+            try definition.register(provider)
+            registrations.append(definition.registration())
+        }
+        let configuredIndex = schema.indexDescriptors.first {
+            $0.type == .ordered
+        }
+        let configurations: [any IndexRuntimeConfiguration]
+        if let configuredIndex {
+            configurations = [
+                QueryTunedScalarIndexConfiguration(
+                    indexName: configuredIndex.name,
+                    searchBudget: invocationCount.isMultiple(of: 2) ? 40 : 10
+                )
+            ]
+        } else {
+            configurations = []
+        }
+        return try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
+            indexMaintainerProviderDescriptors: [
+                IndexMaintainerProviderDescriptor(describing: provider)
+            ],
+            entityRuntimes: registrations,
+            indexConfigurations: configurations
+        )
+    }
+}
+
+private struct QueryTunedScalarIndexConfiguration:
+    IndexRuntimeConfiguration
+{
+    static let indexType: IndexType = .ordered
+
+    let indexName: String
+    let searchBudget: Int
+
+    var executionOptions: FieldObject {
+        get throws {
+            try FieldObject([
+                ("searchBudget", .int64(Int64(searchBudget)))
+            ])
+        }
+    }
+}
+
+private struct QueryTunedScalarIndexMaintainerProvider:
+    IndexMaintainerProvider
+{
+    let indexType: IndexType = .ordered
+    private let base = ScalarIndexMaintainerProvider()
+
+    var physicalEntryCapabilities: IndexPhysicalEntryCapabilities? {
+        base.physicalEntryCapabilities
+    }
+
+    var supportsUniquenessConstraints: Bool {
+        base.supportsUniquenessConstraints
+    }
+
+    func physicalLayout(
+        for index: ResolvedIndex,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> IndexPhysicalLayout {
+        _ = configurations
+        return try base.physicalLayout(for: index, configurations: [])
+    }
+
+    func makeIndexMaintainer<Item: PersistedEntityValue>(
+        index: ResolvedIndex,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexRuntimeConfiguration],
+        wallClock: any WallClock
+    ) throws -> any IndexMaintainer<Item> {
+        _ = configurations
+        return try base.makeIndexMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: [],
+            wallClock: wallClock
+        )
+    }
+
+    func makeIndexUniquenessMaintainer<Item: PersistedEntityValue>(
+        index: ResolvedIndex,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexRuntimeConfiguration]
+    ) throws -> any IndexUniquenessMaintainer<Item> {
+        _ = configurations
+        return try base.makeIndexUniquenessMaintainer(
+            index: index,
+            subspace: subspace,
+            idExpression: idExpression,
+            configurations: []
+        )
+    }
+}
+
+private func layoutVersionedRuntimeConfiguration(
+    schema: Schema,
+    revision: UInt32
+) throws -> DatabaseRuntimeConfiguration {
+    let provider = LayoutVersionedScalarIndexMaintainerProvider(
+        revision: revision
+    )
+    var registrations: [EntityRuntimeRegistration] = []
+    registrations.reserveCapacity(schema.entities.count)
+    for entity in schema.entities {
+        var definition = EntityRuntimeDefinition(schemaDriven: entity)
+        try definition.register(provider)
+        registrations.append(definition.registration())
+    }
+    return try DatabaseRuntimeConfiguration(
+        executionIdentity: DatabaseExecutionRuntimeIdentity(
+            identifier: "database-tests",
+            revision: 1
+        ),
+        indexMaintainerProviderDescriptors: [
+            IndexMaintainerProviderDescriptor(describing: provider)
+        ],
+        entityRuntimes: registrations
+    )
+}
+
 @Suite("Schema execute runtime", .serialized)
 struct SchemaExecuteHandlerTests {
+    @Test("Schema job plan rejects an exact build and retirement overlap")
+    func schemaJobPlanRejectsExactBuildRetirementOverlap() throws {
+        let schema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let manifest = SchemaManifest(schema: schema)
+        let fingerprint = try manifest.fingerprint()
+        let descriptor = try #require(
+            schema.indexDescriptors.first {
+                $0.name == "schema_build_account_email"
+            }
+        )
+        let entity = try #require(
+            schema.entity(named: descriptor.entityName)
+        )
+        let layout = try IndexPhysicalLayout(
+            name: "test.ordered",
+            revision: 1
+        )
+        let target = try DatabaseIndexTransitionPlan.Target(
+            scope: .entity(
+                name: descriptor.entityName,
+                directoryComponents: entity.directoryComponents
+            ),
+            identity: try DatabaseIndexStorageIdentity(
+                name: descriptor.name,
+                definitionFingerprint: try SchemaManifest.indexFingerprint(
+                    descriptor
+                ),
+                layoutFingerprint: layout.fingerprint
+            )
+        )
+        #if DATABASE_SERVER_MULTI_BASE
+        let dataTarget = DatabaseSchemaApplyJobPlan.DataTarget(
+            resource: .database,
+            generation: 0
+        )
+        #else
+        let dataTarget = DatabaseSchemaApplyJobPlan.DataTarget(generation: 0)
+        #endif
+
+        #expect(throws: DatabaseSchemaApplyJobError.corruptedPlan) {
+            _ = try DatabaseSchemaApplyJobPlan(
+                previousFingerprint: fingerprint,
+                targetFingerprint: fingerprint,
+                indexPhysicalFingerprint: ByteString(
+                    repeating: 0,
+                    count: SHA256Accumulator.digestByteCount
+                ),
+                manifest: manifest,
+                idempotencyKey: "exact-target-overlap",
+                dataTargets: [dataTarget],
+                indexBuilds: [target],
+                indexRetirements: [target],
+                maximumWorkUnitsPerSlice: 1
+            )
+        }
+    }
+
     @Test("plan, apply, replay, and request generation leases are coherent")
     func planApplyReplayAndLease() async throws {
         let initialSchema = try Schema(
@@ -445,10 +755,14 @@ struct SchemaExecuteHandlerTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SchemaBuildAccountV1.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -531,6 +845,759 @@ struct SchemaExecuteHandlerTests {
         #expect(replay == response)
     }
 
+    @Test("Physical layout drift fails before index state staging")
+    func physicalLayoutDriftPrecedesStaging() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaBuildAccountV1.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let targetSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            for: initialSchema,
+            configuration: DBConfiguration.testing(
+                storageEngine: InMemoryEngine()
+            ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SchemaBuildAccountV1.self
+                    )
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+
+        let store = try await container.testBaseDirectory(
+            for: SchemaBuildAccountV1.self
+        )
+        let stagedStatePrefix =
+            store
+            .subspace("state")
+            .subspace("schema_build_account_email")
+        #expect(
+            try await storedEntryCount(
+                stagedStatePrefix,
+                container: container
+            ) == 0
+        )
+
+        let runtime = try await makePersistentRuntime(
+            container: container,
+            schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory(
+                LayoutChangingSchemaRuntimeFactory()
+            )
+        )
+        let response = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-layout-drift"
+                )
+            ),
+            requestID: 20,
+            runtime: runtime
+        )
+        guard case .accepted(let job) = response else {
+            Issue.record("Expected an accepted schema transition job")
+            return
+        }
+
+        let status = try await runUntilTerminal(
+            job,
+            runtime: runtime,
+            firstRequestID: 200
+        )
+        #expect(status.state == .failed)
+        #expect(container.schema == initialSchema)
+        #expect(
+            try await storedEntryCount(
+                stagedStatePrefix,
+                container: container
+            ) == 0
+        )
+    }
+
+    @Test("Query-only runtime drift does not invalidate a schema job")
+    func queryOnlyRuntimeDriftKeepsPhysicalJobContract() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaBuildAccountV1.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let targetSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            for: initialSchema,
+            configuration: DBConfiguration.testing(
+                storageEngine: InMemoryEngine()
+            ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SchemaBuildAccountV1.self
+                    )
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let runtime = try await makePersistentRuntime(
+            container: container,
+            schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory(
+                QueryPolicyChangingSchemaRuntimeFactory()
+            )
+        )
+        let response = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-query-policy-drift"
+                )
+            ),
+            requestID: 220,
+            runtime: runtime
+        )
+        guard case .accepted(let job) = response else {
+            Issue.record("Expected an accepted schema transition job")
+            return
+        }
+
+        let status = try await runUntilTerminal(
+            job,
+            runtime: runtime,
+            firstRequestID: 221
+        )
+        #expect(status.state == .succeeded)
+        #expect(container.schema == targetSchema)
+    }
+
+    @Test("index replacement publishes a new generation and retires only the old fingerprint")
+    func indexReplacementRetiresOldGeneration() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let targetSchema = try Schema(
+            entities: [try SchemaBuildAccountV3.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            for: initialSchema,
+            configuration: DBConfiguration.testing(
+                storageEngine: InMemoryEngine()
+            ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SchemaBuildAccountV2.self
+                    )
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            SchemaBuildAccountV2(
+                id: "replacement-account",
+                email: "replacement@example.com"
+            )
+        )
+        try await context.save()
+
+        let store = try await container.testBaseDirectory(
+            for: SchemaBuildAccountV2.self
+        )
+        let oldDescriptor = try #require(
+            initialSchema.indexDescriptor(named: "schema_build_account_email")
+        )
+        let newDescriptor = try #require(
+            targetSchema.indexDescriptor(named: "schema_build_account_email")
+        )
+        let oldGeneration =
+            store
+            .subspace(SubspaceKey.indexes)
+            .subspace(oldDescriptor.name)
+            .subspace(try SchemaManifest.indexFingerprint(oldDescriptor).bytes)
+            .subspace(try standardIndexLayoutFingerprint())
+        let newGeneration =
+            store
+            .subspace(SubspaceKey.indexes)
+            .subspace(newDescriptor.name)
+            .subspace(try SchemaManifest.indexFingerprint(newDescriptor).bytes)
+            .subspace(try standardIndexLayoutFingerprint())
+        #expect(try await storedEntryCount(oldGeneration, container: container) > 0)
+        #expect(try await storedEntryCount(newGeneration, container: container) == 0)
+
+        let runtime = try await makePersistentRuntime(container: container)
+        let response = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-index-generation-replacement"
+                )
+            ),
+            requestID: 24,
+            runtime: runtime
+        )
+        guard case .accepted(let job) = response else {
+            Issue.record("Expected an index replacement job")
+            return
+        }
+
+        var staleLease: DatabaseSchemaLease? =
+            container
+            .acquirePublishedSchemaLease()
+        #expect(staleLease?.schema == initialSchema)
+        let execution = Task {
+            try await runUntilTerminal(
+                job,
+                runtime: runtime,
+                firstRequestID: 25
+            )
+        }
+        var targetIsBuilt = false
+        for _ in 0..<10_000 {
+            if container.schema == targetSchema,
+                try await storedEntryCount(
+                    newGeneration,
+                    container: container
+                ) > 0
+            {
+                targetIsBuilt = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(targetIsBuilt)
+        #expect(
+            try await storedEntryCount(
+                oldGeneration,
+                container: container
+            ) > 0
+        )
+
+        staleLease = nil
+        let terminalStatus = try await execution.value
+        #expect(terminalStatus.state == .succeeded)
+
+        #expect(try await storedEntryCount(oldGeneration, container: container) == 0)
+        #expect(try await storedEntryCount(newGeneration, container: container) > 0)
+        #expect(
+            try await indexStatus(
+                container: container,
+                entity: SchemaBuildAccountV3.persistableType,
+                index: "schema_build_account_email"
+            ).indexState == .readable
+        )
+    }
+
+    @Test("Provider layout replacement builds and retires exact generations")
+    func providerLayoutReplacementRetiresOldGeneration() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let targetSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            for: initialSchema,
+            configuration: DBConfiguration.testing(
+                storageEngine: InMemoryEngine()
+            ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SchemaBuildAccountV2.self
+                    )
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            SchemaBuildAccountV2(
+                id: "layout-replacement-account",
+                email: "layout-replacement@example.com"
+            )
+        )
+        try await context.save()
+
+        let store = try await container.testBaseDirectory(
+            for: SchemaBuildAccountV2.self
+        )
+        let descriptor = try #require(
+            initialSchema.indexDescriptor(
+                named: "schema_build_account_email"
+            )
+        )
+        let definitionFingerprint = try SchemaManifest.indexFingerprint(
+            descriptor
+        )
+        let oldGeneration =
+            store
+            .subspace(SubspaceKey.indexes)
+            .subspace(descriptor.name)
+            .subspace(definitionFingerprint.bytes)
+            .subspace(try standardIndexLayoutFingerprint())
+        let replacementLayout = try IndexPhysicalLayout(
+            name: "test.layout-versioned-scalar",
+            revision: 1
+        )
+        let newGeneration =
+            store
+            .subspace(SubspaceKey.indexes)
+            .subspace(descriptor.name)
+            .subspace(definitionFingerprint.bytes)
+            .subspace(replacementLayout.fingerprint)
+        #expect(
+            try await storedEntryCount(
+                oldGeneration,
+                container: container
+            ) > 0
+        )
+        #expect(
+            try await storedEntryCount(
+                newGeneration,
+                container: container
+            ) == 0
+        )
+
+        let runtime = try await makePersistentRuntime(
+            container: container,
+            schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory(
+                FixedLayoutSchemaRuntimeFactory(revision: 1)
+            )
+        )
+        let response = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-layout-replacement"
+                )
+            ),
+            requestID: 205,
+            runtime: runtime
+        )
+        guard case .accepted(let job) = response else {
+            Issue.record("Expected a provider layout replacement job")
+            return
+        }
+        #expect(
+            try await runUntilTerminal(
+                job,
+                runtime: runtime,
+                firstRequestID: 206
+            ).state == .succeeded
+        )
+
+        #expect(
+            try await storedEntryCount(
+                oldGeneration,
+                container: container
+            ) == 0
+        )
+        #expect(
+            try await storedEntryCount(
+                newGeneration,
+                container: container
+            ) > 0
+        )
+    }
+
+    @Test("index removal retires its declared physical generation")
+    func indexRemovalRetiresDeclaredGeneration() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let targetSchema = try Schema(
+            entities: [try SchemaBuildAccountV1.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            for: initialSchema,
+            configuration: DBConfiguration.testing(
+                storageEngine: InMemoryEngine()
+            ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SchemaBuildAccountV2.self
+                    )
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            SchemaBuildAccountV2(
+                id: "removed-index-account",
+                email: "removed@example.com"
+            )
+        )
+        try await context.save()
+
+        let store = try await container.testBaseDirectory(
+            for: SchemaBuildAccountV2.self
+        )
+        let indexStorage =
+            store
+            .subspace(SubspaceKey.indexes)
+            .subspace("schema_build_account_email")
+        #expect(try await storedEntryCount(indexStorage, container: container) > 0)
+
+        let runtime = try await makePersistentRuntime(container: container)
+        let response = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-index-removal"
+                )
+            ),
+            requestID: 26,
+            runtime: runtime
+        )
+        guard case .accepted(let job) = response else {
+            Issue.record("Expected an index removal job")
+            return
+        }
+        #expect(
+            try await runUntilTerminal(
+                job,
+                runtime: runtime,
+                firstRequestID: 27
+            ).state == .succeeded
+        )
+
+        #expect(try await storedEntryCount(indexStorage, container: container) == 0)
+        let allStates = store.subspace("state")
+            .subspace("schema_build_account_email")
+        let remainingStateCount = try await storedEntryCount(
+            allStates,
+            container: container
+        )
+        #expect(remainingStateCount == 0)
+    }
+
+    @Test("replacement retirement survives cancellation after schema publication")
+    func replacementRetirementSurvivesPublishedCancellation() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let targetSchema = try Schema(
+            entities: [try SchemaBuildAccountV3.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            for: initialSchema,
+            configuration: DBConfiguration.testing(
+                storageEngine: InMemoryEngine()
+            ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SchemaBuildAccountV2.self
+                    )
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            SchemaBuildAccountV2(
+                id: "cancelled-replacement-account",
+                email: "cancelled-replacement@example.com"
+            )
+        )
+        try await context.save()
+
+        let store = try await container.testBaseDirectory(
+            for: SchemaBuildAccountV2.self
+        )
+        let oldDescriptor = try #require(
+            initialSchema.indexDescriptor(named: "schema_build_account_email")
+        )
+        let oldGeneration =
+            store
+            .subspace(SubspaceKey.indexes)
+            .subspace(oldDescriptor.name)
+            .subspace(try SchemaManifest.indexFingerprint(oldDescriptor).bytes)
+            .subspace(try standardIndexLayoutFingerprint())
+        #expect(try await storedEntryCount(oldGeneration, container: container) > 0)
+
+        let runtime = try await makePersistentRuntime(container: container)
+        let firstResponse = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-published-retirement-cancelled"
+                )
+            ),
+            requestID: 28,
+            runtime: runtime
+        )
+        guard case .accepted(let firstJob) = firstResponse else {
+            Issue.record("Expected a replacement schema job")
+            return
+        }
+
+        // One scheduled call advances one committed checkpoint. Staging,
+        // publication, and snapshot installation leave the target schema
+        // published while the durable retirement marker is still pending.
+        for _ in 0..<3 {
+            try await runtime.runScheduledWork()
+        }
+        #expect(container.schema == targetSchema)
+        let cancellation = try await invoke(
+            DatabaseOperationCatalog.jobCancel,
+            request: JobCancelOperation.Request(job: firstJob),
+            requestID: 29,
+            runtime: runtime,
+            metadata: OperationRequestMetadata(
+                idempotencyKey: "cancel-published-retirement"
+            )
+        )
+        #expect(cancellation.accepted)
+        #expect(
+            try await runUntilTerminal(
+                firstJob,
+                runtime: runtime,
+                firstRequestID: 30
+            ).state == .cancelled
+        )
+
+        let replacementResponse = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: targetSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-published-retirement-recovery"
+                )
+            ),
+            requestID: 31,
+            runtime: runtime
+        )
+        guard case .accepted(let replacementJob) = replacementResponse else {
+            Issue.record("Expected a recovery schema job")
+            return
+        }
+        #expect(
+            try await runUntilTerminal(
+                replacementJob,
+                runtime: runtime,
+                firstRequestID: 32
+            ).state == .succeeded
+        )
+        #expect(try await storedEntryCount(oldGeneration, container: container) == 0)
+    }
+
+    @Test("schema reversal preserves the generation selected by the new target")
+    func schemaReversalPreservesReactivatedGeneration() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let replacementSchema = try Schema(
+            entities: [try SchemaBuildAccountV3.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+        )
+        let reversalSchema = try Schema(
+            entities: [try SchemaBuildAccountV2.schemaEntity],
+            version: Schema.Version(3, 0, 0)
+        )
+        let container = try await DBContainer.open(
+            for: initialSchema,
+            configuration: DBConfiguration.testing(
+                storageEngine: InMemoryEngine()
+            ),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        SchemaBuildAccountV2.self
+                    )
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            SchemaBuildAccountV2(
+                id: "reversed-replacement-account",
+                email: "reversed-replacement@example.com"
+            )
+        )
+        try await context.save()
+
+        let store = try await container.testBaseDirectory(
+            for: SchemaBuildAccountV2.self
+        )
+        let oldDescriptor = try #require(
+            initialSchema.indexDescriptor(named: "schema_build_account_email")
+        )
+        let replacementDescriptor = try #require(
+            replacementSchema.indexDescriptor(
+                named: "schema_build_account_email"
+            )
+        )
+        let oldGeneration =
+            store
+            .subspace(SubspaceKey.indexes)
+            .subspace(oldDescriptor.name)
+            .subspace(try SchemaManifest.indexFingerprint(oldDescriptor).bytes)
+            .subspace(try standardIndexLayoutFingerprint())
+        let replacementGeneration =
+            store
+            .subspace(SubspaceKey.indexes)
+            .subspace(replacementDescriptor.name)
+            .subspace(
+                try SchemaManifest.indexFingerprint(replacementDescriptor).bytes
+            )
+            .subspace(try standardIndexLayoutFingerprint())
+        #expect(try await storedEntryCount(oldGeneration, container: container) > 0)
+        #expect(
+            try await storedEntryCount(
+                replacementGeneration,
+                container: container
+            ) == 0
+        )
+
+        let runtime = try await makePersistentRuntime(container: container)
+        let replacementResponse = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: replacementSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-reversal-replacement"
+                )
+            ),
+            requestID: 33,
+            runtime: runtime
+        )
+        guard case .accepted(let replacementJob) = replacementResponse else {
+            Issue.record("Expected a replacement schema job")
+            return
+        }
+
+        // Leave the old generation and its durable retirement marker in place
+        // after publishing the replacement schema.
+        for _ in 0..<3 {
+            try await runtime.runScheduledWork()
+        }
+        #expect(container.schema == replacementSchema)
+        let cancellation = try await invoke(
+            DatabaseOperationCatalog.jobCancel,
+            request: JobCancelOperation.Request(job: replacementJob),
+            requestID: 34,
+            runtime: runtime,
+            metadata: OperationRequestMetadata(
+                idempotencyKey: "cancel-schema-reversal-replacement"
+            )
+        )
+        #expect(cancellation.accepted)
+        #expect(
+            try await runUntilTerminal(
+                replacementJob,
+                runtime: runtime,
+                firstRequestID: 35
+            ).state == .cancelled
+        )
+
+        let reversalResponse = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(
+                invocation: .apply(
+                    manifest: SchemaManifest(schema: reversalSchema),
+                    expectedFingerprint: container.schemaFingerprint,
+                    idempotencyKey: "schema-reversal-reactivate-old-generation"
+                )
+            ),
+            requestID: 36,
+            runtime: runtime
+        )
+        guard case .accepted(let reversalJob) = reversalResponse else {
+            Issue.record("Expected a schema reversal job")
+            return
+        }
+        #expect(
+            try await runUntilTerminal(
+                reversalJob,
+                runtime: runtime,
+                firstRequestID: 37
+            ).state == .succeeded
+        )
+
+        #expect(container.schema == reversalSchema)
+        #expect(try await storedEntryCount(oldGeneration, container: container) > 0)
+        #expect(
+            try await storedEntryCount(
+                replacementGeneration,
+                container: container
+            ) == 0
+        )
+        #expect(
+            try await indexStatus(
+                container: container,
+                entity: SchemaBuildAccountV2.persistableType,
+                index: "schema_build_account_email"
+            ).indexState == .readable
+        )
+    }
+
     @Test("dynamic partitions stay write-only until every partition is backfilled")
     func dynamicIndexAdditionBuildsEveryPartition() async throws {
         let initialSchema = try Schema(
@@ -547,10 +1614,14 @@ struct SchemaExecuteHandlerTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SchemaBuildTenantAccountV1.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -650,10 +1721,14 @@ struct SchemaExecuteHandlerTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SchemaBuildAccountV1.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -736,7 +1811,7 @@ struct SchemaExecuteHandlerTests {
         )
     }
 
-#if MultipleBases
+#if MultiBase
     @Test("An accepted schema transition blocks Base lifecycle changes")
     func acceptedTransitionBlocksBaseLifecycle() async throws {
         let initialSchema = try Schema(
@@ -805,10 +1880,14 @@ struct SchemaExecuteHandlerTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SchemaBuildAccountV1.self
-                    ),
+                    )
                 ]
             ),
             security: .testingDisabled
@@ -868,13 +1947,17 @@ struct SchemaExecuteHandlerTests {
                 storageEngine: InMemoryEngine()
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 schema: schema
             ),
             security: .testingDisabled
         )
     }
 
-#if MultipleBases
+#if MultiBase
     private func baseRecord(
         _ container: DBContainer
     ) async throws -> DatabaseBaseRecord {
@@ -899,7 +1982,16 @@ struct SchemaExecuteHandlerTests {
     }
 
     private func makePersistentRuntime(
-        container: DBContainer
+        container: DBContainer,
+        schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory =
+            AnyDatabaseSchemaRuntimeFactory(
+                SchemaDrivenDatabaseRuntimeFactory(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(
+                        identifier: "database-server-tests",
+                        revision: 1
+                    ),
+                )
+            )
     ) async throws -> DatabaseOperationInstance {
         let runtimeLimits = DatabaseOperationLimits.default
         let identifierGenerator = RandomDatabaseUUIDGenerator()
@@ -909,7 +2001,7 @@ struct SchemaExecuteHandlerTests {
                     DatabaseMaintenanceResumableOperation(
                         runtimeLimits: runtimeLimits
                     )
-                ),
+                )
             ]
         )
         let services = CanonicalDatabaseOperationServiceFactory(
@@ -933,9 +2025,7 @@ struct SchemaExecuteHandlerTests {
                 admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
                     UnrestrictedDatabaseOperationAdmissionPolicy()
                 ),
-                schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory(
-                    SchemaDrivenDatabaseRuntimeFactory()
-                ),
+                schemaRuntimeFactory: schemaRuntimeFactory,
                 runtimeLimits: runtimeLimits
             ),
             hostServices: try testJobHostServices(
@@ -1017,9 +2107,24 @@ struct SchemaExecuteHandlerTests {
         }
     }
 
+    private func storedEntryCount(
+        _ subspace: Subspace,
+        container: DBContainer
+    ) async throws -> Int {
+        let range = subspace.range()
+        return try await container.withTestBaseTransaction { transaction in
+            let entries = try await transaction.collectRange(
+                begin: range.begin,
+                end: range.end,
+                snapshot: true
+            )
+            return entries.count
+        }
+    }
+
     private func partitions(tenantID: String) throws -> FieldObject {
         try FieldObject([
-            (key: "tenantID", value: .string(tenantID)),
+            (key: "tenantID", value: .string(tenantID))
         ])
     }
 
@@ -1048,7 +2153,7 @@ struct SchemaExecuteHandlerTests {
                     enumMetadata: current.enumMetadata,
                     ontology: current.ontology,
                     polymorphicMembership: current.polymorphicMembership
-                ),
+                )
             ],
             version: Schema.Version(2, 0, 0)
         )
@@ -1079,7 +2184,7 @@ struct SchemaExecuteHandlerTests {
                     enumMetadata: current.enumMetadata,
                     ontology: current.ontology,
                     polymorphicMembership: current.polymorphicMembership
-                ),
+                )
             ],
             version: Schema.Version(2, 0, 0)
         )
@@ -1091,6 +2196,13 @@ struct SchemaExecuteHandlerTests {
         try manifest.fingerprint()
     }
 
+    private func standardIndexLayoutFingerprint() throws -> ByteString {
+        try IndexPhysicalLayout(
+            name: "standard",
+            revision: 1
+        ).fingerprint
+    }
+
     private func execute<Request: Sendable, Response: Sendable>(
         _ operation: DatabaseOperation<Request, Response>,
         request: Request,
@@ -1098,7 +2210,7 @@ struct SchemaExecuteHandlerTests {
         runtime: DatabaseOperationInstance,
         metadata: OperationRequestMetadata = OperationRequestMetadata()
     ) async throws -> ByteString {
-        #if MultipleBases
+        #if MultiBase
         let bytes = try DatabaseWireEncoder().encodeRequest(
             operation,
             requestID: requestID,

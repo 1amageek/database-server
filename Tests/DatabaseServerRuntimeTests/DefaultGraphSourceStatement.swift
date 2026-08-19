@@ -1,6 +1,6 @@
 import DatabaseKit
-import DatabaseTypes
 import DatabaseKitFoundation
+import DatabaseTypes
 
 @Persistable
 struct DefaultGraphSourceStatement {
@@ -15,10 +15,13 @@ struct DefaultGraphSourceStatement {
     var object: RDFTerm
 
     #Index(
-        .rdfDataset,
-        from: \DefaultGraphSourceStatement.subject,
-        edge: \DefaultGraphSourceStatement.predicate,
-        to: \DefaultGraphSourceStatement.object,
-        name: "default_rdf"
-    )
+        .graph(
+            name: "default_rdf",
+            definition: .rdf(
+                subject: \DefaultGraphSourceStatement.subject,
+                predicate: \DefaultGraphSourceStatement.predicate,
+                object: \DefaultGraphSourceStatement.object,
+                graph: nil
+            )
+        ))
 }

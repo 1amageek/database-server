@@ -25,7 +25,7 @@ struct DatabaseRequestDigestTests {
         #expect(query != mutation)
         #expect(query != differentPayload)
 
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         let baseA = try Base.ID("a")
         let baseB = try Base.ID("b")
         let encodedBaseB: ByteString = [

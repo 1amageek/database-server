@@ -19,12 +19,16 @@ private struct SchemaDrivenSemanticGraphEdge {
         "semantic-graph-edges"
     )
     #Index(
-        .propertyGraph(strategy: .adjacency),
-        from: \SchemaDrivenSemanticGraphEdge.source,
-        edge: \SchemaDrivenSemanticGraphEdge.label,
-        to: \SchemaDrivenSemanticGraphEdge.target,
-        name: "semantic_graph"
-    )
+        .graph(
+            name: "semantic_graph",
+            definition: .property(
+                source: \SchemaDrivenSemanticGraphEdge.source,
+                label: .field(\SchemaDrivenSemanticGraphEdge.label),
+                target: \SchemaDrivenSemanticGraphEdge.target,
+                graph: nil,
+                strategy: .adjacency
+            )
+        ))
 
     var id: String
     var source: String
@@ -64,6 +68,10 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         let compiled = try await makeContainer(
             schema: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 entityRuntimes: [
                     try DatabaseFrameworkRuntime.entity(
                         SchemaDrivenSemanticGraphEdge.self
@@ -77,6 +85,10 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         let schemaDriven = try await makeContainer(
             schema: schema,
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
                 schema: schema
             )
         )
@@ -110,7 +122,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
 
         let rdfIndex = try #require(
             SchemaDrivenSemanticPerson.indexDescriptors.first {
-                $0.kindIdentifier == "owl_class_rdf"
+                $0.type == .graph(.ontologyProjection)
             }
         )
         let compiledValidation = try await validateMissingName(
@@ -144,7 +156,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         schema: Schema,
         runtimeConfiguration: DatabaseRuntimeConfiguration
     ) async throws -> DBContainer {
-        #if MultipleBases
+        #if MultiBase
         return try await DBContainer.open(
             for: schema,
             configuration: DBConfiguration.testing(
@@ -227,7 +239,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         return try edges.map(PersistedModel.init) + [
             PersistedModel(
                 SchemaDrivenSemanticPerson(id: "alice", name: nil)
-            ),
+            )
         ]
     }
 
@@ -293,7 +305,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
                                     subject: .variable("subject"),
                                     predicate: .iri(Self.rdfType),
                                     object: .iri(Self.personClass)
-                                ),
+                                )
                             ]),
                             dataset: .explicit(
                                 defaultGraphs: [Self.dataGraph],
@@ -311,7 +323,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         guard case .boolean(let value) = response else {
             throw SemanticParityTestError.unexpectedQueryResponse
         }
-        #if MultipleBases
+        #if MultiBase
         return value.value
         #else
         return value
@@ -411,7 +423,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         metadata: OperationRequestMetadata = OperationRequestMetadata()
     ) async throws -> Response {
         let encoder = DatabaseWireEncoder()
-        #if MultipleBases
+        #if MultiBase
         let encodedRequest = try encoder.encodeRequest(
             operation,
             requestID: requestID,
@@ -449,7 +461,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         }
     }
 
-    #if MultipleBases
+    #if MultiBase
     private func operationTarget() throws -> DatabaseOperationTarget {
         .base(try TestBaseEnvironment.id())
     }

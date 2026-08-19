@@ -3,7 +3,7 @@
 @_exported import DatabaseJobRuntime
 @_exported import DatabaseSchemaOperations
 @_exported import DatabaseMaintenanceOperations
-#if DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_SERVER_MULTI_BASE
 @_exported import DatabaseAdministrationOperations
 #endif
 @_exported import DatabaseMutationOperations

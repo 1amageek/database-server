@@ -130,9 +130,9 @@ root. FoundationDB requires a non-empty application-selected Directory; the
 host resolves it once and passes the resulting `Subspace` to the framework.
 Platform adapters own their platform-specific storage configuration and do not
 consume this native server configuration.
-The non-default `MultipleBases` trait replaces the single storage field with a
+The non-default `MultiBase` trait replaces the single storage field with a
 control domain, data domains, and named Base placements. It never contains a
-raw credential. Standard format version 3 and `MultipleBases` format version 2
+raw credential. Standard format version 3 and `MultiBase` format version 2
 are both strict: unknown keys, mismatched root/backend selection, duplicate
 identifiers, missing domain references, duplicate persistent backend
 definitions, and empty paths are rejected before any engine is opened. A
@@ -153,7 +153,7 @@ standard build rejects placement keys rather than ignoring them.
 }
 ```
 
-With `MultipleBases`, add the placement fields:
+With `MultiBase`, add the placement fields:
 
 ```json
 {
@@ -176,15 +176,15 @@ With `MultipleBases`, add the placement fields:
 }
 ```
 
-`AllRuntimeFeatures` does not imply `MultipleBases`.
+`AllRuntimeFeatures` does not imply `MultiBase`.
 
 The default host opens one engine exactly once and transfers it to
-`DBContainer`. With `MultipleBases`, it opens each domain and transfers the
+`DBContainer`. With `MultiBase`, it opens each domain and transfers the
 complete topology. FoundationDB's process-global client is initialized once
 even when several trait-specific domains use it, and is shut down only after
 every owned engine has completed authoritative shutdown. Changing a placement
 in configuration does not move an existing Base; movement is a
-MultipleBases lifecycle operation.
+MultiBase lifecycle operation.
 
 The configuration and registry directories require mode `0700`; files require
 mode `0600`. Symbolic-link files and files owned by another user are rejected.
@@ -198,6 +198,10 @@ job stores only the token identifier and revalidates revocation, principal, and
 roles before every productive slice. The native registry intentionally does
 not support claims; registration rejects a non-empty claims object instead of
 silently discarding it.
+
+Every persistent-job slice runs under its persisted execution deadline.
+Checkpointed work is cancelled when that deadline expires, and its state is not
+advanced unless the slice completes and the following state transaction commits.
 
 Non-loopback listeners require all of the following before bind:
 
@@ -242,9 +246,9 @@ After an attributed package build, set `XCODE_TEST_DERIVED_DATA_PATH` to that
 exact DerivedData directory so the harness builds only the missing test
 products before its isolated `test-without-building` run.
 
-The strict harness requires 279 logical tests for the standard graph. Set
-`DATABASE_SERVER_TEST_TRAITS=MultipleBases` to select that trait in an isolated
-source copy and require 305 tests. Both graphs require zero failures, zero
+The strict harness requires 295 logical tests for the standard graph. Set
+`DATABASE_SERVER_TEST_TRAITS=MultiBase` to select that trait in an isolated
+source copy and require 321 tests. Both graphs require zero failures, zero
 skips, zero expected failures, zero runtime warnings, and no internal tool
 errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap

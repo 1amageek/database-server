@@ -1,6 +1,7 @@
 import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseOperationCore
+import DatabaseQueryOperations
+
 #if DATABASE_GRAPH_OPERATIONS_ENABLED
 import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseEngine
@@ -47,8 +48,8 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         let queryContext = IndexQueryContext(context: databaseContext)
         guard let readableIndex = try await queryContext.readableIndex(
             named: owned.descriptor.name,
-            kindIdentifier: owned.descriptor.kindIdentifier,
-            forEntityName: owned.entity.name,
+                indexType: owned.descriptor.type,
+                forEntityName: owned.entity.name,
             partitions: source.partitions,
             transaction: transaction
         ) else {
@@ -59,14 +60,22 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         }
         let indexSubspace = readableIndex.subspace
 
-        if owned.descriptor.kindIdentifier == "graph" {
+        if owned.descriptor.type == .graph(.property) {
+            guard
+                let configuration = PropertyGraphIndexConfiguration(
+                    descriptor: owned.descriptor
+                )
+            else {
+                throw DatabaseGraphAlgorithmError.unsupportedSourceIndex(
+                    index: source.index,
+                    type: owned.descriptor.type
+                )
+            }
             return try propertyGraphSource(
                 source,
                 owned: owned,
                 indexSubspace: indexSubspace,
-                metadata: PropertyGraphIndexMetadata(
-                    canonical: owned.descriptor.kind
-                )
+                configuration: configuration
             )
         }
         if let selection = try RDFDatasetIndexSelection(
@@ -81,7 +90,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         }
         throw DatabaseGraphAlgorithmError.unsupportedSourceIndex(
             index: source.index,
-            kind: owned.descriptor.kindIdentifier
+            type: owned.descriptor.type
         )
     }
 
@@ -89,7 +98,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         _ source: GraphAlgorithmOperation.Source,
         owned: OwnedIndex,
         indexSubspace: StorageKit.Subspace,
-        metadata: PropertyGraphIndexMetadata
+        configuration: PropertyGraphIndexConfiguration
     ) throws -> ResolvedDatabaseGraphSource {
         let graphTarget: ResolvedDatabaseGraphSource.PropertyGraphTarget
         switch source.graph {
@@ -98,7 +107,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         case .defaultGraph:
             graphTarget = .defaultGraph
         case .named(.identifier(let name)):
-            guard metadata.namespaceFieldName != nil else {
+            guard configuration.namespaceFieldName != nil else {
                 throw DatabaseGraphAlgorithmError
                     .propertyGraphSourceDoesNotCoverNamedGraph(
                         index: source.index
@@ -121,10 +130,10 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
             entityName: owned.entity.name,
             indexName: source.index,
             indexSubspace: indexSubspace,
-            storedFieldNames: owned.descriptor.storedFieldNames,
+            storedFieldNames: owned.descriptor.includedFieldNames,
             layout: .propertyGraph(
                 ResolvedDatabaseGraphSource.PropertyGraphLayout(
-                    strategy: metadata.declarativeStrategy,
+                    strategy: configuration.declarativeStrategy,
                     graphTarget: graphTarget,
                     edgeLabel: edgeLabel
                 )
@@ -167,7 +176,7 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
             entityName: owned.entity.name,
             indexName: source.index,
             indexSubspace: indexSubspace,
-            storedFieldNames: owned.descriptor.storedFieldNames,
+            storedFieldNames: owned.descriptor.includedFieldNames,
             layout: .rdf(
                 try ResolvedDatabaseGraphSource.RDFLayout(
                     graphTarget: graphTarget,

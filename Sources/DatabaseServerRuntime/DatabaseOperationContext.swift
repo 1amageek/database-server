@@ -13,7 +13,7 @@ import DatabaseTypes
 
 public struct DatabaseOperationContext: Sendable {
     package let executor: DatabaseOperationExecutor
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     public let target: DatabaseOperationTarget
     #endif
     package let requirement: DatabaseOperationRequirement
@@ -24,7 +24,7 @@ public struct DatabaseOperationContext: Sendable {
     public let requestPayload: ByteString
     public let wireLimits: DatabaseWireLimits
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package init(
         container: DBContainer,
         target: DatabaseOperationTarget,
@@ -138,14 +138,14 @@ public struct DatabaseOperationContext: Sendable {
     }
     #endif
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package func requireBaseContext() throws -> DatabaseContext {
         try requireBaseExecutor().requireDataContext()
     }
     #endif
 
     package func requireControlExecutor() throws -> DatabaseControlExecutor {
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         guard case .control(let executor) = executor else {
             throw DatabaseOperationError.targetKindNotAccepted(target)
         }
@@ -158,7 +158,7 @@ public struct DatabaseOperationContext: Sendable {
         #endif
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package func requireBaseExecutor() throws -> BaseOperationExecutor {
         guard case .base(let executor) = executor else {
             throw DatabaseOperationError.targetKindNotAccepted(target)
@@ -179,7 +179,7 @@ public struct DatabaseOperationContext: Sendable {
         throws -> DatabaseDataOperationExecutor {
         switch executor {
         case .control(let executor):
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             guard let dataExecutor = executor.dataExecutor else {
                 throw DatabaseOperationError.targetKindNotAccepted(target)
             }
@@ -187,7 +187,7 @@ public struct DatabaseOperationContext: Sendable {
             #else
             return executor.dataExecutor
             #endif
-        #if DATABASE_SERVER_MULTIPLE_BASES
+        #if DATABASE_SERVER_MULTI_BASE
         case .base(let executor):
             return executor.dataExecutor
         case .composition:

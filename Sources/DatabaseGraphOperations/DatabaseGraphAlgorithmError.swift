@@ -1,7 +1,9 @@
 import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseOperationCore
+import DatabaseQueryOperations
+
 #if DATABASE_GRAPH_OPERATIONS_ENABLED
+import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseWire
 import DatabaseTypes
 
@@ -9,7 +11,7 @@ public enum DatabaseGraphAlgorithmError: Error, Sendable, CustomStringConvertibl
     case sourceIndexNotFound(String)
     case sourceIndexHasNoUniqueOwner(String)
     case sourcePartitionNotFound(index: String, entity: String)
-    case unsupportedSourceIndex(index: String, kind: String)
+    case unsupportedSourceIndex(index: String, type: IndexType)
     case expectedPropertyGraphIdentifier(GraphAlgorithmOperation.Term)
     case expectedRDFTerm(GraphAlgorithmOperation.Term)
     case invalidRDFPredicate(GraphAlgorithmOperation.Term)
@@ -37,8 +39,8 @@ public enum DatabaseGraphAlgorithmError: Error, Sendable, CustomStringConvertibl
             return "Graph source index '\(index)' must belong to exactly one schema entity"
         case .sourcePartitionNotFound(let index, let entity):
             return "Graph source index '\(index)' has no registered partition for entity '\(entity)'"
-        case .unsupportedSourceIndex(let index, let kind):
-            return "Index '\(index)' has unsupported graph kind '\(kind)'"
+        case .unsupportedSourceIndex(let index, let type):
+            return "Index '\(index)' has unsupported graph type '\(type.diagnosticName)'"
         case .expectedPropertyGraphIdentifier(let value):
             return "Property graph operations require identifier terms, received \(value)"
         case .expectedRDFTerm(let value):

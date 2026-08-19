@@ -5,7 +5,7 @@ import DatabaseTypes
 import TestSupport
 @testable import DatabaseServerRuntime
 
-#if MultipleBases
+#if MultiBase
 typealias TestDataRootTarget = DatabaseOperationTarget
 
 func testDataRootTarget() throws -> TestDataRootTarget {
@@ -57,7 +57,7 @@ extension DatabaseOperationContext {
         dataContext: DatabaseContext? = nil,
         wireLimits: DatabaseWireLimits = .default
     ) -> DatabaseOperationContext {
-#if MultipleBases
+#if MultiBase
         let context = dataContext ?? container.testBaseContext()
         return DatabaseOperationContext(
             container: container,

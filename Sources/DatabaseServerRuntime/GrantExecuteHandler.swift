@@ -11,7 +11,7 @@ import DatabaseKit
 @_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
 
-#if DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_SERVER_MULTI_BASE
 /// Executes persisted database and Base Grant operations.
 public struct GrantExecuteHandler: DatabaseOperationEndpointHandler {
     public typealias Operation = GrantExecuteOperation

@@ -1,6 +1,7 @@
 import DatabaseMutationOperations
-import DatabaseQueryOperations
 import DatabaseOperationCore
+import DatabaseQueryOperations
+
 #if DATABASE_GRAPH_OPERATIONS_ENABLED
 import DatabaseTypes
 import DatabaseKit
@@ -12,22 +13,24 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
         case describe = 2
     }
 
-    private static let formatVersion: UInt8 = 6
+    private static let formatVersion: UInt8 = 7
 
     package let kind: Kind
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package let resource: Security.Resource
     #endif
+    package let schemaGeneration: UInt64
     package let dataGeneration: UInt64
     package let requestFingerprint: ByteString
     package let restorableReadPosition: DatabaseStorageReadPosition?
     package let resultFingerprint: ByteString
     package let tripleOffset: UInt64
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     package init(
         kind: Kind,
         resource: Security.Resource,
+        schemaGeneration: UInt64,
         dataGeneration: UInt64,
         requestFingerprint: ByteString,
         restorableReadPosition: DatabaseStorageReadPosition?,
@@ -36,6 +39,7 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
     ) {
         self.kind = kind
         self.resource = resource
+        self.schemaGeneration = schemaGeneration
         self.dataGeneration = dataGeneration
         self.requestFingerprint = requestFingerprint
         self.restorableReadPosition = restorableReadPosition
@@ -45,6 +49,7 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
     #else
     package init(
         kind: Kind,
+        schemaGeneration: UInt64,
         dataGeneration: UInt64,
         requestFingerprint: ByteString,
         restorableReadPosition: DatabaseStorageReadPosition?,
@@ -52,6 +57,7 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
         tripleOffset: UInt64
     ) {
         self.kind = kind
+        self.schemaGeneration = schemaGeneration
         self.dataGeneration = dataGeneration
         self.requestFingerprint = requestFingerprint
         self.restorableReadPosition = restorableReadPosition
@@ -69,9 +75,10 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
                 (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
                 writer.writeUInt8(Self.formatVersion)
                 writer.writeUInt8(kind.rawValue)
-                #if DATABASE_SERVER_MULTIPLE_BASES
+                #if DATABASE_SERVER_MULTI_BASE
                 try Self.write(resource, to: &writer)
                 #endif
+                writer.writeUInt64(schemaGeneration)
                 writer.writeUInt64(dataGeneration)
                 try writer.writeBytes(requestFingerprint)
                 switch restorableReadPosition {
@@ -100,12 +107,14 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
         do {
             var reader = DatabaseWireReader(bytes, limits: limits)
             guard try reader.readUInt8() == Self.formatVersion,
-                  let kind = Kind(rawValue: try reader.readUInt8()) else {
+                let kind = Kind(rawValue: try reader.readUInt8())
+            else {
                 throw DatabaseGraphQueryError.invalidContinuation
             }
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             let resource = try Self.readResource(from: &reader)
             #endif
+            let schemaGeneration = try reader.readUInt64()
             let dataGeneration = try reader.readUInt64()
             let requestFingerprint = try reader.readBytes()
             let restorableReadPosition: DatabaseStorageReadPosition?
@@ -119,17 +128,19 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
             }
             let resultFingerprint = try reader.readBytes()
             guard requestFingerprint.count == DatabaseRequestDigest.byteCount,
-                  resultFingerprint.count == DatabaseRequestDigest.byteCount else {
+                resultFingerprint.count == DatabaseRequestDigest.byteCount
+            else {
                 throw DatabaseGraphQueryError.invalidContinuation
             }
             let tripleOffset = try reader.readUInt64()
             guard tripleOffset > 0 else {
                 throw DatabaseGraphQueryError.invalidContinuation
             }
-            #if DATABASE_SERVER_MULTIPLE_BASES
+            #if DATABASE_SERVER_MULTI_BASE
             let result = Self(
                 kind: kind,
                 resource: resource,
+                schemaGeneration: schemaGeneration,
                 dataGeneration: dataGeneration,
                 requestFingerprint: requestFingerprint,
                 restorableReadPosition: restorableReadPosition,
@@ -139,6 +150,7 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
             #else
             let result = Self(
                 kind: kind,
+                schemaGeneration: schemaGeneration,
                 dataGeneration: dataGeneration,
                 requestFingerprint: requestFingerprint,
                 restorableReadPosition: restorableReadPosition,
@@ -155,7 +167,7 @@ package struct DatabaseGraphQueryPageCursor: Sendable, Hashable {
         }
     }
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
+    #if DATABASE_SERVER_MULTI_BASE
     private static func write(
         _ resource: Security.Resource,
         to writer: inout DatabaseWireWriter

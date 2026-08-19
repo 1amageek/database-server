@@ -1,19 +1,25 @@
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
-@testable import DatabaseServerRuntime
 import DatabaseServerFoundation
 import StorageKit
 import TestSupport
 import Testing
 
+@testable import DatabaseServerRuntime
+
 @Suite("Database application composition", .serialized)
 struct DatabaseOperationApplicationTests {
-    #if !DATABASE_SERVER_MULTIPLE_BASES
+    #if !DATABASE_SERVER_MULTI_BASE
     @Test("Standard definition preserves the host-selected root")
     func standardDefinitionPreservesRoot() async throws {
         let schemaFactory = AnyDatabaseSchemaRuntimeFactory(
-            SchemaDrivenDatabaseRuntimeFactory()
+            SchemaDrivenDatabaseRuntimeFactory(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-server-tests",
+                    revision: 1
+                ),
+            )
         )
         let definition = DatabaseContainerDefinition(
             schemaRuntimeFactory: schemaFactory,
@@ -40,7 +46,12 @@ struct DatabaseOperationApplicationTests {
     @Test("Schema-driven definition restores an empty durable catalog")
     func schemaDrivenDefinitionOpensEmptyCatalog() async throws {
         let schemaFactory = AnyDatabaseSchemaRuntimeFactory(
-            SchemaDrivenDatabaseRuntimeFactory()
+            SchemaDrivenDatabaseRuntimeFactory(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-server-tests",
+                    revision: 1
+                ),
+            )
         )
         let definition = DatabaseContainerDefinition(
             schemaRuntimeFactory: schemaFactory,
@@ -61,7 +72,12 @@ struct DatabaseOperationApplicationTests {
     @Test("Application erasure preserves definition and runtime factories")
     func applicationErasurePreservesComposition() async throws {
         let schemaFactory = AnyDatabaseSchemaRuntimeFactory(
-            SchemaDrivenDatabaseRuntimeFactory()
+            SchemaDrivenDatabaseRuntimeFactory(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-server-tests",
+                    revision: 1
+                ),
+            )
         )
         let definition = DatabaseContainerDefinition(
             schemaRuntimeFactory: schemaFactory,
@@ -108,7 +124,7 @@ struct DatabaseOperationApplicationTests {
         _ definition: DatabaseContainerDefinition
     ) async throws -> DBContainer {
         let engine = InMemoryEngine()
-        #if MultipleBases
+        #if MultiBase
         return try await definition.open(
             storageTopology: .testing(storageEngine: engine)
         )

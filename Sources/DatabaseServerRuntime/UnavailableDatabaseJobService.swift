@@ -13,8 +13,8 @@ import DatabaseOperationCore
 package struct UnavailableDatabaseJobService: DatabaseJobService {
     package let jobOperations: [JobOperationIdentifier] = []
 
-    #if DATABASE_SERVER_MULTIPLE_BASES
-    package func baseAdmission(
+    #if DATABASE_SERVER_MULTI_BASE
+    package func startBaseAdmission(
         for operation: JobOperationIdentifier
     ) throws -> DatabaseBaseAdmissionKind {
         _ = operation

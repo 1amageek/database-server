@@ -6,7 +6,7 @@ import DatabaseMutationOperations
 import DatabaseQueryOperations
 import DatabaseCommandOperations
 import DatabaseOperationCore
-#if DATABASE_SERVER_MULTIPLE_BASES
+#if DATABASE_SERVER_MULTI_BASE
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes

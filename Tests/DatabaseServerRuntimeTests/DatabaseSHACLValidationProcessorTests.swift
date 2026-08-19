@@ -1,13 +1,13 @@
-import DatabaseKit
-import TestSupport
-import DatabaseRuntime
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
+import DatabaseRuntime
 import DatabaseServerRuntime
 import DatabaseTypes
 import DatabaseWire
 import GraphIndex
 import OntologyIndex
 import StorageKit
+import TestSupport
 import Testing
 
 @Suite("Database SHACL validation processor", .serialized)
@@ -109,7 +109,7 @@ struct DatabaseSHACLValidationProcessorTests {
             iri: "urn:test:shacl-ontology",
             classes: [
                 OWLClass(iri: "urn:Person"),
-                OWLClass(iri: "urn:Employee")
+                OWLClass(iri: "urn:Employee"),
             ]
         )
         ontology.axioms = [
@@ -236,22 +236,25 @@ struct DatabaseSHACLValidationProcessorTests {
             ),
             configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-            entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self)]
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseSHACLStatement.self)]
             ),
             security: .testingDisabled
         )
         guard let descriptor = try DatabaseSHACLStatement.indexDescriptors.first(
             where: {
-                $0.kindIdentifier
-                    == IndexDefinition.rdfDataset.identifier
-            }
-        ) else {
+                    $0.type == .graph(.rdf)
+                }
+            ) else {
             throw SHACLValidationSetupError.missingRDFDatasetIndex
         }
         let readableIndex = try await container.testBaseContext()
             .indexQueryContext.withReadableIndex(
                 named: descriptor.name,
-                kindIdentifier: descriptor.kind.identifier,
+                indexType: descriptor.type,
                 for: DatabaseSHACLStatement.self
             ) { index, _ in
                 index
@@ -334,7 +337,7 @@ struct DatabaseSHACLValidationProcessorTests {
             ("alice-name", "urn:Alice", "urn:name", "Alice"),
             ("alice-knows", "urn:Alice", "urn:knows", "urn:Bob"),
             ("bob-type", "urn:Bob", Self.rdfType, "urn:Employee"),
-            ("bob-name", "urn:Bob", "urn:name", "Bob")
+            ("bob-name", "urn:Bob", "urn:name", "Bob"),
         ]
         let context = validationContext.container.testBaseContext()
         for (id, subject, predicate, object) in statements {
@@ -474,7 +477,7 @@ struct DatabaseSHACLValidationProcessorTests {
                         datatype: Self.xsdInteger
                     )
                 )
-            )
+            ),
         ]
     }
 
@@ -509,7 +512,7 @@ struct DatabaseSHACLValidationProcessorTests {
                 knowsProperty,
                 Self.shClass,
                 try RDFTerm.iri(validating: "urn:Person")
-            )
+            ),
         ]
     }
 
@@ -539,7 +542,7 @@ struct DatabaseSHACLValidationProcessorTests {
                 try RDFTerm.iri(validating: "urn:Dave"),
                 "urn:manages",
                 try RDFTerm.iri(validating: "urn:Bob")
-            )
+            ),
         ]
     }
 
@@ -612,7 +615,7 @@ struct DatabaseSHACLValidationProcessorTests {
                         datatype: Self.xsdInteger
                     )
                 )
-            )
+            ),
         ]
     }
 
@@ -635,7 +638,7 @@ struct DatabaseSHACLValidationProcessorTests {
         requestPayload: ByteString = []
     ) -> DatabaseOperationContext {
         let baseContext = container.testBaseContext()
-#if MultipleBases
+#if MultiBase
         return DatabaseOperationContext(
             container: container,
             target: .base(baseContext.baseID),
