@@ -33,8 +33,8 @@ semantics, storage behavior, client UX, profiles, or client credentials.
 ## Verification
 
 Use `scripts/xcode-test-harness` with the pinned Swift snapshot. Its reviewed
-standard contract is 295 logical tests. An isolated `MultiBase` graph uses
-`DATABASE_SERVER_TEST_TRAITS=MultiBase` and requires 321 tests. The harness
+standard contract is 296 logical tests. An isolated `MultiBase` graph uses
+`DATABASE_SERVER_TEST_TRAITS=MultiBase` and requires 322 tests. The harness
 selects that trait in an isolated source copy and derives the expected count.
 Both runs require zero failures, skips, expected failures, runtime warnings,
 and internal tool errors. Cover HTTP, HTTPS with a real TLS

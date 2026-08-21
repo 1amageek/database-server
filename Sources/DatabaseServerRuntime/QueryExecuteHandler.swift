@@ -6,6 +6,7 @@ import DatabaseMutationOperations
 import DatabaseQueryOperations
 import DatabaseCommandOperations
 import DatabaseOperationCore
+@_spi(DatabaseExecution) import Database
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
@@ -312,12 +313,20 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     throw DatabaseQueryExecutionError.invalidContinuation
                 }
             }
+            let preparedQuery = try await databaseContext
+                .prepareSQLSelectForCanonicalExecution(
+                    query,
+                    workMeter: workMeter,
+                    transaction: transaction,
+                    structuralLimits: structuralLimits
+                )
             if !transaction.capabilities.historicalReadVersion {
                 guard cursor == nil else {
                     throw DatabaseQueryExecutionError.invalidContinuation
                 }
                 return try await executeDurableSnapshotSelect(
-                    query,
+                    originalQuery: query,
+                    preparedQuery: preparedQuery,
                     request: request,
                     context: context,
                     databaseContext: databaseContext,
@@ -328,8 +337,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     structuralLimits: structuralLimits
                 )
             }
-            let response = try await databaseContext.executeCanonicalQuery(
-                query,
+            let response = try await preparedQuery.execute(
+                in: databaseContext,
                 execution: try Self.readExecution(
                     for: request,
                     continuation: cursor?.continuation,
@@ -339,7 +348,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     continuationSnapshotIsStable: transaction.capabilities
                         .historicalReadVersion
                 ),
-                graphPartitions: request.graphPartitions
+                graphPartitions: request.graphPartitions,
+                transaction: transaction
             )
             let continuation = try response.continuation.map {
                 try Self.encodeCursor(
@@ -363,7 +373,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
     }
 
     private func executeDurableSnapshotSelect(
-        _ query: SelectQuery,
+        originalQuery: SelectQuery,
+        preparedQuery: DatabasePreparedSQLSelect,
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         databaseContext: DatabaseContext,
@@ -373,8 +384,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         workMeter: DatabaseWorkMeter,
         structuralLimits: QueryStructuralLimits
     ) async throws -> QueryRowPage {
-        let firstResponse = try await databaseContext.executeCanonicalQuery(
-            query,
+        let firstResponse = try await preparedQuery.execute(
+            in: databaseContext,
             execution: try Self.readExecution(
                 for: request,
                 continuation: nil,
@@ -399,7 +410,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             )
         }
         let queryFingerprint = try DatabaseQuerySnapshotStore.queryFingerprint(
-            query: query,
+            query: originalQuery,
             request: request,
             limits: context.wireLimits
         )
@@ -425,8 +436,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             var totalPayloadBytes: UInt64 = 0
 
             while true {
-                let response = try await databaseContext.executeCanonicalQuery(
-                    query,
+                let response = try await preparedQuery.execute(
+                    in: databaseContext,
                     execution: try Self.readExecution(
                         for: request,
                         continuation: engineContinuation.bytes,

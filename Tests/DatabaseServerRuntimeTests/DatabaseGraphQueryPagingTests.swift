@@ -983,6 +983,60 @@ struct DatabaseGraphQueryPagingTests {
         #expect(allRowsContainProjectedValues)
     }
 
+    @Test("SQL SPARQL function uses the canonical endpoint transaction")
+    func sqlSPARQLFunctionUsesEndpointTransaction() async throws {
+        let container = try await makeContainer()
+        let entity = DatabaseGraphQueryStatement.persistableType
+        let sparqlFunction = FunctionCall(
+            name: "SPARQL",
+            arguments: [
+                .column(ColumnRef(entity)),
+                .literal(
+                    .string(
+                        "SELECT ?s WHERE { ?s <urn:source> ?object }"
+                    )
+                ),
+            ]
+        )
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.column(ColumnRef("id")), alias: "id")
+            ]),
+            source: .table(TableRef(entity)),
+            filter: .inList(
+                .column(ColumnRef("subject")),
+                values: [.function(sparqlFunction)]
+            ),
+            orderBy: [SortKey(.column(ColumnRef("id")))]
+        )
+        let firstPage = try rowPage(
+            try await execute(
+                request(.select(query), limit: 1),
+                container: container
+            )
+        )
+        let continuation = try #require(firstPage.continuation)
+        let secondPage = try rowPage(
+            try await execute(
+                request(
+                    .select(query),
+                    limit: 1,
+                    continuation: continuation
+                ),
+                container: container
+            )
+        )
+
+        #expect(firstPage.rows.count == 1)
+        #expect(secondPage.rows.count == 1)
+        #expect(secondPage.continuation == nil)
+        #expect(
+            (firstPage.rows + secondPage.rows).compactMap {
+                rowValue(named: "id", in: $0, columns: firstPage.columns)
+            } == [.string("source-1"), .string("source-2")]
+        )
+    }
+
     private func makeContainer() async throws -> DBContainer {
         try await makeContainer(engine: InMemoryEngine())
     }

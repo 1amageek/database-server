@@ -123,7 +123,7 @@ struct DatabaseQueryContinuationEndpointTests {
         let endpoint = try await makeEndpoint()
         let first = try await successfulPage(
             request(
-                query: tableQuery(),
+                query: partitionedGraphQuery(),
                 graphPartitions: try partition("calendar-a"),
                 pageLimit: 1
             ),
@@ -134,7 +134,7 @@ struct DatabaseQueryContinuationEndpointTests {
 
         let error = try await remoteFailure(
             request(
-                query: tableQuery(),
+                query: partitionedGraphQuery(),
                 graphPartitions: try partition("calendar-b"),
                 pageLimit: 1,
                 continuation: continuation
@@ -221,7 +221,10 @@ struct DatabaseQueryContinuationEndpointTests {
             entityRuntimes: [
                 try DatabaseFrameworkRuntime.entity(
                     DatabaseEndpointEntity.self
-                )
+                ),
+                try DatabaseFrameworkRuntime.entity(
+                    DatabasePartitionedGraphQueryStatement.self
+                ),
             ]
         )
         let publication = try await container.publishSchema(
@@ -306,7 +309,8 @@ struct DatabaseQueryContinuationEndpointTests {
         let container = try await DBContainer.open(
             for: try Schema(
                 entities: [
-                    try DatabaseEndpointEntity.schemaEntity
+                    try DatabaseEndpointEntity.schemaEntity,
+                    try DatabasePartitionedGraphQueryStatement.schemaEntity,
                 ],
                 version: Schema.Version(1, 0, 0)
             ),
@@ -316,7 +320,12 @@ struct DatabaseQueryContinuationEndpointTests {
                     identifier: "database-query-continuation-tests",
                     revision: 1
                 ),
-                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self)]
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(DatabaseEndpointEntity.self),
+                    try DatabaseFrameworkRuntime.entity(
+                        DatabasePartitionedGraphQueryStatement.self
+                    ),
+                ]
             ),
             security: .testingDisabled
         )
@@ -331,6 +340,22 @@ struct DatabaseQueryContinuationEndpointTests {
             entity.priority = Int64(index)
             try context.insert(entity)
         }
+        for index in 0..<2 {
+            try context.insert(
+                partitionedGraphStatement(
+                    id: "calendar-a-\(index)",
+                    calendar: "calendar-a",
+                    subject: "urn:calendar-a:\(index)"
+                )
+            )
+        }
+        try context.insert(
+            partitionedGraphStatement(
+                id: "calendar-b-0",
+                calendar: "calendar-b",
+                subject: "urn:calendar-b:0"
+            )
+        )
         try await context.save()
         return container
     }
@@ -340,6 +365,39 @@ struct DatabaseQueryContinuationEndpointTests {
             projection: .all,
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
             distinct: distinct
+        )
+    }
+
+    private func partitionedGraphQuery() -> SelectQuery {
+        SelectQuery(
+            projection: .items([
+                ProjectionItem(.variable(Variable("subject")))
+            ]),
+            source: .graphPattern(
+                .basic([
+                    TriplePattern(
+                        subject: .variable("subject"),
+                        predicate: .iri("urn:calendar-entry"),
+                        object: .variable("object")
+                    )
+                ])
+            ),
+            orderBy: [SortKey(.variable(Variable("subject")))]
+        )
+    }
+
+    private func partitionedGraphStatement(
+        id: String,
+        calendar: String,
+        subject: String
+    ) throws -> DatabasePartitionedGraphQueryStatement {
+        DatabasePartitionedGraphQueryStatement(
+            id: id,
+            calendar: calendar,
+            subject: try .iri(validating: subject),
+            predicate: try .iri(validating: "urn:calendar-entry"),
+            object: try .iri(validating: "urn:event:\(id)"),
+            graph: nil
         )
     }
 

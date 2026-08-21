@@ -509,6 +509,11 @@ struct DatabaseErrorMapperTests {
                     .internalFailure,
                     "MUTATION_SCHEMA_INVALID"
                 ),
+                (
+                    DatabaseEntityMutationError.workMeterMismatch,
+                    .internalFailure,
+                    "MUTATION_RUNTIME_FAILURE"
+                ),
             ],
             context: context
         )

@@ -91,7 +91,7 @@ inject_testing_runtime() {
 
 reject_internal_tool_errors() {
   local log_path="$1"
-  if rg -n \
+  if grep -En \
       'Internal Error:|LLVM Profile Error:|warning: input verification failed' \
       "$log_path" >&2; then
     echo "error: internal tool failure detected in $log_path" >&2
@@ -102,15 +102,15 @@ reject_internal_tool_errors() {
 summary_number() {
   local summary="$1"
   local key="$2"
-  printf '%s' "$summary" | jq -er ".${key}"
+  printf '%s' "$summary" | plutil -extract "$key" raw -
 }
 
 case "$TEST_TRAITS" in
   "")
-    default_expected_test_count=295
+    default_expected_test_count=296
     ;;
   "MultiBase")
-    default_expected_test_count=321
+    default_expected_test_count=322
     ;;
   *)
     echo "error: DATABASE_SERVER_TEST_TRAITS must be empty or MultiBase" >&2
@@ -119,7 +119,7 @@ case "$TEST_TRAITS" in
 esac
 EXPECTED_TEST_COUNT="${DATABASE_SERVER_EXPECTED_TEST_COUNT:-$default_expected_test_count}"
 
-for command in cmp jq xcodebuild xcrun plutil perl rg rsync tee; do
+for command in cmp grep xcodebuild xcrun plutil perl rsync tee; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 1
@@ -136,7 +136,7 @@ xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swift --version
 xcodebuild -version
 
 has_local_dependencies=false
-if rg -n '\.package\(path:' "$ROOT_DIR/Package.swift" >/dev/null; then
+if grep -En '\.package\(path:' "$ROOT_DIR/Package.swift" >/dev/null; then
   has_local_dependencies=true
   if [[ "${DATABASE_SERVER_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]]; then
     echo "error: release verification requires URL dependencies" >&2
@@ -226,7 +226,7 @@ set +e
 build_status=$?
 set -e
 reject_internal_tool_errors "$build_log"
-if ! rg -F "SWIFT_EXEC = $PINNED_SWIFTC" "$build_log" >/dev/null; then
+if ! grep -F "SWIFT_EXEC = $PINNED_SWIFTC" "$build_log" >/dev/null; then
   echo "error: Xcode did not record the pinned Swift compiler" >&2
   exit 1
 fi
@@ -272,7 +272,7 @@ passed_count="$(summary_number "$summary" passedTests)"
 failed_count="$(summary_number "$summary" failedTests)"
 skipped_count="$(summary_number "$summary" skippedTests)"
 expected_failure_count="$(summary_number "$summary" expectedFailures)"
-runtime_warning_count="$(printf '%s' "$summary" | jq -er '.runtimeWarnings | length')"
+runtime_warning_count="$(summary_number "$summary" runtimeWarnings)"
 if (( total_count != EXPECTED_TEST_COUNT \
     || passed_count != EXPECTED_TEST_COUNT \
     || failed_count != 0 \

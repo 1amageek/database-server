@@ -1248,6 +1248,9 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .invalidCompiledSchema:
             category = .internalFailure
             code = "MUTATION_SCHEMA_INVALID"
+        case .workMeterMismatch:
+            category = .internalFailure
+            code = "MUTATION_RUNTIME_FAILURE"
         case .fieldsRequired, .fieldsMustBeEmptyForDelete:
             category = .invalidRequest
             code = "INVALID_MUTATION_FIELDS"

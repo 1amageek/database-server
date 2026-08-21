@@ -91,7 +91,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0819.1",
+            revision: "62ad188459ae95f419b2fd623f3926f03066bb50",
             traits: frameworkTraits
         ),
         .package(
@@ -357,6 +357,7 @@ let package = Package(
                 ),
                 .product(name: "DatabaseEngine", package: "database-framework"),
                 .product(name: "DatabaseRuntime", package: "database-framework"),
+                .product(name: "Database", package: "database-framework"),
                 .product(
                     name: "GraphIndex",
                     package: "database-framework",

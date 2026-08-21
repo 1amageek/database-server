@@ -78,7 +78,6 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
                     MutationExecuteOperation.Result.entities(
                         try await entityMutationExecutor.execute(
                             prepared.changes,
-                            preconditions: request.preconditions,
                             workMeter: prepared.workMeter,
                             transaction: transactionContext
                         )
@@ -142,6 +141,6 @@ public struct MutationExecuteHandler: DatabaseOperationEndpointHandler {
 }
 
 private struct PreparedEntityMutation: Sendable {
-    let changes: [DatabaseEntityMutationExecutor.PreparedChange]
+    let changes: DatabasePreparedEntityMutation
     let workMeter: DatabaseWorkMeter
 }
