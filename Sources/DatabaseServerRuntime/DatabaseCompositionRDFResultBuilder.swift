@@ -454,6 +454,7 @@ actor DatabaseCompositionRDFResultBuilder {
     private func publish() async throws -> RDFGraphPage {
         guard firstPageBuffer != nil else {
             let page = try makePage(currentPageBuffer, continuation: nil)
+            try recordOutput(page)
             if let writeReservation {
                 try await snapshotStore.abortWrite(writeReservation)
             }
@@ -485,6 +486,7 @@ actor DatabaseCompositionRDFResultBuilder {
                 pageID: firstContinuationPageID
             )
         )
+        try recordOutput(firstPage)
         try await snapshotStore.commitWrite(
             writeReservation,
             pageCount: continuationPageCount,
@@ -550,6 +552,23 @@ actor DatabaseCompositionRDFResultBuilder {
         currentPageBuffer.release()
         currentPageBuffer = PageBuffer()
         self.currentPageID = nextPageID
+    }
+
+    /// Claims the response page against the request's output budget.
+    ///
+    /// The claim is made while the write reservation is still live, so a
+    /// refused or cancelled claim aborts the reservation instead of leaving a
+    /// committed manifest whose continuation was never returned to a caller.
+    private func recordOutput(_ page: RDFGraphPage) throws {
+        guard let quadCount = UInt32(exactly: page.quadCount) else {
+            throw DatabaseWorkLimitError.maximumRows(
+                stage: .resultMaterialization,
+                consumed: workMeter.consumedRows,
+                requested: UInt32.max,
+                maximum: workMeter.budget.maximumRows
+            )
+        }
+        try workMeter.recordOutputRows(quadCount)
     }
 
     private func makePage(

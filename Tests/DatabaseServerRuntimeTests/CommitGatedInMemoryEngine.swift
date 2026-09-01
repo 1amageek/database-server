@@ -46,20 +46,47 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         }
     }
 
-    fileprivate final class CommitGateState: Sendable {
-        private let gate = Mutex<CommitGate?>(nil)
+    /// The kind of commit a gate waits for.
+    ///
+    /// A gate matches one kind so an unrelated commit on the same engine
+    /// cannot consume it.
+    enum CommitKind: Sendable {
+        case mutating
+        case readOnly
 
-        func arm() -> CommitGate {
+        fileprivate func matches(containsMutation: Bool) -> Bool {
+            switch self {
+            case .mutating: containsMutation
+            case .readOnly: !containsMutation
+            }
+        }
+    }
+
+    fileprivate final class CommitGateState: Sendable {
+        private struct ArmedGate: Sendable {
+            let gate: CommitGate
+            let kind: CommitKind
+        }
+
+        private let armed = Mutex<ArmedGate?>(nil)
+
+        func arm(_ kind: CommitKind) -> CommitGate {
             let newGate = CommitGate()
-            gate.withLock { $0 = newGate }
+            armed.withLock {
+                $0 = ArmedGate(gate: newGate, kind: kind)
+            }
             return newGate
         }
 
-        func take() -> CommitGate? {
-            gate.withLock { gate in
-                let current = gate
-                gate = nil
-                return current
+        func take(containsMutation: Bool) -> CommitGate? {
+            armed.withLock { armed in
+                guard let current = armed,
+                      current.kind.matches(containsMutation: containsMutation)
+                else {
+                    return nil
+                }
+                armed = nil
+                return current.gate
             }
         }
     }
@@ -152,8 +179,9 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         }
 
         func commit() async throws {
-            if containsMutation.withLock({ $0 }),
-               let gate = commitGateState.take() {
+            if let gate = commitGateState.take(
+                containsMutation: containsMutation.withLock({ $0 })
+            ) {
                 // A dispatched commit has an authoritative backend outcome.
                 // The gate models commit work that cannot be aborted.
                 await gate.enterAndWait()
@@ -244,7 +272,16 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
     }
 
     func suspendNextMutatingCommit() -> CommitGate {
-        commitGateState.arm()
+        commitGateState.arm(.mutating)
+    }
+
+    /// Suspends the next read-only commit.
+    ///
+    /// A read-only transaction commits without mutating storage, so this is
+    /// the seam that holds a caller between a completed read and the work the
+    /// read result decides to perform. A mutating commit never consumes it.
+    func suspendNextReadOnlyCommit() -> CommitGate {
+        commitGateState.arm(.readOnly)
     }
 
     func createTransaction() throws -> CommitGatedTransaction {

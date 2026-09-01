@@ -649,6 +649,81 @@ struct DatabaseQueryHistoricalContinuationStoreTests {
         #expect(replay.continuation == nil)
     }
 
+    @Test(
+        "expired historical continuation cleanup survives caller cancellation",
+        .timeLimit(.minutes(1))
+    )
+    func expiredContinuationCleanupSurvivesCallerCancellation() async throws {
+        // The expiry branch releases the reservation it has just found
+        // expired. Every commit is dispatched from an unstructured task, so
+        // cancelling the caller while its manifest read commits does not
+        // cancel that read: the load still reaches the expiry branch, and the
+        // only remaining cancellation observation point is the cleanup
+        // transaction's own pre-commit check. Cleanup owned by the cancelled
+        // caller dies there and leaks the reservation; detached cleanup
+        // completes and the manifest is gone.
+        let engine = CommitGatedInMemoryEngine()
+        let container = try await makeContainer(storageEngine: engine)
+        defer { await container.shutdown() }
+        let clock = try FixedClock()
+        let store = makeStore(
+            container: container,
+            clock: clock,
+            identifiers: IdentifierSequence([50, 51])
+        )
+        let fingerprint = ByteString(repeating: 0xC7, count: 32)
+        let lease = try await executionStorage(for: container)
+        let authorization = try principal(
+            roles: ["reader"],
+            tenant: "tenant-a"
+        )
+        let reservation = try await store.beginWrite(
+            for: lease,
+            schemaGeneration: container.schemaGeneration,
+            queryFingerprint: fingerprint,
+            authorization: authorization
+        )
+        let token = try await store.publishHistoricalQuery(
+            QueryContinuation([0x80]),
+            readVersion: 21,
+            in: reservation
+        )
+        try clock.advance(seconds: 15 * 60 + 1)
+
+        let gate = engine.suspendNextReadOnlyCommit()
+        let load = Task {
+            try await store.loadHistoricalQuery(
+                continuation: token,
+                lease: lease,
+                schemaGeneration: container.schemaGeneration,
+                queryFingerprint: fingerprint,
+                authorization: authorization
+            )
+        }
+        await gate.waitUntilStarted()
+        load.cancel()
+        await gate.release()
+
+        do {
+            _ = try await load.value
+            Issue.record("Expected the historical continuation to expire")
+        } catch let error as DatabaseQueryExecutionError {
+            guard case .querySnapshotExpired = error else {
+                Issue.record("Expected querySnapshotExpired, got \(error)")
+                return
+            }
+        }
+
+        let reloaded = try await store.loadHistoricalQuery(
+            continuation: token,
+            lease: lease,
+            schemaGeneration: container.schemaGeneration,
+            queryFingerprint: fingerprint,
+            authorization: authorization
+        )
+        #expect(reloaded == nil)
+    }
+
     /// Resolves the execution lease the store binds its continuation identity
     /// to. `MultiBase` reads the lease from the active data-root context, so it
     /// is taken inside one bounded data operation on the fixed test Base.
@@ -661,13 +736,15 @@ struct DatabaseQueryHistoricalContinuationStoreTests {
         }
     }
 
-    private func makeContainer() async throws -> DBContainer {
+    private func makeContainer(
+        storageEngine: any StorageEngine = InMemoryEngine()
+    ) async throws -> DBContainer {
         try await DBContainer.open(
             for: try Schema(
                 entities: [try DatabaseEndpointEntity.schemaEntity],
                 version: Schema.Version(1, 0, 0)
             ),
-            configuration: .testing(storageEngine: InMemoryEngine()),
+            configuration: .testing(storageEngine: storageEngine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 executionIdentity: DatabaseExecutionRuntimeIdentity(
                     identifier: "historical-continuation-store-tests",

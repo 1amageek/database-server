@@ -289,6 +289,7 @@ struct DatabaseGraphQueryService: Sendable {
                 continuation: nil,
                 readPoint: readPoint
             )
+            try Self.recordOutput(page, workMeter: workMeter)
         case .historical(
             let graph,
             let readVersion,
@@ -306,15 +307,27 @@ struct DatabaseGraphQueryService: Sendable {
                 queryFingerprint: queryFingerprint,
                 authorization: context.authorization
             )
-            let opaqueContinuation: ByteString
             do {
-                opaqueContinuation = try await querySnapshotStore
+                let opaqueContinuation = try await querySnapshotStore
                     .publishHistoricalGraph(
                         readVersion: readVersion,
                         resultFingerprint: resultFingerprint,
                         offset: UInt64(pageLimit),
                         in: reservation
                     )
+                // The published continuation is the page's own identity, so the
+                // response can only be built and accounted for after the
+                // manifest exists. Both stay inside the guarded region: a
+                // cancelled or refused claim here must release the snapshot
+                // instead of leaving a manifest no caller can ever resume.
+                let published = try makeOutputPage(
+                    graph,
+                    range: 0..<pageLimit,
+                    continuation: opaqueContinuation,
+                    readPoint: readPoint
+                )
+                try Self.recordOutput(published, workMeter: workMeter)
+                page = published
             } catch {
                 let operationError = error
                 do {
@@ -327,12 +340,6 @@ struct DatabaseGraphQueryService: Sendable {
                 }
                 throw operationError
             }
-            page = try makeOutputPage(
-                graph,
-                range: 0..<pageLimit,
-                continuation: opaqueContinuation,
-                readPoint: readPoint
-            )
         case .captured(let graph, let readPoint):
             page = try await spoolNonHistoricalGraph(
                 graph,
@@ -345,7 +352,6 @@ struct DatabaseGraphQueryService: Sendable {
                 workMeter: workMeter
             )
         }
-        try Self.recordOutput(page, workMeter: workMeter)
         return page
     }
 
@@ -428,6 +434,7 @@ struct DatabaseGraphQueryService: Sendable {
                 ),
                 readPoint: readPoint
             )
+            try Self.recordOutput(firstPage, workMeter: workMeter)
             return firstPage
         } catch {
             let operationError = error

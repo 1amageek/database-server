@@ -1498,7 +1498,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             throw DatabaseQueryExecutionError.querySnapshotStale
         }
         if loaded.0.expiresAt <= clock.now {
-            try await clearReserved(
+            try await releaseReserved(
                 snapshotID: snapshotID,
                 principalDigest: loaded.0.principalDigest,
                 slot: loaded.0.slot,
@@ -2036,18 +2036,42 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         )
     }
 
+    /// Releases a reservation and every key the snapshot owns.
+    ///
+    /// The reservation may already be published: `releaseReserved` clears the
+    /// whole snapshot subspace, the expiry index entry, and the principal's
+    /// active slot when that slot still names this snapshot. Publication writes
+    /// only inside that subspace and leaves the slot and expiry it reserved
+    /// unchanged, so aborting after a successful commit removes exactly the
+    /// state the caller published and nothing a newer snapshot owns.
     package func abortWrite(
         _ reservation: WriteReservation
     ) async throws {
-        // Cancellation must not cancel cleanup itself. If the process crashes,
-        // the reservation and expiry index let startup or the durable scheduler
-        // finish the same idempotent cleanup.
+        try await releaseReserved(
+            snapshotID: reservation.snapshotID,
+            principalDigest: reservation.principalDigest,
+            slot: reservation.slot,
+            expiresAt: reservation.expiresAt
+        )
+    }
+
+    /// Clears a reservation outside the cancellation scope that released it.
+    ///
+    /// Cancellation must not cancel cleanup itself. If the process crashes, the
+    /// reservation and expiry index let startup or the durable scheduler finish
+    /// the same idempotent cleanup.
+    private func releaseReserved(
+        snapshotID: ByteString,
+        principalDigest: ByteString,
+        slot: UInt8,
+        expiresAt: Timestamp
+    ) async throws {
         try await Task.detached {
             try await self.clearReserved(
-                snapshotID: reservation.snapshotID,
-                principalDigest: reservation.principalDigest,
-                slot: reservation.slot,
-                expiresAt: reservation.expiresAt
+                snapshotID: snapshotID,
+                principalDigest: principalDigest,
+                slot: slot,
+                expiresAt: expiresAt
             )
         }.value
     }
@@ -2411,14 +2435,12 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             throw DatabaseQueryExecutionError.querySnapshotStale
         }
         if manifest.expiresAt <= now {
-            try await Task.detached {
-                try await self.clearReserved(
-                    snapshotID: snapshotID,
-                    principalDigest: manifest.principalDigest,
-                    slot: manifest.slot,
-                    expiresAt: manifest.expiresAt
-                )
-            }.value
+            try await releaseReserved(
+                snapshotID: snapshotID,
+                principalDigest: manifest.principalDigest,
+                slot: manifest.slot,
+                expiresAt: manifest.expiresAt
+            )
             throw DatabaseQueryExecutionError.querySnapshotExpired
         }
         let response: QueryExecuteOperation.Response

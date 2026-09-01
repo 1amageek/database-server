@@ -249,7 +249,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 queryFingerprint: queryFingerprint,
                 snapshotStore: querySnapshotStore
             )
-            try Self.recordOutput(page, workMeter: workMeter)
             return page
         }
         #endif
@@ -419,6 +418,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 continuation: nil,
                 readPoint: readPoint
             )
+            try Self.recordOutput(page, workMeter: workMeter)
         case .historical(
             let response,
             let continuation,
@@ -440,14 +440,25 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 ),
                 authorization: context.authorization
             )
-            let opaqueContinuation: ByteString
             do {
-                opaqueContinuation = try await querySnapshotStore
+                let opaqueContinuation = try await querySnapshotStore
                     .publishHistoricalQuery(
                         continuation,
                         readVersion: readVersion,
                         in: reservation
                     )
+                // The published continuation is the page's own identity, so the
+                // response can only be built and accounted for after the
+                // manifest exists. Both stay inside the guarded region: a
+                // cancelled or refused claim here must release the snapshot
+                // instead of leaving a manifest no caller can ever resume.
+                let published = try Self.rowPage(
+                    response,
+                    continuation: opaqueContinuation,
+                    readPoint: readPoint
+                )
+                try Self.recordOutput(published, workMeter: workMeter)
+                page = published
             } catch {
                 let operationError = error
                 do {
@@ -460,11 +471,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 }
                 throw operationError
             }
-            page = try Self.rowPage(
-                response,
-                continuation: opaqueContinuation,
-                readPoint: readPoint
-            )
         case .captured(let rows, let readPoint):
             page = try await executeDurableSnapshotSelect(
                 rows: rows,
@@ -476,7 +482,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 workMeter: workMeter
             )
         }
-        try Self.recordOutput(page, workMeter: workMeter)
         return page
     }
 
@@ -518,11 +523,13 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             let response = QueryResponse(
                 rows: rows.materializePage(0..<firstEnd)
             )
-            return try Self.rowPage(
+            let page = try Self.rowPage(
                 response,
                 continuation: nil,
                 readPoint: readPoint
             )
+            try Self.recordOutput(page, workMeter: workMeter)
+            return page
         }
         guard let querySnapshotStore else {
             throw DatabaseQueryExecutionError.querySnapshotUnavailable(
@@ -588,13 +595,15 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             let firstResponse = QueryResponse(
                 rows: rows.materializePage(0..<firstEnd)
             )
-            return try Self.rowPage(
+            let firstPage = try Self.rowPage(
                 firstResponse,
                 continuation: reservation.continuation(
                     pageID: firstContinuationPageID
                 ),
                 readPoint: readPoint
             )
+            try Self.recordOutput(firstPage, workMeter: workMeter)
+            return firstPage
         } catch {
             let operationError = error
             do {
@@ -724,7 +733,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             queryFingerprint: queryFingerprint,
             snapshotStore: querySnapshotStore
         )
-        try Self.recordOutput(page, workMeter: workMeter)
         return page
     }
 

@@ -271,6 +271,63 @@ struct DatabaseQueryWorkBudgetTests {
         #expect(page.rowCount == 2)
         #expect(page.continuation != nil)
     }
+
+    @Test("a refused output claim releases the durable snapshot reservation")
+    func refusedOutputClaimReleasesTheReservation() async throws {
+        // The durable page spool publishes its manifest before the response
+        // page is charged against the request row budget. A refused claim must
+        // release the reservation it published: otherwise every refused
+        // request leaks one of the principal's active snapshot slots until the
+        // reservation expires, and the principal loses the ability to page.
+        let container = try await makeContainer()
+        // One more than the principal's active snapshot slots, so a leak
+        // exhausts them before the loop ends.
+        for attempt in 0..<9 {
+            do {
+                _ = try await execute(
+                    container: container,
+                    pageLimit: 2,
+                    budget: ExecutionBudget(
+                        maximumRows: 1,
+                        maximumWorkUnits: 1_000,
+                        timeoutMilliseconds: 1_000
+                    )
+                )
+                Issue.record("Expected attempt \(attempt) to exhaust the row budget")
+            } catch DatabaseWorkLimitError.maximumRows(
+                let stage,
+                _,
+                let requested,
+                let maximum
+            ) {
+                #expect(stage == .resultMaterialization)
+                #expect(requested == 2)
+                #expect(maximum == 1)
+            } catch {
+                Issue.record(
+                    "Attempt \(attempt) failed before the page was charged: \(error)"
+                )
+                return
+            }
+        }
+
+        let response = try await execute(
+            container: container,
+            pageLimit: 2,
+            budget: ExecutionBudget(
+                maximumRows: 2,
+                maximumWorkUnits: 1_000,
+                timeoutMilliseconds: 1_000
+            )
+        )
+        guard case .rows(let page) = response else {
+            Issue.record("Expected a row page")
+            return
+        }
+        #expect(page.rowCount == 2)
+        #expect(page.continuation != nil)
+    }
+
     @Test("stable table paging scans only the visible page and one lookahead row")
     func stableTablePageDoesNotRescanTheWholeTable() async throws {
         // Work units mix row admission with the byte-processing quanta charged

@@ -178,9 +178,13 @@ The four supported result modes have the same lifecycle vocabulary:
 - A terminal response performs an atomic terminal transition in control
   storage: required replay/tombstone state is retained within its bound, while
   the principal's active slot is removed from the quota index.
-- Historical query and graph handlers build and account for the final response
-  before requesting terminalization; a completion failure prevents a success
-  response and leaves the continuation retryable.
+- A handler accounts for its response page while the reservation that produced
+  it is still releasable: historical query and graph handlers account before
+  requesting terminalization, and a durable page spool accounts inside the
+  region that aborts the write. A refused output claim releases the published
+  snapshot instead of orphaning a committed manifest and an active slot.
+- A completion failure prevents a success response and leaves the continuation
+  retryable.
 - A terminal or expired transition may never clear a newer snapshot that reused
   the same slot. Cleanup compares snapshot identity before clearing an index.
 - After eight completed snapshots, a ninth request for the same principal must
