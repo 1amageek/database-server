@@ -134,7 +134,7 @@ package final class DatabaseControlExecutor: Sendable {
         transaction: DatabaseTransaction
     ) async throws -> DatabaseSchemaApplicationRecord? {
         try await DatabaseSchemaApplicationStore(
-            controlRoot: container.controlStorage().root
+            controlRoot: container.controlStorage().systemRoot
         ).load(
             idempotencyKey: idempotencyKey,
             transaction: transaction.executionStorageAccess
@@ -146,7 +146,7 @@ package final class DatabaseControlExecutor: Sendable {
         transaction: DatabaseTransaction
     ) async throws {
         try await DatabaseSchemaApplicationStore(
-            controlRoot: container.controlStorage().root
+            controlRoot: container.controlStorage().systemRoot
         ).insert(record, transaction: transaction.executionStorageAccess)
     }
 
@@ -155,7 +155,7 @@ package final class DatabaseControlExecutor: Sendable {
         transaction: DatabaseTransaction
     ) async throws {
         try await DatabaseSchemaApplicationStore(
-            controlRoot: container.controlStorage().root
+            controlRoot: container.controlStorage().systemRoot
         ).finish(job: job, transaction: transaction.executionStorageAccess)
     }
 

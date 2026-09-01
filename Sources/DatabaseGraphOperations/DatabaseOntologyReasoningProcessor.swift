@@ -785,9 +785,8 @@ public struct DatabaseOntologyReasoningProcessor: DatabaseOntologyProcessor {
     }
 
     private func ontologyStore() throws -> OntologyStore {
-        let root = try container.operationDataSubspace(
-            relativePath: ["database-framework", "ontology-index"]
-        )
+        let root = try container.operationSystemRoot()
+            .subspace("ontology")
         return OntologyStore(
             subspace: OntologySubspace(base: root)
         )

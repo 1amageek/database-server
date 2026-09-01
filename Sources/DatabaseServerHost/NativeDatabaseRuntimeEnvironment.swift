@@ -100,7 +100,7 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             let runtime = try await DatabaseHostedRuntime.open(
                 application: application,
                 storageEngine: openedStorage.engine,
-                databaseRoot: openedStorage.databaseRoot,
+                databaseRootPath: openedStorage.databaseRootPath,
                 hostServices: hostServices,
                 requestWireLimits: wireLimits,
                 responseWireLimits: wireLimits
@@ -167,7 +167,7 @@ private extension NativeDatabaseRuntimeEnvironment {
         let topology: DatabaseStorageTopology
         #else
         let engine: any StorageEngine
-        let databaseRoot: StorageKit.Subspace
+        let databaseRootPath: [String]
         #endif
         let backendShutdown: @Sendable () async -> Void
     }
@@ -205,7 +205,7 @@ private extension NativeDatabaseRuntimeEnvironment {
                 domains.append(
                     try DatabaseStorageDomain(
                         id: DatabaseStorageDomain.ID(domain.id),
-                        namespacePath: domain.namespacePath,
+                        rootPath: domain.rootPath,
                         storageEngine: engine
                     )
                 )
@@ -216,8 +216,7 @@ private extension NativeDatabaseRuntimeEnvironment {
                     id: Base.Placement.ID(placement.id),
                     domainID: DatabaseStorageDomain.ID(
                         placement.domainID
-                    ),
-                    path: placement.path
+                    )
                 )
             }
             let topology = try DatabaseStorageTopology(
@@ -304,41 +303,33 @@ private extension NativeDatabaseRuntimeEnvironment {
             #endif
             throw error
         }
-        do {
-            let databaseRoot: StorageKit.Subspace
-            switch configuration {
-            case .engine:
-                databaseRoot = StorageKit.Subspace()
-            case .namespace(let path):
-                databaseRoot = try await engine.resolveOrCreateNamespace(
-                    path: path
-                )
-            }
-            let backendShutdown: @Sendable () async -> Void
-            if usesFoundationDB {
-                #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
-                backendShutdown = { FDBClient.shutdown() }
-                #else
-                preconditionFailure(
-                    "Unavailable FoundationDB backend passed admission"
-                )
-                #endif
-            } else {
-                backendShutdown = {}
-            }
-            return OpenedStorage(
-                engine: engine,
-                databaseRoot: databaseRoot,
-                backendShutdown: backendShutdown
-            )
-        } catch {
-            engine.requestShutdown()
-            await engine.waitUntilShutdown()
-            #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
-            if usesFoundationDB { FDBClient.shutdown() }
-            #endif
-            throw error
+        // The database root is a Directory path the framework resolves, so no
+        // fallible work remains between opening the engine and transferring it.
+        // Ownership of the opened engine passes to the caller unconditionally.
+        let databaseRootPath: [String]
+        switch configuration {
+        case .engine:
+            databaseRootPath = []
+        case .namespace(let path):
+            databaseRootPath = path
         }
+        let backendShutdown: @Sendable () async -> Void
+        if usesFoundationDB {
+            #if DATABASE_SERVER_FOUNDATIONDB_BACKEND
+            backendShutdown = { FDBClient.shutdown() }
+            #else
+            preconditionFailure(
+                "Unavailable FoundationDB backend passed admission"
+            )
+            #endif
+        } else {
+            backendShutdown = {}
+        }
+        return OpenedStorage(
+            engine: engine,
+            databaseRootPath: databaseRootPath,
+            backendShutdown: backendShutdown
+        )
     }
     #endif
 

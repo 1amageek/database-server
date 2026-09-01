@@ -159,7 +159,7 @@ struct DatabaseServerHostConfigurationTests {
         )
         #expect(loaded.routing.databaseID == "main")
         #if DATABASE_SERVER_HOST_MULTI_BASE
-        #expect(loaded.formatVersion == 2)
+        #expect(loaded.formatVersion == 4)
         #expect(loaded.domains.first?.storage.kind == .sqlite)
         #else
         #expect(loaded.formatVersion == 3)
@@ -212,7 +212,7 @@ struct DatabaseServerHostConfigurationTests {
         }
         let configurationURL = directory.appendingPathComponent("server.json")
         let document = Data(
-            (#"{"formatVersion":2,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory","unexpected":true}}}]"#
+            (#"{"formatVersion":4,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory","unexpected":true}}}]"#
                 + placementDocumentFragment
                 + #", "host":"127.0.0.1","port":7878,"routing":{"databaseID":"main"},"tokenRegistryPath":"/tmp/tokens.json"}"#).utf8
         )
@@ -230,7 +230,7 @@ struct DatabaseServerHostConfigurationTests {
             "duplicate-domain.json"
         )
         let duplicateDomainDocument = Data(
-            (#"{"formatVersion":2,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory"}}},{"id":"primary","namespace":["database","other"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory"}}}]"#
+            (#"{"formatVersion":4,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory"}}},{"id":"primary","namespace":["database","other"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory"}}}]"#
                 + placementDocumentFragment
                 + #", "host":"127.0.0.1","port":7878,"routing":{"databaseID":"main"},"tokenRegistryPath":"/tmp/tokens.json"}"#).utf8
         )
@@ -256,7 +256,7 @@ struct DatabaseServerHostConfigurationTests {
             "missing-domain.json"
         )
         let missingDomainDocument = Data(
-            #"{"formatVersion":2,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory"}}}],"placements":[{"id":"default","domain":"missing","path":["bases"]}],"defaultPlacement":"default","host":"127.0.0.1","port":7878,"routing":{"databaseID":"main"},"tokenRegistryPath":"/tmp/tokens.json"}"#.utf8
+            #"{"formatVersion":4,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory"}}}],"placements":[{"id":"default","domain":"missing"}],"defaultPlacement":"default","host":"127.0.0.1","port":7878,"routing":{"databaseID":"main"},"tokenRegistryPath":"/tmp/tokens.json"}"#.utf8
         )
         try DatabaseServerConfigurationFile.create(
             missingDomainDocument,
@@ -269,6 +269,27 @@ struct DatabaseServerHostConfigurationTests {
                 from: missingDomainURL
             )
         }
+
+        let placementPathURL = directory.appendingPathComponent(
+            "placement-path.json"
+        )
+        let placementPathDocument = Data(
+            #"{"formatVersion":4,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"memory"}}}],"placements":[{"id":"default","domain":"primary","path":["bases"]}],"defaultPlacement":"default","host":"127.0.0.1","port":7878,"routing":{"databaseID":"main"},"tokenRegistryPath":"/tmp/tokens.json"}"#.utf8
+        )
+        try DatabaseServerConfigurationFile.create(
+            placementPathDocument,
+            at: placementPathURL
+        )
+        // A Base Partition's address is fixed below its domain's database
+        // root, so a declared placement path is rejected instead of loaded
+        // and discarded.
+        #expect(
+            throws: DatabaseServerLaunchConfigurationError.invalidDocument
+        ) {
+            _ = try DatabaseServerLaunchConfiguration.load(
+                from: placementPathURL
+            )
+        }
         #endif
 
         let sqlitePath = directory.appendingPathComponent("shared.sqlite").path
@@ -276,7 +297,7 @@ struct DatabaseServerHostConfigurationTests {
             "duplicate-backend.json"
         )
         let duplicateBackendDocument = Data(
-            (#"{"formatVersion":2,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"file","path":"\#(sqlitePath)"}}},{"id":"secondary","namespace":["database","secondary"],"storage":{"kind":"sqlite","sqlite":{"mode":"file","path":"\#(sqlitePath)"}}}]"#
+            (#"{"formatVersion":4,"controlDomain":"primary","domains":[{"id":"primary","namespace":["database","main"],"storage":{"kind":"sqlite","sqlite":{"mode":"file","path":"\#(sqlitePath)"}}},{"id":"secondary","namespace":["database","secondary"],"storage":{"kind":"sqlite","sqlite":{"mode":"file","path":"\#(sqlitePath)"}}}]"#
                 + placementDocumentFragment
                 + #", "host":"127.0.0.1","port":7878,"routing":{"databaseID":"main"},"tokenRegistryPath":"/tmp/tokens.json"}"#).utf8
         )
@@ -301,7 +322,7 @@ struct DatabaseServerHostConfigurationTests {
 
 private var placementDocumentFragment: String {
     #if DATABASE_SERVER_HOST_MULTI_BASE
-    #", "placements":[{"id":"default","domain":"primary","path":["bases"]}],"defaultPlacement":"default""#
+    #", "placements":[{"id":"default","domain":"primary"}],"defaultPlacement":"default""#
     #else
     ""
     #endif
@@ -322,11 +343,7 @@ private func launchConfiguration(
             ),
         ],
         placements: [
-            .init(
-                id: "default",
-                domain: "primary",
-                path: ["bases"]
-            ),
+            .init(id: "default", domain: "primary"),
         ],
         defaultPlacement: "default",
         routing: .init(databaseID: "main"),

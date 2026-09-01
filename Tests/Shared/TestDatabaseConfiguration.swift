@@ -56,14 +56,13 @@ extension DBConfiguration {
         let domainID = try DatabaseStorageDomain.ID("test-primary")
         let domain = try DatabaseStorageDomain(
             id: domainID,
-            namespacePath: ["database", databaseIdentifier],
+            rootPath: ["database", databaseIdentifier],
             storageEngine: storageEngine
         )
         let placementID = try Base.Placement.ID("test-default")
-        let placement = try DatabaseStoragePlacement(
+        let placement = DatabaseStoragePlacement(
             id: placementID,
-            domainID: domainID,
-            path: ["bases"]
+            domainID: domainID
         )
         let topology = try DatabaseStorageTopology(
             controlDomainID: domainID,
@@ -88,10 +87,10 @@ extension DBConfiguration {
             metrics: metrics
         )
         #else
-        return DBConfiguration(
+        return try DBConfiguration(
             name: name,
             storageEngine: storageEngine,
-            databaseRoot: Subspace(),
+            databaseRootPath: [],
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             itemStorage: itemStorage,
@@ -116,15 +115,14 @@ extension DatabaseStorageTopology {
             domains: [
                 try DatabaseStorageDomain(
                     id: domainID,
-                    namespacePath: ["database", "test"],
+                    rootPath: ["database", "test"],
                     storageEngine: storageEngine
                 )
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
+                    domainID: domainID
                 )
             ],
             defaultPlacementID: placementID

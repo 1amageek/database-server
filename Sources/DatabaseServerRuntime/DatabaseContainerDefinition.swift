@@ -29,7 +29,7 @@ public struct DatabaseContainerDefinition: Sendable {
     #else
     private let openContainer: @Sendable (
         any StorageEngine,
-        Subspace
+        [String]
     ) async throws -> DBContainer
     #endif
 
@@ -71,13 +71,13 @@ public struct DatabaseContainerDefinition: Sendable {
             )
         }
         #else
-        self.openContainer = { storageEngine, databaseRoot in
+        self.openContainer = { storageEngine, databaseRootPath in
             try await DBContainer.open(
                 for: schema,
                 configuration: DBConfiguration(
                     name: databaseName,
                     storageEngine: storageEngine,
-                    databaseRoot: databaseRoot,
+                    databaseRootPath: databaseRootPath,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
                     itemStorage: itemStorage,
@@ -131,14 +131,14 @@ public struct DatabaseContainerDefinition: Sendable {
             )
         }
         #else
-        self.openContainer = { storageEngine, databaseRoot in
+        self.openContainer = { storageEngine, databaseRootPath in
             try await DBContainer.open(
                 for: schema,
                 migrationPlan: migrationPlan,
                 configuration: DBConfiguration(
                     name: databaseName,
                     storageEngine: storageEngine,
-                    databaseRoot: databaseRoot,
+                    databaseRootPath: databaseRootPath,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
                     itemStorage: itemStorage,
@@ -191,12 +191,12 @@ public struct DatabaseContainerDefinition: Sendable {
             }
         }
         #else
-        self.openContainer = { storageEngine, databaseRoot in
+        self.openContainer = { storageEngine, databaseRootPath in
             try await DBContainer.openRestoringSchema(
                 configuration: DBConfiguration(
                     name: databaseName,
                     storageEngine: storageEngine,
-                    databaseRoot: databaseRoot,
+                    databaseRootPath: databaseRootPath,
                     monotonicClock: monotonicClock,
                     wallClock: wallClock,
                     itemStorage: itemStorage,
@@ -228,9 +228,9 @@ public struct DatabaseContainerDefinition: Sendable {
     /// Opens the single-use definition with the host-selected storage engine.
     public func open(
         storageEngine: any StorageEngine,
-        databaseRoot: Subspace
+        databaseRootPath: [String]
     ) async throws -> DBContainer {
-        try await openContainer(storageEngine, databaseRoot)
+        try await openContainer(storageEngine, databaseRootPath)
     }
     #endif
 }

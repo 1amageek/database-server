@@ -91,7 +91,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            revision: "62ad188459ae95f419b2fd623f3926f03066bb50",
+            from: "26.0902.1",
             traits: frameworkTraits
         ),
         .package(
@@ -100,7 +100,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
-            exact: "0.3.3"
+            exact: "0.4.0"
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",

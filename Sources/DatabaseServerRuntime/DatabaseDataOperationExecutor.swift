@@ -176,8 +176,8 @@ package final class DatabaseDataOperationExecutor: Sendable {
         _ retirement: DatabasePendingIndexRetirement,
         partitions: FieldObject,
         transaction: any TransactionAccess
-    ) throws {
-        try container.retireSchemaIndexStorage(
+    ) async throws {
+        try await container.retireSchemaIndexStorage(
             retirement,
             partitions: partitions,
             transaction: transaction
@@ -300,11 +300,14 @@ package final class DatabaseDataOperationExecutor: Sendable {
 
     #if DATABASE_SERVER_MULTI_BASE
     package func grantStore() throws -> DatabaseGrantStore {
-        let root = try container.executionStorage()
-        guard root.resource == resource else {
+        let storage = try container.executionStorage()
+        guard storage.resource == resource else {
             throw DatabaseAdministrationError.targetMismatch(target)
         }
-        return DatabaseGrantStore(resource: resource, root: root.root)
+        // Grants are Framework metadata of the bound Partition, so they are
+        // addressed from the system root. The data root holds only entity
+        // data, indexes, and relationships.
+        return DatabaseGrantStore(resource: resource, root: storage.systemRoot)
     }
     #endif
 
@@ -354,7 +357,7 @@ package final class DatabaseDataOperationExecutor: Sendable {
             throw DatabaseAdministrationError.targetMismatch(target)
         }
         #endif
-        return root.root
+        return root.systemRoot
             .subspace("_metadata")
             .subspace("maintenance-job-checkpoints")
             .pack(Tuple(jobID))

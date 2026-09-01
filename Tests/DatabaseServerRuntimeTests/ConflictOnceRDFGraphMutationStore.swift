@@ -23,7 +23,7 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
         graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         throw ConflictInjectionStoreError.unexpectedOperation
@@ -32,16 +32,16 @@ final class ConflictOnceRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [RDFGraphName] {
+    ) async throws -> RDFDatasetNamedGraphs {
         throw ConflictInjectionStoreError.unexpectedOperation
     }
 
     func containsGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         throw ConflictInjectionStoreError.unexpectedOperation

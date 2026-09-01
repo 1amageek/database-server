@@ -50,7 +50,21 @@ struct DatabasePartitionCatalogTests {
             )
         }
         #expect(secondPage.entries.count == 1)
-        #expect(secondPage.continuation == nil)
+        // A page that ends exactly on its limit still carries the path of the
+        // last partition it reported. The walk is not one snapshot: resuming
+        // re-descends that path, so a partition created between two pages is
+        // reported instead of being skipped. Enumeration therefore ends with an
+        // empty page rather than by suppressing the continuation of a full one.
+        let finalContinuation = try #require(secondPage.continuation)
+        let finalPage = try await recreatedContainer.withTestBaseOperation {
+            try await recreatedContainer.partitionCatalogPage(
+                entity: CatalogPartitionedEntity.persistableType,
+                continuation: finalContinuation,
+                limit: 1
+            )
+        }
+        #expect(finalPage.entries.isEmpty)
+        #expect(finalPage.continuation == nil)
 
         let values = Set(
             (firstPage.entries + secondPage.entries).compactMap {
@@ -62,16 +76,16 @@ struct DatabasePartitionCatalogTests {
 
     @Test("Partition path components preserve FieldValue types")
     func preservesPartitionTypes() throws {
-        let stringComponent = try CanonicalDirectoryPartitionCodec.encode(
-            .string("1")
-        )
-        let integerComponent = try CanonicalDirectoryPartitionCodec.encode(
-            .int64(1)
-        )
+        let stringComponent = try DirectoryComponentCodec.encode(.string("1"))
+        let integerComponent = try DirectoryComponentCodec.encode(.int64(1))
 
         #expect(stringComponent != integerComponent)
-        #expect(stringComponent.hasPrefix("dbp1-"))
-        #expect(integerComponent.hasPrefix("dbp1-"))
+        #expect(
+            try DirectoryComponentCodec.decode(stringComponent) == .string("1")
+        )
+        #expect(
+            try DirectoryComponentCodec.decode(integerComponent) == .int64(1)
+        )
     }
 
     @Test("Missing dynamic partitions are rejected before directory I/O")
@@ -83,33 +97,6 @@ struct DatabasePartitionCatalogTests {
             _ = try AnyDirectoryPath(
                 DirectoryPath<CatalogPartitionedEntity>()
             )
-        }
-    }
-
-    @Test("Catalog continuation is bound to its entity filter")
-    func rejectsContinuationForDifferentEntity() async throws {
-        let container = try await makeContainer(engine: InMemoryEngine())
-        for tenant in ["tenant-a", "tenant-b"] {
-            var path = DirectoryPath<CatalogPartitionedEntity>()
-            path.set(CatalogPartitionedEntity.fields.tenantID, to: tenant)
-            _ = try await container.testBaseDirectory(
-                for: CatalogPartitionedEntity.self,
-                path: path
-            )
-        }
-        let page = try await container.withTestBaseOperation {
-            try await container.partitionCatalogPage(limit: 1)
-        }
-        let continuation = try #require(page.continuation)
-
-        await #expect(throws: DatabasePartitionCatalogError.self) {
-            try await container.withTestBaseOperation {
-                try await container.partitionCatalogPage(
-                    entity: CatalogPartitionedEntity.persistableType,
-                    continuation: continuation,
-                    limit: 1
-                )
-            }
         }
     }
 

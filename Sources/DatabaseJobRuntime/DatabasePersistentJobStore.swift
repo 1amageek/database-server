@@ -40,7 +40,7 @@ package struct DatabasePersistentJobStore: Sendable {
     ) async throws {
         try storageLimits.validate(wireLimits: wireLimits)
         let controlStorage = container.controlStorage()
-        let root = controlStorage.root.subspace("persistent-jobs")
+        let root = controlStorage.systemRoot.subspace("persistent-jobs")
         self.container = container
         self.controlTransactionExecutor = controlStorage.transactionExecutor
         self.specifications = root.subspace("specifications")

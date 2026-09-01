@@ -11,7 +11,7 @@ package enum DatabaseGraphQueryResultFingerprint {
     private static let prefix: ByteString = [0x47, 0x51, 0x01]
 
     package static func compute(
-        graph: borrowing DatabaseRetainedRDFGraph,
+        graph: DatabaseSharedRetainedRDFGraph,
         wireLimits: DatabaseWireLimits,
         workMeter: DatabaseWorkMeter
     ) throws -> ByteString {
@@ -28,13 +28,9 @@ package enum DatabaseGraphQueryResultFingerprint {
                             at: .resultMaterialization
                         )
                         var count = UInt64(byteCount).bigEndian
-                        withUnsafeBytes(of: &count) {
-                            hasher.update($0)
-                        }
+                        withUnsafeBytes(of: &count) { hasher.update($0) }
                     },
-                    consume: { bytes in
-                        hasher.update(bytes)
-                    }
+                    consume: { bytes in hasher.update(bytes) }
                 )
             }
         }

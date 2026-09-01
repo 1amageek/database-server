@@ -12,44 +12,150 @@ import DatabaseKit
 import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 
-/// Owns the bounded in-memory result window and publishes continuation pages
-/// only after every durable page is complete.
+/// Owns the bounded in-memory result window and spools durable continuation
+/// pages incrementally, so peak retention is governed by the page limit rather
+/// than by the size of the Composition result.
+///
+/// The framework Composition emit callback is `async throws`, so control-storage
+/// work may run between two emissions. Spooling there is what keeps the request
+/// intermediate-row claim bounded; deferring every page to `finish()` would
+/// retain the whole result.
 actor DatabaseCompositionQueryResultBuilder {
     private struct PageBuffer: Sendable {
+        // These values are canonical budget units for the two retained Array
+        // containers. They mirror the framework retained-array growth model;
+        // they are not allocator measurements.
+        struct AppendAdmission: Sendable {
+            let rows: UInt64
+            let bytes: UInt64
+            let capacity: Int
+        }
+
+        private static let rowContainerByteCount = UInt64(
+            MemoryLayout<[DatabaseWire.QueryRow]>.stride
+        )
+        private static let originContainerByteCount = UInt64(
+            MemoryLayout<[CompositionOrigin]>.stride
+        )
+        private static let contributorContainerByteCount = UInt64(
+            MemoryLayout<[Base.ID]>.stride
+        )
+        private static let rowSlotByteCount = UInt64(
+            max(1, MemoryLayout<DatabaseWire.QueryRow>.stride)
+        )
+        private static let originSlotByteCount = UInt64(
+            max(1, MemoryLayout<CompositionOrigin>.stride)
+        )
+        private static let contributorSlotByteCount = UInt64(
+            max(1, MemoryLayout<Base.ID>.stride)
+        )
+        private static let appendAdmissionByteCount: UInt64 = 16
+
         var rows: [DatabaseWire.QueryRow] = []
         var origins: [CompositionOrigin] = []
         var reservation: DatabaseIntermediateReservation?
+        private var accountedCapacity = 0
 
         var count: Int { rows.count }
+        var hasReservation: Bool { reservation != nil }
 
-        mutating func append(
-            row: DatabaseWire.QueryRow,
-            origin: CompositionOrigin,
+        mutating func prepareAppend(
             footprint: UInt64,
+            origin: CompositionOrigin,
             workMeter: DatabaseWorkMeter
-        ) throws {
+        ) throws -> AppendAdmission {
+            let (requiredCount, countOverflow) = rows.count
+                .addingReportingOverflow(1)
+            guard !countOverflow else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            let growth = try Self.growth(
+                from: accountedCapacity,
+                toFit: requiredCount
+            )
+            var bytes = try Self.adding(
+                footprint,
+                Self.appendAdmissionByteCount
+            )
+            bytes = try Self.adding(
+                bytes,
+                Self.appendAdmissionByteCount
+            )
+            if accountedCapacity == 0 {
+                bytes = try Self.adding(
+                    bytes,
+                    Self.rowContainerByteCount
+                )
+                bytes = try Self.adding(
+                    bytes,
+                    Self.originContainerByteCount
+                )
+            }
+            bytes = try Self.adding(
+                bytes,
+                try Self.contributorStorageByteCount(for: origin)
+            )
+            bytes = try Self.adding(bytes, growth.additionalByteCount)
+
             if let reservation {
                 try reservation.reserveAdditional(
                     rows: 1,
-                    bytes: footprint,
+                    bytes: bytes,
                     at: .resultMaterialization
                 )
             } else {
                 reservation = try workMeter.reserveIntermediate(
                     rows: 1,
-                    bytes: footprint,
+                    bytes: bytes,
                     at: .resultMaterialization
                 )
             }
+            if growth.capacity > accountedCapacity {
+                rows.reserveCapacity(growth.capacity)
+                origins.reserveCapacity(growth.capacity)
+            }
+            return AppendAdmission(
+                rows: 1,
+                bytes: bytes,
+                capacity: growth.capacity
+            )
+        }
+
+        mutating func appendReserved(
+            row: DatabaseWire.QueryRow,
+            origin: CompositionOrigin,
+            using admission: AppendAdmission
+        ) {
             rows.append(row)
             origins.append(origin)
+            accountedCapacity = admission.capacity
+        }
+
+        mutating func rollback(_ admission: AppendAdmission) {
+            guard let reservation else {
+                preconditionFailure(
+                    "Append rollback lost its intermediate reservation"
+                )
+            }
+            do {
+                try reservation.releasePartial(
+                    rows: admission.rows,
+                    bytes: admission.bytes
+                )
+            } catch {
+                preconditionFailure(
+                    "Append rollback violated its intermediate reservation"
+                )
+            }
         }
 
         mutating func release() {
-            reservation?.release()
-            reservation = nil
+            let reservation = self.reservation
+            self.reservation = nil
             rows.removeAll(keepingCapacity: false)
             origins.removeAll(keepingCapacity: false)
+            accountedCapacity = 0
+            reservation?.release()
         }
 
         /// The first page is already the operation's final output. Its row
@@ -57,13 +163,125 @@ actor DatabaseCompositionQueryResultBuilder {
         /// the remaining pages are durably spooled must not also consume the
         /// intermediate-row budget.
         mutating func promoteToOutput() {
+            let reservation = self.reservation
+            self.reservation = nil
+            accountedCapacity = 0
             reservation?.release()
-            reservation = nil
+        }
+
+        private static func growth(
+            from currentCapacity: Int,
+            toFit requiredCount: Int
+        ) throws -> (capacity: Int, additionalByteCount: UInt64) {
+            guard currentCapacity >= 0,
+                  requiredCount >= 0 else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            guard requiredCount > currentCapacity else {
+                return (currentCapacity, 0)
+            }
+
+            var capacity = max(1, currentCapacity)
+            while capacity < requiredCount {
+                let (nextCapacity, overflow) = capacity
+                    .multipliedReportingOverflow(by: 2)
+                guard !overflow else {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                capacity = nextCapacity
+            }
+
+            let additionalSlots = UInt64(capacity - currentCapacity)
+            let rowBytes = try multiplying(
+                additionalSlots,
+                Self.rowSlotByteCount
+            )
+            let originBytes = try multiplying(
+                additionalSlots,
+                Self.originSlotByteCount
+            )
+            return (
+                capacity,
+                try adding(rowBytes, originBytes)
+            )
+        }
+
+        private static func contributorStorageByteCount(
+            for origin: CompositionOrigin
+        ) throws -> UInt64 {
+            guard case .derived(let contributors) = origin,
+                  !contributors.isEmpty else {
+                return 0
+            }
+            let growth = try capacityGrowth(
+                from: 0,
+                toFit: contributors.count,
+                slotByteCount: Self.contributorSlotByteCount
+            )
+            return try adding(
+                Self.contributorContainerByteCount,
+                growth.additionalByteCount
+            )
+        }
+
+        private static func capacityGrowth(
+            from currentCapacity: Int,
+            toFit requiredCount: Int,
+            slotByteCount: UInt64
+        ) throws -> (capacity: Int, additionalByteCount: UInt64) {
+            guard currentCapacity >= 0,
+                  requiredCount >= 0,
+                  slotByteCount > 0 else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            guard requiredCount > currentCapacity else {
+                return (currentCapacity, 0)
+            }
+
+            var capacity = max(1, currentCapacity)
+            while capacity < requiredCount {
+                let (nextCapacity, overflow) = capacity
+                    .multipliedReportingOverflow(by: 2)
+                guard !overflow else {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                capacity = nextCapacity
+            }
+            let additionalSlots = UInt64(capacity - currentCapacity)
+            return (
+                capacity,
+                try multiplying(additionalSlots, slotByteCount)
+            )
+        }
+
+        private static func adding(
+            _ lhs: UInt64,
+            _ rhs: UInt64
+        ) throws -> UInt64 {
+            let result = lhs.addingReportingOverflow(rhs)
+            guard !result.overflow else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            return result.partialValue
+        }
+
+        private static func multiplying(
+            _ lhs: UInt64,
+            _ rhs: UInt64
+        ) throws -> UInt64 {
+            let result = lhs.multipliedReportingOverflow(by: rhs)
+            guard !result.overflow else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            return result.partialValue
         }
     }
 
-    private enum State: Sendable, Equatable {
+    private enum Phase: Sendable, Equatable {
         case accumulating
+        case spooling
+        case finishing
+        case aborting
         case completed
         case aborted
     }
@@ -79,7 +297,7 @@ actor DatabaseCompositionQueryResultBuilder {
     private let snapshotStore: DatabaseQuerySnapshotStore?
     private let workMeter: DatabaseWorkMeter
 
-    private var state: State = .accumulating
+    private var phase: Phase = .accumulating
     private var columnNames: [String]?
     private var columns: [QueryColumn] = []
     private var firstPageBuffer: PageBuffer?
@@ -115,24 +333,32 @@ actor DatabaseCompositionQueryResultBuilder {
         self.workMeter = workMeter
     }
 
+    /// Stages one row, spooling the current page first when it is already full.
+    ///
+    /// Column validation and encoding run before admission so that a rejected
+    /// row consumes no budget, and the admission is rolled back if any step
+    /// after it fails.
     func append(
         _ row: DatabaseEngine.QueryRow,
         origin: CompositionOrigin,
         footprint: UInt64
     ) async throws {
-        guard state == .accumulating else {
+        guard phase == .accumulating else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
+        try Task.checkCancellation()
+
         let names = row.fields.keys.sorted()
+        let newColumns: [QueryColumn]?
         if let columnNames {
             guard names == columnNames else {
                 throw DatabaseQueryExecutionError.compositionPlanUnsupported(
                     "Composition members produced incompatible projected columns"
                 )
             }
+            newColumns = nil
         } else {
-            self.columnNames = names
-            columns = try names.enumerated().map { offset, name in
+            newColumns = try names.enumerated().map { offset, name in
                 guard let number = UInt32(exactly: offset + 1) else {
                     throw DatabaseWireError.byteCountOverflow
                 }
@@ -141,35 +367,114 @@ actor DatabaseCompositionQueryResultBuilder {
         }
 
         if currentPageBuffer.count == pageLimit {
-            try await makeRoomForAdditionalRow()
+            phase = .spooling
+            do {
+                try await makeRoomForAdditionalRow()
+            } catch {
+                phase = .accumulating
+                throw error
+            }
+            phase = .accumulating
         }
-        let wireRow = try DatabaseQueryRowEncoder.encode(
-            row,
-            columnNames: names
-        )
-        try currentPageBuffer.append(
-            row: wireRow,
-            origin: origin,
+
+        let admission = try currentPageBuffer.prepareAppend(
             footprint: footprint,
+            origin: origin,
             workMeter: workMeter
         )
+        do {
+            try Task.checkCancellation()
+            let wireRow = try DatabaseQueryRowEncoder.encode(
+                row,
+                columnNames: names
+            )
+            currentPageBuffer.appendReserved(
+                row: wireRow,
+                origin: origin,
+                using: admission
+            )
+        } catch {
+            currentPageBuffer.rollback(admission)
+            throw error
+        }
+        if let newColumns {
+            columnNames = names
+            columns = newColumns
+        }
     }
 
+    /// Spools the final page, publishes the manifest, and returns the response.
     func finish() async throws -> QueryRowPage {
-        guard state == .accumulating else {
+        guard phase == .accumulating else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
+        phase = .finishing
+        do {
+            let page = try await publish()
+            phase = .completed
+            writeReservation = nil
+            return page
+        } catch {
+            releaseStagedBuffers()
+            phase = .aborted
+            throw error
+        }
+    }
+
+    /// Releases staged memory and, when present, aborts the durable write.
+    func abort() async throws {
+        switch phase {
+        case .completed:
+            return
+        case .spooling, .finishing, .aborting:
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        case .aborted:
+            guard writeReservation != nil || hasStagedReservation else {
+                return
+            }
+        case .accumulating:
+            break
+        }
+        phase = .aborting
+        releaseStagedBuffers()
+        do {
+            if let writeReservation {
+                guard let snapshotStore else {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                try await snapshotStore.abortWrite(writeReservation)
+                self.writeReservation = nil
+            }
+            phase = .aborted
+        } catch {
+            phase = .aborted
+            throw error
+        }
+    }
+
+    private var hasStagedReservation: Bool {
+        currentPageBuffer.hasReservation
+            || firstPageBuffer?.hasReservation == true
+    }
+
+    private func releaseStagedBuffers() {
+        currentPageBuffer.release()
+        if var firstPageBuffer {
+            firstPageBuffer.release()
+        }
+        self.firstPageBuffer = nil
+    }
+
+    private func publish() async throws -> QueryRowPage {
         guard firstPageBuffer != nil else {
-            let page = try makePage(
-                currentPageBuffer,
-                continuation: nil
-            )
-            if let writeReservation, let snapshotStore {
+            let page = try makePage(currentPageBuffer, continuation: nil)
+            if let writeReservation {
+                guard let snapshotStore else {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
                 try await snapshotStore.abortWrite(writeReservation)
             }
             currentPageBuffer.release()
-            self.writeReservation = nil
-            state = .completed
             return page
         }
         guard let writeReservation,
@@ -180,13 +485,15 @@ actor DatabaseCompositionQueryResultBuilder {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
 
+        try Task.checkCancellation()
         let lastPage = try makePage(currentPageBuffer, continuation: nil)
         totalPayloadBytes = try await snapshotStore.appendPage(
             lastPage,
             pageID: currentPageID,
             to: writeReservation,
             consumedPayloadBytes: totalPayloadBytes,
-            maximumIntermediateBytes: maximumIntermediateBytes
+            maximumIntermediateBytes: maximumIntermediateBytes,
+            workMeter: workMeter
         )
         continuationPageCount = try increment(continuationPageCount)
 
@@ -201,31 +508,19 @@ actor DatabaseCompositionQueryResultBuilder {
             pageCount: continuationPageCount,
             totalPayloadBytes: totalPayloadBytes
         )
-        currentPageBuffer.release()
-        var retainedFirstPage = firstPageBuffer
-        retainedFirstPage.release()
-        self.firstPageBuffer = nil
-        self.writeReservation = nil
-        state = .completed
+
+        // The still-staging page and the write reservation are released only
+        // after the manifest is authoritative. The first page released its
+        // intermediate claim when it became the operation's output.
+        releaseStagedBuffers()
         return firstPage
     }
 
-    func abort() async throws {
-        guard state == .accumulating else { return }
-        state = .aborted
-        defer {
-            currentPageBuffer.release()
-            if var firstPageBuffer {
-                firstPageBuffer.release()
-            }
-            self.firstPageBuffer = nil
-            writeReservation = nil
-        }
-        if let writeReservation, let snapshotStore {
-            try await snapshotStore.abortWrite(writeReservation)
-        }
-    }
-
+    /// Publishes the full current page to control storage and starts a new one.
+    ///
+    /// The first full page becomes the operation's response, so it is retained
+    /// but promoted out of the intermediate budget: its size is already
+    /// governed by the request's output and page limits.
     private func makeRoomForAdditionalRow() async throws {
         guard let snapshotStore else {
             throw DatabaseQueryExecutionError.querySnapshotUnavailable(
@@ -244,7 +539,7 @@ actor DatabaseCompositionQueryResultBuilder {
                     queryFingerprint: queryFingerprint,
                     authorization: authorization
                 )
-                self.writeReservation = newReservation
+                writeReservation = newReservation
                 reservation = newReservation
             }
             let pageID = try await snapshotStore.reservePage(in: reservation)
@@ -271,7 +566,8 @@ actor DatabaseCompositionQueryResultBuilder {
             pageID: currentPageID,
             to: writeReservation,
             consumedPayloadBytes: totalPayloadBytes,
-            maximumIntermediateBytes: maximumIntermediateBytes
+            maximumIntermediateBytes: maximumIntermediateBytes,
+            workMeter: workMeter
         )
         continuationPageCount = try increment(continuationPageCount)
         currentPageBuffer.release()

@@ -1,0 +1,296 @@
+# Database Server
+
+## Purpose and Scope
+
+`database-server` is the standalone native DatabaseWire executable. This
+package owns request admission, operation dispatch, durable server state, and
+the native host boundary. It composes `database-framework` execution with a
+host-selected `StorageEngine`; it does not reimplement query planning,
+transaction semantics, index behavior, or application schema meaning.
+
+This document is the package-level design authority for the internal
+`DatabaseServerRuntime` and `DatabaseServerHost` targets. The package has one
+supported public artifact, the `database-server` executable. Internal targets
+are source and test boundaries, not reusable package products.
+
+Parent: the workspace system design at [`../DESIGN.md`](../DESIGN.md), which
+indexes this package; the workspace `AGENTS.md` defines the package dependency
+direction and shared contracts.
+Children: `DatabaseServerRuntime` and `DatabaseServerHost` are internal
+composition boundaries represented by the corresponding source directories.
+
+## Responsibilities and Boundaries
+
+`DatabaseServerRuntime` owns:
+
+- canonical DatabaseWire frame decoding, admission, dispatch, and response
+  encoding;
+- remote query, graph, mutation, schema, maintenance, command, and job
+  orchestration;
+- durable continuation and result state;
+- server request limits, authorization admission, typed remote errors, and
+  runtime capability selection.
+
+`DatabaseServerHost` owns:
+
+- native listener and private stdio lifecycle;
+- TLS, credentials, routing validation, process signals, backend startup, and
+  authoritative shutdown;
+- composition of a `DBContainer` with the selected storage engine and runtime.
+
+The server does not own:
+
+- query plans, index scans, graph algorithms, model materialization, or
+  database transactions (the framework owns these);
+- storage keys, retries, conflicts, backend protocol behavior, or engine
+  lifecycle internals (StorageKit owns these);
+- client profiles, shell behavior, or application schemas.
+
+The server dependency direction is one-way:
+
+```text
+DatabaseWire request
+        |
+        v
+DatabaseServerRuntime -- consumes --> DatabaseFramework execution contract
+        |
+        v
+DatabaseServerHost -- composes --> DBContainer + StorageEngine + native host
+```
+
+The runtime may ask the framework for a bounded retained result or a
+transaction-scoped page, but it may not reach into framework storage or
+reconstruct a transaction. The host may select and shut down an engine, but it
+may not reinterpret an operation payload.
+
+## Related Designs
+
+| Design | Relationship | Contract Used | Summary | Cautions |
+|---|---|---|---|---|
+| [`database-framework/DESIGN.md`](../database-framework/DESIGN.md) | depends on | Framework execution, read-snapshot, retained-result, and Composition contracts | Provides in-process query and graph semantics. | A server result must use an API available at the selected revision; obsolete Lease names and raw retained-value escapes are not contracts. |
+| [`database-framework/Sources/DatabaseEngine/QueryExecution/DESIGN.md`](../database-framework/Sources/DatabaseEngine/QueryExecution/DESIGN.md) | depends on | retained ownership, bounded materialization, and transaction-scoped borrowing | Defines ownership and lifetime rules for query results. | A borrowing closure does not make a Copyable value durable; server staging must retain an admitted owner. |
+| [`database-kit/DESIGN.md`](../database-kit/DESIGN.md) | depends on | DatabaseWire operation and response model | Defines canonical wire semantics consumed by dispatch. | The server maps and transports the model; it does not define query meaning. |
+| [`storage-kit/DESIGN.md`](../storage-kit/DESIGN.md) | depends on | StorageEngine transaction and shutdown contracts | Provides control-storage and host-selected backend behavior. | A control transaction is an independent StorageKit transaction. StorageKit does not require it to be disjoint in time from a data read, so a Composition spool write may commit while a source read is still emitting; each control write must be independently committable. |
+
+## Architecture
+
+The runtime has two independent transaction domains for durable paging:
+
+```text
+wire request
+   |
+   v
+admit + authorize
+   |
+   +--> framework data read
+   |       |
+   |       +--> SQL / graph page or bounded retained result
+   |       +--> data transaction closes
+   |
+   +--> server control storage
+           |
+           +--> reserve slot and page identifiers
+           +--> write staged page owners
+           +--> publish manifest atomically
+           +--> release active slot only at terminal transition
+```
+
+Composition bounds peak memory by spooling, not by deferring:
+
+```text
+Composition source read
+   |
+   +--> emit row/quad --> bounded page window (exact claim)
+   |          |
+   |          +-- window full --> spool the full page to control storage
+   |                              (the first full page is kept as the response)
+   |
+   +--> source read ends
+            |
+            +--> control transaction: append last page, publish manifest
+            +--> release staged claims
+            +--> wire response
+```
+
+The four supported result modes have the same lifecycle vocabulary:
+
+| Mode | Data-read state | Staging state | Control-publication state | Terminal state |
+|---|---|---|---|---|
+| SQL | framework snapshot executes the query | bounded retained pages are encoded while the snapshot is active; no control I/O | page chunks and manifest are committed after the data snapshot closes | final response has no successor; active slot is released and replay state is non-active |
+| Graph | graph executor produces a bounded page or graph result | graph rows/quads remain in an admitted owner until encoding finishes | graph page descriptor/chunks and manifest commit in control storage | terminal graph page releases the slot without deleting required replay semantics prematurely |
+| Relational Composition | member reads occur under one Composition data snapshot | the builder holds one staging page window whose rows carry exact request claims, plus the retained first page, which is the response and is governed by the output and page limits | full pages are spooled during emission; the last page and the manifest commit after the source read ends | final page and claims are transferred/released after authoritative publication |
+| RDF Composition | member graph reads occur under one Composition data snapshot | the builder holds one staging quad page window whose quads carry exact request claims, plus the retained first page, which is the response and is governed by the output and page limits | full pages are spooled during emission; the last page and the manifest commit after the source read ends | final graph page and claims are transferred/released after authoritative publication |
+
+## Contracts and Invariants
+
+### Request and dependency contracts
+
+- Every accepted frame reaches the canonical operation handler exactly once;
+  adapters do not reinterpret operation payloads.
+- Network authentication and routing validation finish before runtime
+  execution. Typed operation failures remain typed wire failures.
+- The server uses URL dependencies and one coherent resolved graph for release
+  evidence. A local path dependency is diagnostic-only.
+
+### Host storage topology contract
+
+- A storage domain declares the Directory path of its own database root. The
+  host names that root; it does not resolve or materialize a `Subspace` and
+  hand storage keys to the framework.
+- A placement names only its domain. A Base Partition's address is fixed below
+  that domain's database root, so a placement carries no path, two placements
+  on one domain address the same destination, and only one of them may declare
+  it.
+- The configuration document is versioned against exactly one topology shape.
+  A document that still declares a placement path is rejected as invalid rather
+  than loaded with the path discarded, and a standard build rejects placement
+  keys rather than ignoring them.
+
+### Data/control transaction contract
+
+- A framework data read transaction is the sole owner of data-read state.
+- A server control transaction is the sole owner of durable paging state.
+- SQL and graph modes finish their bounded data capture before any control read
+  or write, because the framework page is already materialized when the snapshot
+  returns.
+- Composition modes spool from inside the framework emit callback, so a control
+  write may commit while the source read is still emitting. This is what keeps
+  peak retention governed by the page limit instead of the result size; each
+  spool write is independently committable and no partial manifest is visible.
+- A staged page is bounded by both the request intermediate-byte limit and the
+  server spool limit. Failure is explicit and does not publish a partial
+  manifest.
+- Historical continuation usage includes encoded step state and its terminal
+  replay record; terminalization cannot exceed the configured historical byte
+  limit.
+- The staged owner, the row/quad claims of the page still being filled, and
+  each spool's encoded payload reservation remain live until the operation
+  either publishes authoritatively or aborts. The first full page is the
+  operation's response: it is promoted out of the intermediate budget when it
+  is retained, because the output and page limits already govern its size.
+
+### Continuation and active-slot contract
+
+- A continuation is opaque and bound to target, schema generation, query
+  identity, full principal identity, and absolute expiry.
+- A non-terminal page transition creates or reuses exactly one successor for
+  concurrent replay. Replays must converge on the same successor.
+- A terminal response performs an atomic terminal transition in control
+  storage: required replay/tombstone state is retained within its bound, while
+  the principal's active slot is removed from the quota index.
+- Historical query and graph handlers build and account for the final response
+  before requesting terminalization; a completion failure prevents a success
+  response and leaves the continuation retryable.
+- A terminal or expired transition may never clear a newer snapshot that reused
+  the same slot. Cleanup compares snapshot identity before clearing an index.
+- After eight completed snapshots, a ninth request for the same principal must
+  be admitted immediately; completed non-active tombstones do not consume the
+  active quota.
+- Cancellation, append failure, commit failure, and malformed state release
+  each reservation exactly once. Cleanup is not cancelled by the operation that
+  caused it.
+
+### Durable job payload contract
+
+- A durable job payload declares a format version, and decoding rejects any
+  payload whose version or field set does not match the current contract with a
+  typed failure. A stale payload is never partially interpreted.
+- The Base placement move descriptor records storage domain identity and
+  placement generation, not a materialized Directory path. A Base Partition's
+  address is fixed below its domain's database root, so naming the domain and
+  its generation fully determines the keyspace a resumable slice may copy into.
+
+### Composition contract
+
+- A Composition emitter retains at most one intermediate page window plus the
+  first page, which it has already promoted to the response. Deferring every page until the source
+  read ends would make peak retention proportional to the result and is not a
+  supported shape.
+- The framework Composition emit callback is asynchronous and throwing, so a
+  full page is spooled to control storage from inside it. A spool failure fails
+  the emission instead of dropping rows or publishing a partial manifest.
+- While a page is being spooled, a further append is rejected with a typed
+  corruption failure rather than racing the durable write.
+- Provenance remains attached to each staged row/quad through encoding and
+  publication. It is not reconstructed after the source transaction closes.
+
+## Runtime Flows
+
+### SQL and graph page flow
+
+1. Admit the request and derive its continuation identity.
+2. Execute under a framework read snapshot.
+3. If the result fits one page, return it without durable paging state.
+4. Otherwise, capture/encode bounded successor pages while the read snapshot is
+   active, then close that snapshot.
+5. Reserve and write control pages, publish the manifest, and return the first
+   page with an opaque continuation.
+6. On each continuation request, validate identity and expiry, load the page,
+   and atomically terminalize when no successor remains. Historical query and
+   graph handlers call their matching `completeHistorical*` operation after a
+   final framework page; the store validates the current step before releasing
+   its active slot.
+
+### Composition flow
+
+1. Resolve Composition metadata and authorize the request.
+2. Stage each emitted row or quad, with its provenance and an exact claim, into
+   the bounded page window.
+3. When the window is full, reserve a continuation page and write it to control
+   storage. The first full page becomes the response and keeps its claim.
+4. When the source read ends, append the final page and publish the manifest.
+5. Transfer or release claims only after the authoritative write succeeds;
+   abort releases all staged state.
+
+## State, Ownership, and Lifecycle
+
+```text
+reserved -> staging -> published/non-terminal -> terminal tombstone
+    |          |              |                       |
+    +--------> abort ---------+                       +--> expired cleanup
+```
+
+- `reserved` owns the principal active slot and pending marker.
+- `staging` owns page reservations, encoded payload claims, and the bounded
+  captured result.
+- `published/non-terminal` owns durable page chunks and the active slot for
+  future continuation requests.
+- `terminal tombstone` marks the terminal replay state; the bounded manifest,
+  steps, and page data remain available until expiry, but the tombstone is not
+  an active quota slot.
+- `abort` and expiry clear only state proven to belong to the same snapshot.
+- The host owns final engine shutdown and must await the backend's authoritative
+  completion before publishing a disconnected state or releasing the process.
+
+## Failure, Concurrency, and Constraints
+
+- Control transactions are retried according to StorageKit semantics, but
+  publication and terminalization are idempotent by snapshot/page identity.
+- Concurrent continuation requests use compare-and-set-like identity checks in
+  one control transaction and observe one successor or one terminal state.
+- Cancellation is observable by callers, while cleanup continues in a
+  non-cancellable cleanup context and reports cleanup failure explicitly.
+- Corrupt manifests, descriptors, chunks, or tombstones are typed corruption
+  failures; they are never converted to empty success.
+- Snapshot lifetime, active-slot count, historical-state limit, and spool bytes
+  are correctness limits, not tuning hints.
+
+## Verification and Change Impact
+
+The package-level evidence must exercise real runtime paths, not declarations
+or test discovery alone.
+
+| Invariant | Required proof |
+|---|---|
+| Bounded Composition retention | A durable multi-page Composition read whose result exceeds the request intermediate-row budget proves peak intermediate retention stays within one page window, and that the retained first page is charged to the output limits instead, for both relational and RDF modes. |
+| Exact staging ownership | Success, append failure, commit failure, cancellation, and abort tests prove the staging page's row/quad and byte claims remain until publication or abort, that the first page's claim is released exactly when it becomes output, and that every claim is released once. |
+| Terminal quota release | Fill all eight active slots, complete each continuation, then admit a ninth request; verify terminal replay convergence, slot reuse isolation, expiry, failure, and cancellation. |
+| Continuation identity | Cross-principal, target, schema, query, malformed, and expired continuations are rejected with typed errors. |
+| Wire/transport boundary | Standard and MultiBase harnesses execute HTTP, HTTPS, WebSocket, and stdio through the real executable and report exact counts, skips, expected failures, runtime warnings, and internal errors. |
+| Dependency authority | The final committed graph resolves URL dependencies, contains no `.package(path:)`, and uses the framework revision whose retained-result contract is actually compiled. |
+| Host topology admission | Configuration tests load a valid versioned document and reject an unknown key, a duplicate domain, a missing domain reference, a duplicate persistent backend, and a placement that declares a path. |
+
+Changes to framework retained-result or Composition contracts require a
+cross-level review of this document and the framework designs before server
+callers are migrated. Changes to active-slot or continuation persistence
+require both runtime state tests and the package integration matrix.

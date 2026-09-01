@@ -134,7 +134,7 @@ private func openNativeRuntime(
     try await NativeDatabaseRuntimeEnvironment.open(
         storageTopology: .single(
             storage: .sqliteMemory,
-            namespacePath: ["database", "test"]
+            rootPath: ["database", "test"]
         ),
         authenticator: authenticator,
         version: version
@@ -156,12 +156,12 @@ private func multipleDomainTopology()
     let domains = [
         NativeDatabaseStorageDomainConfiguration(
             id: "primary",
-            namespacePath: ["database", "main"],
+            rootPath: ["database", "main"],
             storage: .sqliteMemory
         ),
         NativeDatabaseStorageDomainConfiguration(
             id: "secondary",
-            namespacePath: ["database", "secondary"],
+            rootPath: ["database", "secondary"],
             storage: .sqliteMemory
         ),
     ]
@@ -169,16 +169,8 @@ private func multipleDomainTopology()
         controlDomainID: "primary",
         domains: domains,
         placements: [
-            .init(
-                id: "default",
-                domainID: "primary",
-                path: ["bases"]
-            ),
-            .init(
-                id: "secondary",
-                domainID: "secondary",
-                path: ["bases"]
-            ),
+            .init(id: "default", domainID: "primary"),
+            .init(id: "secondary", domainID: "secondary"),
         ],
         defaultPlacementID: "default"
     )

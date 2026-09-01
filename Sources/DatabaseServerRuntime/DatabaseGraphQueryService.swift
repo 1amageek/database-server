@@ -13,6 +13,23 @@ import DatabaseTypes
 import DatabaseKit
 import StorageKit
 
+private enum DatabaseGraphInitialPlan: Sendable {
+    case page(
+        DatabaseSharedRetainedRDFGraph,
+        DatabaseTransactionReadPoint.Value
+    )
+    case historical(
+        DatabaseSharedRetainedRDFGraph,
+        UInt64,
+        ByteString,
+        DatabaseTransactionReadPoint.Value
+    )
+    case captured(
+        DatabaseSharedRetainedRDFGraph,
+        DatabaseTransactionReadPoint.Value
+    )
+}
+
 struct DatabaseGraphQueryService: Sendable {
     private let wireLimits: DatabaseWireLimits
     private let queryStructuralLimits: QueryStructuralLimits
@@ -34,18 +51,14 @@ struct DatabaseGraphQueryService: Sendable {
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFGraphPage {
-        let databaseContext = try context.requireDataContext()
         return try await execute(
-            kind: .construct,
             statement: .construct(query),
             request: request,
             context: context,
             workMeter: workMeter
-        ) { transaction, requestFingerprint in
-            let executor = try sparqlExecutor(context: context)
-            return try await executor.executeConstructInTransaction(
-                context: databaseContext,
-                constructQuery: query,
+        ) { session, requestFingerprint in
+            return try await session.executeSPARQLConstruct(
+                query,
                 nodeNamespace: try GraphResultNodeNamespace(
                     requestFingerprint
                 ),
@@ -54,8 +67,7 @@ struct DatabaseGraphQueryService: Sendable {
                     workMeter: workMeter,
                     context: context
                 ),
-                partitions: request.graphPartitions,
-                transaction: transaction
+                partitions: request.graphPartitions
             )
         }
     }
@@ -66,37 +78,31 @@ struct DatabaseGraphQueryService: Sendable {
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFGraphPage {
-        let databaseContext = try context.requireDataContext()
         return try await execute(
-            kind: .describe,
             statement: .describe(query),
             request: request,
             context: context,
             workMeter: workMeter
-        ) { transaction, _ in
-            let executor = try sparqlExecutor(context: context)
-            return try await executor.executeDescribeInTransaction(
-                context: databaseContext,
-                describeQuery: query,
+        ) { session, _ in
+            return try await session.executeSPARQLDescribe(
+                query,
                 options: readExecution(
                     for: request,
                     workMeter: workMeter,
                     context: context
                 ),
-                partitions: request.graphPartitions,
-                transaction: transaction
+                partitions: request.graphPartitions
             )
         }
     }
 
     private func execute(
-        kind: DatabaseGraphQueryPageCursor.Kind,
         statement: QueryStatement,
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter,
         materialize: @escaping @Sendable (
-            _ transaction: any TransactionAccess,
+            _ session: DatabaseReadSession,
             _ requestFingerprint: ByteString
         ) async throws -> DatabaseRetainedRDFGraph
     ) async throws -> RDFGraphPage {
@@ -117,13 +123,104 @@ struct DatabaseGraphQueryService: Sendable {
             request: request,
             limits: wireLimits
         )
-        if let continuation = request.page.continuation,
-           continuation.count == DatabaseQuerySnapshotStore
-            .continuationByteCount,
-           continuation.first == DatabaseQuerySnapshotStore
-            .continuationMarker {
+        guard let pageLimit = Int(exactly: request.page.limit) else {
+            throw DatabaseGraphQueryError.pageLimitExceedsPlatformCapacity(
+                requested: request.page.limit
+            )
+        }
+        if let continuation = request.page.continuation {
+            guard continuation.count == DatabaseQuerySnapshotStore
+                    .continuationByteCount,
+                  continuation.first == DatabaseQuerySnapshotStore
+                    .continuationMarker else {
+                throw DatabaseGraphQueryError.invalidContinuation
+            }
             guard let querySnapshotStore else {
                 throw DatabaseQueryExecutionError.invalidContinuation
+            }
+            if let historical = try await querySnapshotStore
+                .loadHistoricalGraph(
+                    continuation: continuation,
+                    lease: lease,
+                    schemaGeneration: context.executor.schemaGeneration,
+                    queryFingerprint: queryFingerprint,
+                    authorization: context.authorization
+                ) {
+                let resumed: (
+                    graph: DatabaseSharedRetainedRDFGraph,
+                    readPoint: DatabaseTransactionReadPoint.Value
+                )
+                do {
+                    resumed = try await databaseContext.withReadSnapshot(
+                        restoring: .version(historical.readVersion),
+                        workMeter: workMeter
+                    ) { snapshot in
+                        guard snapshot.position
+                            == .version(historical.readVersion) else {
+                            throw DatabaseQueryExecutionError
+                                .querySnapshotCorrupted
+                        }
+                        var graph = try await materialize(
+                            snapshot.session,
+                            requestFingerprint
+                        )
+                        graph = try canonicalize(
+                            consume graph,
+                            workMeter: workMeter
+                        )
+                        let sharedGraph = try graph.moveToSharedOwnership(
+                            at: .resultMaterialization
+                        )
+                        let resultFingerprint = try
+                            DatabaseGraphQueryResultFingerprint.compute(
+                                graph: sharedGraph,
+                                wireLimits: wireLimits,
+                                workMeter: workMeter
+                            )
+                        guard resultFingerprint
+                            == historical.resultFingerprint else {
+                            throw DatabaseGraphQueryError
+                                .continuationSnapshotChanged
+                        }
+                        return (
+                            sharedGraph,
+                            DatabaseTransactionReadPoint.value(
+                                domainID: lease.domainIdentifier,
+                                snapshot: snapshot
+                            )
+                        )
+                    }
+                } catch {
+                    throw mapHistoricalReadFailure(error)
+                }
+                let graphCount = resumed.graph.count
+                guard let offset = Int(exactly: historical.offset),
+                      offset < graphCount else {
+                    throw DatabaseGraphQueryError.continuationOffsetOutOfRange(
+                        offset: historical.offset,
+                        count: graphCount
+                    )
+                }
+                let end = min(offset + pageLimit, graphCount)
+                let next = end < graphCount
+                    ? try await querySnapshotStore.advanceHistoricalGraph(
+                        historical,
+                        toOffset: UInt64(end)
+                    )
+                    : nil
+                let page = try makeOutputPage(
+                    resumed.graph,
+                    range: offset..<end,
+                    continuation: next,
+                    readPoint: resumed.readPoint
+                )
+                try Self.recordOutput(page, workMeter: workMeter)
+                if next == nil {
+                    try await querySnapshotStore.completeHistoricalGraph(
+                        historical
+                    )
+                }
+                return page
             }
             let page = try await querySnapshotStore.loadRDFGraph(
                 continuation: continuation,
@@ -135,178 +232,130 @@ struct DatabaseGraphQueryService: Sendable {
             try Self.recordOutput(page, workMeter: workMeter)
             return page
         }
-        let cursor = try request.page.continuation.map {
-            try DatabaseGraphQueryPageCursor.decode($0, limits: wireLimits)
-        }
-        guard cursor?.kind == nil || cursor?.kind == kind else {
-            throw DatabaseGraphQueryError.invalidContinuation
-        }
-        guard
-            cursor?.requestFingerprint == nil
-                || cursor?.requestFingerprint == requestFingerprint
-        else {
-            throw DatabaseGraphQueryError.continuationDoesNotMatchRequest
-        }
-        #if DATABASE_SERVER_MULTI_BASE
-        guard cursor?.resource == nil || cursor?.resource == lease.resource,
-            cursor?.schemaGeneration == nil
-                || cursor?.schemaGeneration == context.executor.schemaGeneration,
-            cursor?.dataGeneration == nil
-                || cursor?.dataGeneration == lease.generation
-        else {
-            throw DatabaseGraphQueryError.invalidContinuation
-        }
-        #else
-        guard
-            cursor?.schemaGeneration == nil
-                || cursor?.schemaGeneration == context.executor.schemaGeneration,
-            cursor?.dataGeneration == nil
-                || cursor?.dataGeneration == lease.generation
-        else {
-            throw DatabaseGraphQueryError.invalidContinuation
-        }
-        #endif
-
-        do {
-            return try await databaseContext.executeCanonicalRead {
-                transaction in
-                if let restorableReadPosition = cursor?
-                    .restorableReadPosition
-                {
-                    do {
-                        guard
-                            try DatabaseTransactionReadPoint.restore(
-                                restorableReadPosition,
-                                transaction: transaction
-                            )
-                        else {
-                            throw DatabaseGraphQueryError
-                                .continuationSnapshotChanged
-                        }
-                    } catch let error as StorageError
-                            where error.code == .unsupportedOperation
-                                && !transaction.capabilities
-                                    .historicalReadVersion {
-                        throw DatabaseGraphQueryError
-                            .continuationSnapshotChanged
-                    }
-                }
-                let readPoint = try await DatabaseTransactionReadPoint.capture(
+        let plan = try await databaseContext.withReadSnapshot(
+            workMeter: workMeter
+        ) { snapshot in
+                let readPoint = DatabaseTransactionReadPoint.value(
                     domainID: lease.domainIdentifier,
-                    transaction: transaction
+                    snapshot: snapshot
                 )
-                if case .version(let expectedVersion)? = cursor?
-                    .restorableReadPosition {
-                    guard readPoint.position == .version(expectedVersion) else {
-                        throw DatabaseGraphQueryError.continuationSnapshotChanged
-                    }
-                }
 
                 var graph = try await materialize(
-                    transaction,
+                    snapshot.session,
                     requestFingerprint
                 )
                 graph = try canonicalize(
                     consume graph,
                     workMeter: workMeter
                 )
-                let resultFingerprint = try DatabaseGraphQueryResultFingerprint
-                    .compute(
-                        graph: graph,
-                        wireLimits: wireLimits,
-                        workMeter: workMeter
-                    )
-                guard cursor?.resultFingerprint == nil
-                        || cursor?.resultFingerprint == resultFingerprint else {
-                    throw DatabaseGraphQueryError
-                        .continuationSnapshotChanged
-                }
-
-                guard let pageLimit = Int(exactly: request.page.limit) else {
-                    throw DatabaseGraphQueryError
-                        .pageLimitExceedsPlatformCapacity(
-                            requested: request.page.limit
-                        )
-                }
-                if cursor == nil,
-                   !transaction.capabilities.historicalReadVersion,
-                   graph.count > pageLimit {
-                    return try await spoolNonHistoricalGraph(
-                        consume graph,
-                        pageLimit: pageLimit,
-                        queryFingerprint: queryFingerprint,
-                        request: request,
-                        context: context,
-                        lease: lease,
-                        transaction: transaction,
-                        readPoint: readPoint,
-                        workMeter: workMeter
+                let graphCount = graph.count
+                let sharedGraph = try graph.moveToSharedOwnership(
+                    at: .resultMaterialization
+                )
+                if graphCount <= pageLimit {
+                    return DatabaseGraphInitialPlan.page(
+                        sharedGraph,
+                        readPoint
                     )
                 }
-
-                let offsetValue = cursor?.tripleOffset ?? 0
-                guard let offset = Int(exactly: offsetValue),
-                      offset <= graph.count,
-                      cursor == nil || offset < graph.count else {
-                    throw DatabaseGraphQueryError
-                        .continuationOffsetOutOfRange(
-                            offset: offsetValue,
-                            count: graph.count
+                if snapshot.supportsPositionRestoration,
+                   case .version(let readVersion) = snapshot.position {
+                    let resultFingerprint = try
+                        DatabaseGraphQueryResultFingerprint.compute(
+                            graph: sharedGraph,
+                            wireLimits: wireLimits,
+                            workMeter: workMeter
                         )
-                }
-                let end = offset + min(pageLimit, graph.count - offset)
-                guard let emittedRows = UInt32(exactly: end - offset) else {
-                    throw
-                        DatabaseGraphQueryError
-                        .pageLimitExceedsPlatformCapacity(
-                            requested: request.page.limit
-                        )
-                }
-                try workMeter.recordOutputRows(emittedRows)
-
-                let continuation: ByteString?
-                if end < graph.count {
-                    continuation = try Self.encodeCursor(
-                        kind: kind,
-                        requestFingerprint: requestFingerprint,
-                        readPoint: transaction.capabilities
-                            .historicalReadVersion
-                            ? readPoint.position
-                            : nil,
-                        resultFingerprint: resultFingerprint,
-                        tripleOffset: UInt64(end),
-                        schemaGeneration: context.executor.schemaGeneration,
-                        lease: lease,
-                        limits: wireLimits
+                    return DatabaseGraphInitialPlan.historical(
+                        sharedGraph,
+                        readVersion,
+                        resultFingerprint,
+                        readPoint
                     )
-                } else {
-                    continuation = nil
                 }
-                let page = graph.promotePage(offset..<end)
-                return try Self.page(
-                    consume page,
-                    continuation: continuation,
-                    readPoint: readPoint
+                precondition(graphCount > pageLimit)
+                return DatabaseGraphInitialPlan.captured(
+                    sharedGraph,
+                    readPoint
+                )
+        }
+        let page: RDFGraphPage
+        switch plan {
+        case .page(let graph, let readPoint):
+            let graphCount = graph.count
+            page = try makeOutputPage(
+                graph,
+                range: 0..<graphCount,
+                continuation: nil,
+                readPoint: readPoint
+            )
+        case .historical(
+            let graph,
+            let readVersion,
+            let resultFingerprint,
+            let readPoint
+        ):
+            guard let querySnapshotStore else {
+                throw DatabaseQueryExecutionError.querySnapshotUnavailable(
+                    "the host did not provide durable continuation storage"
                 )
             }
-        } catch let error as DatabaseGraphQueryError {
-            throw error
-        } catch let error as StorageError where cursor != nil
-                && (error.code == .transactionConflict
-                    || error.code == .transactionTooOld
-                    || error.code == .transactionFutureVersion) {
-            throw DatabaseGraphQueryError.continuationSnapshotChanged
+            let reservation = try await querySnapshotStore.beginWrite(
+                for: lease,
+                schemaGeneration: context.executor.schemaGeneration,
+                queryFingerprint: queryFingerprint,
+                authorization: context.authorization
+            )
+            let opaqueContinuation: ByteString
+            do {
+                opaqueContinuation = try await querySnapshotStore
+                    .publishHistoricalGraph(
+                        readVersion: readVersion,
+                        resultFingerprint: resultFingerprint,
+                        offset: UInt64(pageLimit),
+                        in: reservation
+                    )
+            } catch {
+                let operationError = error
+                do {
+                    try await querySnapshotStore.abortWrite(reservation)
+                } catch {
+                    throw StorageTransactionCleanupError(
+                        operationError: operationError,
+                        cancellationError: error
+                    )
+                }
+                throw operationError
+            }
+            page = try makeOutputPage(
+                graph,
+                range: 0..<pageLimit,
+                continuation: opaqueContinuation,
+                readPoint: readPoint
+            )
+        case .captured(let graph, let readPoint):
+            page = try await spoolNonHistoricalGraph(
+                graph,
+                pageLimit: pageLimit,
+                queryFingerprint: queryFingerprint,
+                request: request,
+                context: context,
+                lease: lease,
+                readPoint: readPoint,
+                workMeter: workMeter
+            )
         }
+        try Self.recordOutput(page, workMeter: workMeter)
+        return page
     }
 
     private func spoolNonHistoricalGraph(
-        _ graph: consuming DatabaseRetainedRDFGraph,
+        _ graph: DatabaseSharedRetainedRDFGraph,
         pageLimit: Int,
         queryFingerprint: ByteString,
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         lease: DatabaseExecutionStorage,
-        transaction: any TransactionAccess,
         readPoint: DatabaseTransactionReadPoint.Value,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFGraphPage {
@@ -315,42 +364,31 @@ struct DatabaseGraphQueryService: Sendable {
                 "the host did not provide durable query snapshot storage"
             )
         }
-        let snapshotTransaction = querySnapshotStore.controlWriteTransaction(
-            for: lease,
-            active: transaction
-        )
         let reservation = try await querySnapshotStore.beginWrite(
             for: lease,
             schemaGeneration: context.executor.schemaGeneration,
             queryFingerprint: queryFingerprint,
-            authorization: context.authorization,
-            transaction: snapshotTransaction
+            authorization: context.authorization
         )
         do {
             let firstContinuationPageID = try await querySnapshotStore
-                .reservePage(
-                    in: reservation,
-                    transaction: snapshotTransaction
-                )
+                .reservePage(in: reservation)
             var currentPageID = firstContinuationPageID
             var continuationPageCount: UInt32 = 0
             var totalPayloadBytes: UInt64 = 0
             var offset = pageLimit
 
-            while offset < graph.count {
-                let remaining = graph.count - offset
+            let graphCount = graph.count
+            while offset < graphCount {
+                let remaining = graphCount - offset
                 let end = remaining <= pageLimit
-                    ? graph.count
+                    ? graphCount
                     : offset + pageLimit
-                let nextPageID = end < graph.count
-                    ? try await querySnapshotStore.reservePage(
-                        in: reservation,
-                        transaction: snapshotTransaction
-                    )
+                let nextPageID = end < graphCount
+                    ? try await querySnapshotStore.reservePage(in: reservation)
                     : nil
-                let page = try makePage(
-                    graph,
-                    range: offset..<end,
+                let page = try Self.page(
+                    graph.materializePage(offset..<end),
                     continuation: nextPageID.map {
                         reservation.continuation(pageID: $0)
                     },
@@ -363,7 +401,7 @@ struct DatabaseGraphQueryService: Sendable {
                     consumedPayloadBytes: totalPayloadBytes,
                     maximumIntermediateBytes: request.budget
                         .maximumIntermediateBytes,
-                    transaction: snapshotTransaction
+                    workMeter: workMeter
                 )
                 let nextCount = continuationPageCount
                     .addingReportingOverflow(1)
@@ -380,10 +418,9 @@ struct DatabaseGraphQueryService: Sendable {
             try await querySnapshotStore.commitWrite(
                 reservation,
                 pageCount: continuationPageCount,
-                totalPayloadBytes: totalPayloadBytes,
-                transaction: snapshotTransaction
+                totalPayloadBytes: totalPayloadBytes
             )
-            let firstPage = try makePage(
+            let firstPage = try makeOutputPage(
                 graph,
                 range: 0..<pageLimit,
                 continuation: reservation.continuation(
@@ -391,13 +428,9 @@ struct DatabaseGraphQueryService: Sendable {
                 ),
                 readPoint: readPoint
             )
-            try Self.recordOutput(firstPage, workMeter: workMeter)
             return firstPage
         } catch {
             let operationError = error
-            guard snapshotTransaction == nil else {
-                throw operationError
-            }
             do {
                 try await querySnapshotStore.abortWrite(reservation)
             } catch {
@@ -410,21 +443,14 @@ struct DatabaseGraphQueryService: Sendable {
         }
     }
 
-    private func makePage(
-        _ graph: borrowing DatabaseRetainedRDFGraph,
+    private func makeOutputPage(
+        _ graph: DatabaseSharedRetainedRDFGraph,
         range: Range<Int>,
         continuation: ByteString?,
         readPoint: DatabaseTransactionReadPoint.Value
     ) throws -> RDFGraphPage {
-        var quads: [RDFQuad] = []
-        quads.reserveCapacity(range.count)
-        for index in range {
-            graph.withElement(at: index) { quad in
-                quads.append(copy quad)
-            }
-        }
         return try Self.page(
-            consume quads,
+            graph.materializePage(range),
             continuation: continuation,
             readPoint: readPoint
         )
@@ -453,40 +479,6 @@ struct DatabaseGraphQueryService: Sendable {
         #endif
     }
 
-    private static func encodeCursor(
-        kind: DatabaseGraphQueryPageCursor.Kind,
-        requestFingerprint: ByteString,
-        readPoint: DatabaseStorageReadPosition?,
-        resultFingerprint: ByteString,
-        tripleOffset: UInt64,
-        schemaGeneration: UInt64,
-        lease: DatabaseExecutionStorage,
-        limits: DatabaseWireLimits
-    ) throws -> ByteString {
-        #if DATABASE_SERVER_MULTI_BASE
-        return try DatabaseGraphQueryPageCursor(
-            kind: kind,
-            resource: lease.resource,
-            schemaGeneration: schemaGeneration,
-            dataGeneration: lease.generation,
-            requestFingerprint: requestFingerprint,
-            restorableReadPosition: readPoint,
-            resultFingerprint: resultFingerprint,
-            tripleOffset: tripleOffset
-        ).encode(limits: limits)
-        #else
-        return try DatabaseGraphQueryPageCursor(
-            kind: kind,
-            schemaGeneration: schemaGeneration,
-            dataGeneration: lease.generation,
-            requestFingerprint: requestFingerprint,
-            restorableReadPosition: readPoint,
-            resultFingerprint: resultFingerprint,
-            tripleOffset: tripleOffset
-        ).encode(limits: limits)
-        #endif
-    }
-
     private static func recordOutput(
         _ page: RDFGraphPage,
         workMeter: DatabaseWorkMeter
@@ -500,6 +492,34 @@ struct DatabaseGraphQueryService: Sendable {
             )
         }
         try workMeter.recordOutputRows(quadCount)
+    }
+
+    private func mapHistoricalReadFailure(
+        _ error: any Error
+    ) -> any Error {
+        if let error = error as? DatabaseQueryExecutionError {
+            return error
+        }
+        if let error = error as? DatabaseGraphQueryError {
+            return error
+        }
+        if let error = error as? DatabaseReadPositionError {
+            switch error {
+            case .positionIsNotRestorable:
+                return DatabaseQueryExecutionError.querySnapshotExpired
+            case .versionExceedsStorageRange,
+                 .invalidStorageVersion,
+                 .restoredPositionChanged:
+                return DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+        }
+        if let error = error as? StorageError,
+           error.code == .transactionTooOld
+            || error.code == .transactionFutureVersion
+        {
+            return DatabaseQueryExecutionError.querySnapshotExpired
+        }
+        return error
     }
 
     private func canonicalize(
@@ -579,17 +599,6 @@ struct DatabaseGraphQueryService: Sendable {
         )
     }
 
-    private func sparqlExecutor(
-        context: DatabaseOperationContext
-    ) throws -> any SPARQLSourceExecutor {
-        guard let executor = context.executor.runtimeConfiguration
-            .logicalSourceExecutors.sparqlExecutor else {
-            throw CanonicalReadError.unsupportedSource(
-                "SPARQL source executor is not registered"
-            )
-        }
-        return executor
-    }
 }
 
 #endif

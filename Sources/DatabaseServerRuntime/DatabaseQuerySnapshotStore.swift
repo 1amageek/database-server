@@ -200,8 +200,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         for lease: DatabaseExecutionStorage,
         schemaGeneration: UInt64,
         queryFingerprint: ByteString,
-        authorization: AuthorizationContext,
-        transaction: (any TransactionAccess)? = nil
+        authorization: AuthorizationContext
     ) async throws -> WriteReservation {
         #if DATABASE_SERVER_MULTI_BASE
         return try await beginWrite(
@@ -209,16 +208,14 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             dataGeneration: lease.generation,
             schemaGeneration: schemaGeneration,
             queryFingerprint: queryFingerprint,
-            authorization: authorization,
-            transaction: transaction
+            authorization: authorization
         )
         #else
         return try await beginWrite(
             dataGeneration: lease.generation,
             schemaGeneration: schemaGeneration,
             queryFingerprint: queryFingerprint,
-            authorization: authorization,
-            transaction: transaction
+            authorization: authorization
         )
         #endif
     }
@@ -239,7 +236,26 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         }
     }
 
-    private struct Manifest: DatabaseServerFrameValue {
+    package struct HistoricalQueryContinuation: Sendable {
+        package let readVersion: UInt64
+        package let continuation: QueryContinuation
+        fileprivate let snapshotID: ByteString
+        fileprivate let stepID: ByteString
+        fileprivate let manifest: HistoricalManifest
+        fileprivate let step: HistoricalQueryStep
+    }
+
+    package struct HistoricalGraphContinuation: Sendable {
+        package let readVersion: UInt64
+        package let resultFingerprint: ByteString
+        package let offset: UInt64
+        fileprivate let snapshotID: ByteString
+        fileprivate let stepID: ByteString
+        fileprivate let manifest: HistoricalManifest
+        fileprivate let step: HistoricalGraphStep
+    }
+
+    private struct Manifest: DatabaseServerFrameValue, Equatable {
         let target: Target
         let schemaGeneration: UInt64
         let principalDigest: ByteString
@@ -311,6 +327,296 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             self.slot = slot
             self.pageCount = pageCount
             self.totalPayloadBytes = totalPayloadBytes
+        }
+    }
+
+    /// Marks the one page whose successful replay completed this snapshot.
+    /// The page remains durable until expiry so the opaque terminal token can
+    /// be replayed, while the principal slot is no longer active.
+    private struct TerminalRecord: DatabaseServerFrameValue, Equatable {
+        let pageID: ByteString
+
+        func encode(
+            to encoder: inout DatabaseServerFrameEncoder
+        ) throws(StorageFrameError) {
+            try encoder.writeBytes(pageID)
+        }
+
+        init(
+            from decoder: inout DatabaseServerFrameDecoder
+        ) throws(StorageFrameError) {
+            pageID = try decoder.readBytes()
+            guard pageID.count == 16 else {
+                throw .invalidValue
+            }
+        }
+
+        init(pageID: ByteString) {
+            self.pageID = pageID
+        }
+    }
+
+    fileprivate enum HistoricalKind: UInt8, Sendable, Equatable {
+        case query = 1
+        case graph = 2
+    }
+
+    private struct HistoricalTerminal: DatabaseServerFrameValue, Equatable {
+        let kind: HistoricalKind
+        let stepID: ByteString
+
+        func encode(
+            to encoder: inout DatabaseServerFrameEncoder
+        ) throws(StorageFrameError) {
+            encoder.writeUInt8(kind.rawValue)
+            try encoder.writeBytes(stepID)
+        }
+
+        init(
+            from decoder: inout DatabaseServerFrameDecoder
+        ) throws(StorageFrameError) {
+            guard let kind = HistoricalKind(
+                rawValue: try decoder.readUInt8()
+            ) else {
+                throw .invalidValue
+            }
+            self.kind = kind
+            self.stepID = try decoder.readBytes()
+            guard stepID.count == 16 else {
+                throw .invalidValue
+            }
+        }
+
+        init(kind: HistoricalKind, stepID: ByteString) {
+            self.kind = kind
+            self.stepID = stepID
+        }
+    }
+
+    fileprivate struct HistoricalManifest: DatabaseServerFrameValue, Equatable {
+        let kind: HistoricalKind
+        let target: Target
+        let schemaGeneration: UInt64
+        let principalDigest: ByteString
+        let queryFingerprint: ByteString
+        let expiresAt: Timestamp
+        let slot: UInt8
+
+        func encode(
+            to encoder: inout DatabaseServerFrameEncoder
+        ) throws(StorageFrameError) {
+            encoder.writeUInt8(kind.rawValue)
+            try target.encode(to: &encoder)
+            encoder.writeUInt64(schemaGeneration)
+            try encoder.writeBytes(principalDigest)
+            try encoder.writeBytes(queryFingerprint)
+            encoder.writeInt64(expiresAt.secondsSinceUnixEpoch)
+            encoder.writeUInt32(expiresAt.nanoseconds)
+            encoder.writeUInt8(slot)
+        }
+
+        init(
+            from decoder: inout DatabaseServerFrameDecoder
+        ) throws(StorageFrameError) {
+            guard let kind = HistoricalKind(
+                rawValue: try decoder.readUInt8()
+            ) else {
+                throw .invalidValue
+            }
+            self.kind = kind
+            self.target = try Target(from: &decoder)
+            self.schemaGeneration = try decoder.readUInt64()
+            self.principalDigest = try decoder.readBytes()
+            self.queryFingerprint = try decoder.readBytes()
+            do {
+                self.expiresAt = try Timestamp(
+                    secondsSinceUnixEpoch: decoder.readInt64(),
+                    nanoseconds: decoder.readUInt32()
+                )
+            } catch {
+                throw .invalidTimestamp
+            }
+            self.slot = try decoder.readUInt8()
+            guard principalDigest.count == 32,
+                  queryFingerprint.count == 32,
+                  slot < DatabaseQuerySnapshotStore.maximumActiveCount
+            else {
+                throw .invalidValue
+            }
+        }
+
+        init(
+            kind: HistoricalKind,
+            target: Target,
+            schemaGeneration: UInt64,
+            principalDigest: ByteString,
+            queryFingerprint: ByteString,
+            expiresAt: Timestamp,
+            slot: UInt8
+        ) {
+            self.kind = kind
+            self.target = target
+            self.schemaGeneration = schemaGeneration
+            self.principalDigest = principalDigest
+            self.queryFingerprint = queryFingerprint
+            self.expiresAt = expiresAt
+            self.slot = slot
+        }
+    }
+
+    fileprivate struct HistoricalQueryStep: DatabaseServerFrameValue, Equatable {
+        let readVersion: UInt64
+        let continuation: ByteString
+        let successorID: ByteString?
+
+        func encode(
+            to encoder: inout DatabaseServerFrameEncoder
+        ) throws(StorageFrameError) {
+            encoder.writeUInt64(readVersion)
+            try encoder.writeBytes(continuation)
+            encoder.writeUInt8(successorID == nil ? 0 : 1)
+            if let successorID {
+                try encoder.writeBytes(successorID)
+            }
+        }
+
+        init(
+            from decoder: inout DatabaseServerFrameDecoder
+        ) throws(StorageFrameError) {
+            self.readVersion = try decoder.readUInt64()
+            self.continuation = try decoder.readBytes()
+            switch try decoder.readUInt8() {
+            case 0:
+                self.successorID = nil
+            case 1:
+                self.successorID = try decoder.readBytes()
+            default:
+                throw .invalidValue
+            }
+            guard !continuation.isEmpty,
+                  continuation.count
+                    <= DatabaseQuerySnapshotStore.maximumHistoricalStateBytes,
+                  successorID == nil || successorID?.count == 16
+            else {
+                throw .invalidValue
+            }
+        }
+
+        /// Whether this stored record still describes the step a caller
+        /// captured in its continuation handle.
+        ///
+        /// A handle is captured before the step is linked to a successor, and
+        /// that link is written exactly once, so a replayed advance must
+        /// compare the caller-visible state and accept a successor the caller
+        /// has not observed yet.
+        func describesSameStep(as held: HistoricalQueryStep) -> Bool {
+            readVersion == held.readVersion
+                && continuation == held.continuation
+                && (held.successorID == nil
+                    || held.successorID == successorID)
+        }
+
+        init(
+            readVersion: UInt64,
+            continuation: ByteString,
+            successorID: ByteString? = nil
+        ) {
+            self.readVersion = readVersion
+            self.continuation = continuation
+            self.successorID = successorID
+        }
+    }
+
+    fileprivate struct HistoricalGraphStep: DatabaseServerFrameValue, Equatable {
+        let readVersion: UInt64
+        let resultFingerprint: ByteString
+        let offset: UInt64
+        let successorID: ByteString?
+
+        func encode(
+            to encoder: inout DatabaseServerFrameEncoder
+        ) throws(StorageFrameError) {
+            encoder.writeUInt64(readVersion)
+            try encoder.writeBytes(resultFingerprint)
+            encoder.writeUInt64(offset)
+            encoder.writeUInt8(successorID == nil ? 0 : 1)
+            if let successorID {
+                try encoder.writeBytes(successorID)
+            }
+        }
+
+        init(
+            from decoder: inout DatabaseServerFrameDecoder
+        ) throws(StorageFrameError) {
+            self.readVersion = try decoder.readUInt64()
+            self.resultFingerprint = try decoder.readBytes()
+            self.offset = try decoder.readUInt64()
+            switch try decoder.readUInt8() {
+            case 0:
+                self.successorID = nil
+            case 1:
+                self.successorID = try decoder.readBytes()
+            default:
+                throw .invalidValue
+            }
+            guard resultFingerprint.count == DatabaseRequestDigest.byteCount,
+                  offset > 0,
+                  successorID == nil || successorID?.count == 16
+            else {
+                throw .invalidValue
+            }
+        }
+
+        /// Whether this stored record still describes the step a caller
+        /// captured in its continuation handle.
+        ///
+        /// A handle is captured before the step is linked to a successor, and
+        /// that link is written exactly once, so a replayed advance must
+        /// compare the caller-visible state and accept a successor the caller
+        /// has not observed yet.
+        func describesSameStep(as held: HistoricalGraphStep) -> Bool {
+            readVersion == held.readVersion
+                && resultFingerprint == held.resultFingerprint
+                && offset == held.offset
+                && (held.successorID == nil
+                    || held.successorID == successorID)
+        }
+
+        init(
+            readVersion: UInt64,
+            resultFingerprint: ByteString,
+            offset: UInt64,
+            successorID: ByteString? = nil
+        ) {
+            self.readVersion = readVersion
+            self.resultFingerprint = resultFingerprint
+            self.offset = offset
+            self.successorID = successorID
+        }
+    }
+
+    private struct HistoricalUsage: DatabaseServerFrameValue, Equatable {
+        let storedStepBytes: UInt64
+
+        func encode(
+            to encoder: inout DatabaseServerFrameEncoder
+        ) throws(StorageFrameError) {
+            encoder.writeUInt64(storedStepBytes)
+        }
+
+        init(
+            from decoder: inout DatabaseServerFrameDecoder
+        ) throws(StorageFrameError) {
+            self.storedStepBytes = try decoder.readUInt64()
+            guard storedStepBytes > 0,
+                  storedStepBytes
+                    <= DatabaseQuerySnapshotStore.maximumSpoolBytes else {
+                throw .invalidValue
+            }
+        }
+
+        init(storedStepBytes: UInt64) {
+            self.storedStepBytes = storedStepBytes
         }
     }
 
@@ -508,7 +814,8 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     private static let snapshotLifetimeSeconds: Int64 = 15 * 60
     private static let chunkByteCount = 60 * 1_024
     private static let maximumActiveCount: UInt8 = 8
-    private static let maximumSpoolBytes: UInt64 = 16 * 1_024 * 1_024
+    package static let maximumSpoolBytes: UInt64 = 16 * 1_024 * 1_024
+    private static let maximumHistoricalStateBytes = 4 * 1_024
     package static let continuationMarker: UInt8 = 0x51
     package static let continuationByteCount = 33
 
@@ -517,39 +824,32 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     private let identifierGenerator: AnyDatabaseUUIDGenerator
     private let scheduler: AnyDatabaseJobScheduler
     private let wireLimits: DatabaseWireLimits
+    private let historicalStorageByteLimit: UInt64
     private let snapshots: Subspace
     private let principalSlots: Subspace
     private let expirations: Subspace
 
     package var controlContainer: DBContainer { container }
 
-    /// Reuses the caller's data transaction only when its physical storage
-    /// domain is also the control domain. This keeps result pages and their
-    /// manifest in one atomic commit and avoids a nested transaction runner.
-    package func controlWriteTransaction(
-        for lease: DatabaseExecutionStorage,
-        active transaction: any TransactionAccess
-    ) -> (any TransactionAccess)? {
-        guard lease.domainIdentifier == container.controlStorage().domainIdentifier
-        else {
-            return nil
-        }
-        return transaction
-    }
-
     package init(
         container: DBContainer,
         clock: AnyDatabaseWallClock,
         identifierGenerator: AnyDatabaseUUIDGenerator,
         scheduler: AnyDatabaseJobScheduler,
-        wireLimits: DatabaseWireLimits
+        wireLimits: DatabaseWireLimits,
+        historicalStorageByteLimit: UInt64 = maximumSpoolBytes
     ) {
+        precondition(
+            historicalStorageByteLimit > 0
+                && historicalStorageByteLimit <= Self.maximumSpoolBytes
+        )
         self.container = container
         self.clock = clock
         self.identifierGenerator = identifierGenerator
         self.scheduler = scheduler
         self.wireLimits = wireLimits
-        let root = container.controlStorage().root.subspace("query-snapshots")
+        self.historicalStorageByteLimit = historicalStorageByteLimit
+        let root = container.controlStorage().systemRoot.subspace("query-snapshots")
         self.snapshots = root.subspace("snapshots")
         self.principalSlots = root.subspace("principals")
         self.expirations = root.subspace("expirations")
@@ -561,15 +861,13 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         dataGeneration: UInt64,
         schemaGeneration: UInt64,
         queryFingerprint: ByteString,
-        authorization: AuthorizationContext,
-        transaction: (any TransactionAccess)? = nil
+        authorization: AuthorizationContext
     ) async throws -> WriteReservation {
         try await beginWrite(
             target: .resource(resource, generation: dataGeneration),
             schemaGeneration: schemaGeneration,
             queryFingerprint: queryFingerprint,
-            authorization: authorization,
-            transaction: transaction
+            authorization: authorization
         )
     }
     #else
@@ -577,15 +875,13 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         dataGeneration: UInt64,
         schemaGeneration: UInt64,
         queryFingerprint: ByteString,
-        authorization: AuthorizationContext,
-        transaction: (any TransactionAccess)? = nil
+        authorization: AuthorizationContext
     ) async throws -> WriteReservation {
         try await beginWrite(
             target: .database(generation: dataGeneration),
             schemaGeneration: schemaGeneration,
             queryFingerprint: queryFingerprint,
-            authorization: authorization,
-            transaction: transaction
+            authorization: authorization
         )
     }
     #endif
@@ -650,8 +946,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         basePlacementGenerations: [Base.ID: UInt64],
         schemaGeneration: UInt64,
         queryFingerprint: ByteString,
-        authorization: AuthorizationContext,
-        transaction: (any TransactionAccess)? = nil
+        authorization: AuthorizationContext
     ) async throws -> WriteReservation {
         try await beginWrite(
             target: .composition(
@@ -660,8 +955,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             ),
             schemaGeneration: schemaGeneration,
             queryFingerprint: queryFingerprint,
-            authorization: authorization,
-            transaction: transaction
+            authorization: authorization
         )
     }
     #endif
@@ -670,15 +964,14 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         target: Target,
         schemaGeneration: UInt64,
         queryFingerprint: ByteString,
-        authorization: AuthorizationContext,
-        transaction: (any TransactionAccess)?
+        authorization: AuthorizationContext
     ) async throws -> WriteReservation {
         guard Self.isValid(target: target),
               queryFingerprint.count == 32,
-              let principal = authorization.principal else {
+              authorization.principal != nil else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
-        let principalDigest = Self.digest(utf8: principal.identifier)
+        let principalDigest = try authorizationDigest(authorization)
         let now = clock.now
         let expiresAt = try Self.addingLifetime(to: now)
 
@@ -695,8 +988,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                 snapshotID: snapshotID,
                 principalDigest: principalDigest,
                 expiresAt: expiresAt,
-                now: now,
-                transaction: transaction
+                now: now
             ) else {
                 continue
             }
@@ -735,15 +1027,850 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         #endif
     }
 
+    package func canPersistHistoricalContinuation(
+        _ continuation: QueryContinuation
+    ) -> Bool {
+        !continuation.bytes.isEmpty
+            && continuation.bytes.count <= Self.maximumHistoricalStateBytes
+    }
+
+    package func publishHistoricalQuery(
+        _ continuation: QueryContinuation,
+        readVersion: UInt64,
+        in reservation: WriteReservation
+    ) async throws -> ByteString {
+        guard canPersistHistoricalContinuation(continuation),
+              Int64(exactly: readVersion) != nil else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        let stepID = Self.identifierBytes(identifierGenerator.generate())
+        try await publishHistorical(
+            reservation: reservation,
+            kind: .query,
+            stepID: stepID,
+            step: HistoricalQueryStep(
+                readVersion: readVersion,
+                continuation: continuation.bytes
+            )
+        )
+        return reservation.continuation(pageID: stepID)
+    }
+
+    package func publishHistoricalGraph(
+        readVersion: UInt64,
+        resultFingerprint: ByteString,
+        offset: UInt64,
+        in reservation: WriteReservation
+    ) async throws -> ByteString {
+        guard Int64(exactly: readVersion) != nil,
+              resultFingerprint.count == DatabaseRequestDigest.byteCount,
+              offset > 0 else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        let stepID = Self.identifierBytes(identifierGenerator.generate())
+        try await publishHistorical(
+            reservation: reservation,
+            kind: .graph,
+            stepID: stepID,
+            step: HistoricalGraphStep(
+                readVersion: readVersion,
+                resultFingerprint: resultFingerprint,
+                offset: offset
+            )
+        )
+        return reservation.continuation(pageID: stepID)
+    }
+
+    private func publishHistorical<Step: DatabaseServerFrameValue>(
+        reservation: WriteReservation,
+        kind: HistoricalKind,
+        stepID: ByteString,
+        step: Step
+    ) async throws {
+        let encodedStep = try DatabaseServerFrameCodec.encode(step)
+        guard let storedStepBytes = UInt64(exactly: encodedStep.count),
+              storedStepBytes <= historicalStorageByteLimit else {
+            throw DatabaseQueryExecutionError
+                .querySnapshotStorageLimitExceeded(
+                    maximumBytes: historicalStorageByteLimit
+                )
+        }
+        try await withControlAccess { transaction in
+            try await self.validateCurrentTarget(
+                reservation.target,
+                transaction: transaction
+            )
+            guard try await self.validatePending(
+                reservation,
+                transaction: transaction
+            ),
+                  try await transaction.getValue(
+                    for: self.manifestKey(reservation.snapshotID),
+                    snapshot: false
+                  ) == nil,
+                  try await transaction.getValue(
+                    for: self.historicalManifestKey(reservation.snapshotID),
+                    snapshot: false
+                  ) == nil,
+                  try await transaction.getValue(
+                    for: self.historicalStepKey(
+                        snapshotID: reservation.snapshotID,
+                        stepID: stepID
+                    ),
+                    snapshot: false
+                  ) == nil,
+                  try await transaction.getValue(
+                    for: self.historicalUsageKey(reservation.snapshotID),
+                    snapshot: false
+                  ) == nil else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            let manifest = HistoricalManifest(
+                kind: kind,
+                target: reservation.target,
+                schemaGeneration: reservation.schemaGeneration,
+                principalDigest: reservation.principalDigest,
+                queryFingerprint: reservation.queryFingerprint,
+                expiresAt: reservation.expiresAt,
+                slot: reservation.slot
+            )
+            try transaction.setValue(
+                DatabaseServerFrameCodec.encode(manifest),
+                for: self.historicalManifestKey(reservation.snapshotID)
+            )
+            try transaction.setValue(
+                encodedStep,
+                for: self.historicalStepKey(
+                    snapshotID: reservation.snapshotID,
+                    stepID: stepID
+                )
+            )
+            try transaction.setValue(
+                DatabaseServerFrameCodec.encode(
+                    HistoricalUsage(storedStepBytes: storedStepBytes)
+                ),
+                for: self.historicalUsageKey(reservation.snapshotID)
+            )
+            try transaction.clear(key: self.pendingKey(reservation.snapshotID))
+        }
+    }
+
+    package func loadHistoricalQuery(
+        continuation: ByteString,
+        lease: DatabaseExecutionStorage,
+        schemaGeneration: UInt64,
+        queryFingerprint: ByteString,
+        authorization: AuthorizationContext
+    ) async throws -> HistoricalQueryContinuation? {
+        #if DATABASE_SERVER_MULTI_BASE
+        let target = Target.resource(
+            lease.resource,
+            generation: lease.generation
+        )
+        #else
+        let target = Target.database(generation: lease.generation)
+        #endif
+        guard let loaded: (
+            snapshotID: ByteString,
+            stepID: ByteString,
+            manifest: HistoricalManifest,
+            step: HistoricalQueryStep
+        ) = try await loadHistorical(
+            continuation: continuation,
+            kind: .query,
+            stepType: HistoricalQueryStep.self,
+            target: target,
+            schemaGeneration: schemaGeneration,
+            queryFingerprint: queryFingerprint,
+            authorization: authorization
+        ) else {
+            return nil
+        }
+        return HistoricalQueryContinuation(
+            readVersion: loaded.step.readVersion,
+            continuation: QueryContinuation(loaded.step.continuation),
+            snapshotID: loaded.snapshotID,
+            stepID: loaded.stepID,
+            manifest: loaded.manifest,
+            step: loaded.step
+        )
+    }
+
+    package func loadHistoricalGraph(
+        continuation: ByteString,
+        lease: DatabaseExecutionStorage,
+        schemaGeneration: UInt64,
+        queryFingerprint: ByteString,
+        authorization: AuthorizationContext
+    ) async throws -> HistoricalGraphContinuation? {
+        #if DATABASE_SERVER_MULTI_BASE
+        let target = Target.resource(
+            lease.resource,
+            generation: lease.generation
+        )
+        #else
+        let target = Target.database(generation: lease.generation)
+        #endif
+        guard let loaded: (
+            snapshotID: ByteString,
+            stepID: ByteString,
+            manifest: HistoricalManifest,
+            step: HistoricalGraphStep
+        ) = try await loadHistorical(
+            continuation: continuation,
+            kind: .graph,
+            stepType: HistoricalGraphStep.self,
+            target: target,
+            schemaGeneration: schemaGeneration,
+            queryFingerprint: queryFingerprint,
+            authorization: authorization
+        ) else {
+            return nil
+        }
+        return HistoricalGraphContinuation(
+            readVersion: loaded.step.readVersion,
+            resultFingerprint: loaded.step.resultFingerprint,
+            offset: loaded.step.offset,
+            snapshotID: loaded.snapshotID,
+            stepID: loaded.stepID,
+            manifest: loaded.manifest,
+            step: loaded.step
+        )
+    }
+
+    /// Atomically records that a historical query continuation produced its
+    /// terminal response and releases the principal's active slot. The
+    /// historical step remains available until expiry so replay can converge
+    /// on the same terminal input without consuming an active slot.
+    package func completeHistoricalQuery(
+        _ current: HistoricalQueryContinuation
+    ) async throws {
+        try await completeHistorical(
+            kind: .query,
+            snapshotID: current.snapshotID,
+            stepID: current.stepID,
+            manifest: current.manifest
+        )
+    }
+
+    /// Atomically records that a historical graph continuation produced its
+    /// terminal response and releases the principal's active slot. The
+    /// historical step remains available until expiry for deterministic
+    /// replay.
+    package func completeHistoricalGraph(
+        _ current: HistoricalGraphContinuation
+    ) async throws {
+        try await completeHistorical(
+            kind: .graph,
+            snapshotID: current.snapshotID,
+            stepID: current.stepID,
+            manifest: current.manifest
+        )
+    }
+
+    private func completeHistorical(
+        kind: HistoricalKind,
+        snapshotID: ByteString,
+        stepID: ByteString,
+        manifest expectedManifest: HistoricalManifest
+    ) async throws {
+        guard expectedManifest.kind == kind,
+              snapshotID.count == 16,
+              stepID.count == 16 else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        let terminalBytes = try DatabaseServerFrameCodec.encode(
+            HistoricalTerminal(kind: kind, stepID: stepID)
+        )
+        guard let terminalByteCount = UInt64(exactly: terminalBytes.count) else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        try await withControlAccess { transaction in
+            guard let manifestBytes = try await transaction.getValue(
+                for: self.historicalManifestKey(snapshotID),
+                snapshot: false
+            ) else {
+                throw DatabaseQueryExecutionError.invalidContinuation
+            }
+            let manifest: HistoricalManifest
+            do {
+                manifest = try DatabaseServerFrameCodec.decode(
+                    HistoricalManifest.self,
+                    from: manifestBytes
+                )
+            } catch {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            guard manifest == expectedManifest else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            guard let stepBytes = try await transaction.getValue(
+                for: self.historicalStepKey(
+                    snapshotID: snapshotID,
+                    stepID: stepID
+                ),
+                snapshot: false
+            ) else {
+                throw DatabaseQueryExecutionError.invalidContinuation
+            }
+            switch kind {
+            case .query:
+                do {
+                    let step = try DatabaseServerFrameCodec.decode(
+                        HistoricalQueryStep.self,
+                        from: stepBytes
+                    )
+                    guard step.successorID == nil else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                } catch let error as DatabaseQueryExecutionError {
+                    throw error
+                } catch {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+            case .graph:
+                do {
+                    let step = try DatabaseServerFrameCodec.decode(
+                        HistoricalGraphStep.self,
+                        from: stepBytes
+                    )
+                    guard step.successorID == nil else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                } catch let error as DatabaseQueryExecutionError {
+                    throw error
+                } catch {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+            }
+            if let terminalBytes = try await transaction.getValue(
+                for: self.historicalTerminalKey(snapshotID),
+                snapshot: false
+            ) {
+                let terminal: HistoricalTerminal
+                do {
+                    terminal = try DatabaseServerFrameCodec.decode(
+                        HistoricalTerminal.self,
+                        from: terminalBytes
+                    )
+                } catch {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                guard terminal.kind == kind,
+                      terminal.stepID == stepID else {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                return
+            }
+            guard let usageBytes = try await transaction.getValue(
+                for: self.historicalUsageKey(snapshotID),
+                snapshot: false
+            ) else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            let usage: HistoricalUsage
+            do {
+                usage = try DatabaseServerFrameCodec.decode(
+                    HistoricalUsage.self,
+                    from: usageBytes
+                )
+            } catch {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            guard usage.storedStepBytes <= self.historicalStorageByteLimit else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            let nextUsage = usage.storedStepBytes
+                .addingReportingOverflow(terminalByteCount)
+            guard !nextUsage.overflow,
+                  nextUsage.partialValue <= self.historicalStorageByteLimit else {
+                throw DatabaseQueryExecutionError
+                    .querySnapshotStorageLimitExceeded(
+                        maximumBytes: self.historicalStorageByteLimit
+                    )
+            }
+            try transaction.setValue(
+                terminalBytes,
+                for: self.historicalTerminalKey(snapshotID)
+            )
+            try transaction.setValue(
+                DatabaseServerFrameCodec.encode(
+                    HistoricalUsage(storedStepBytes: nextUsage.partialValue)
+                ),
+                for: self.historicalUsageKey(snapshotID)
+            )
+            try await self.clearActiveSlotIfOwned(
+                snapshotID: snapshotID,
+                principalDigest: manifest.principalDigest,
+                slot: manifest.slot,
+                transaction: transaction
+            )
+        }
+    }
+
+    private func loadHistorical<Step: DatabaseServerFrameValue>(
+        continuation: ByteString,
+        kind: HistoricalKind,
+        stepType: Step.Type,
+        target: Target,
+        schemaGeneration: UInt64,
+        queryFingerprint: ByteString,
+        authorization: AuthorizationContext
+    ) async throws -> (
+        snapshotID: ByteString,
+        stepID: ByteString,
+        manifest: HistoricalManifest,
+        step: Step
+    )? {
+        guard continuation.count == Self.continuationByteCount,
+              continuation.first == Self.continuationMarker,
+              queryFingerprint.count == DatabaseRequestDigest.byteCount else {
+            throw DatabaseQueryExecutionError.invalidContinuation
+        }
+        let snapshotID = continuation[1..<17]
+        let stepID = continuation[17..<33]
+        let loaded: (HistoricalManifest, Step)? = try await container
+            .withControlMetadataTransaction(configuration: .readOnly) {
+                transaction in
+                guard let manifestBytes = try await transaction
+                    .executionStorageAccess.getValue(
+                        for: self.historicalManifestKey(snapshotID),
+                        snapshot: false
+                    ) else {
+                    return nil
+                }
+                guard let stepBytes = try await transaction
+                    .executionStorageAccess.getValue(
+                        for: self.historicalStepKey(
+                            snapshotID: snapshotID,
+                            stepID: stepID
+                        ),
+                        snapshot: false
+                    ),
+                      let usageBytes = try await transaction
+                        .executionStorageAccess.getValue(
+                            for: self.historicalUsageKey(snapshotID),
+                            snapshot: false
+                        ) else {
+                    throw DatabaseQueryExecutionError.invalidContinuation
+                }
+                do {
+                    let manifest = try DatabaseServerFrameCodec.decode(
+                            HistoricalManifest.self,
+                            from: manifestBytes
+                        )
+                    let step = try DatabaseServerFrameCodec.decode(
+                        stepType,
+                        from: stepBytes
+                    )
+                    let usage = try DatabaseServerFrameCodec.decode(
+                        HistoricalUsage.self,
+                        from: usageBytes
+                    )
+                    guard usage.storedStepBytes
+                        <= self.historicalStorageByteLimit else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                    return (manifest, step)
+                } catch {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+            }
+        guard let loaded else { return nil }
+        let principalDigest = try authorizationDigest(authorization)
+        guard loaded.0.kind == kind,
+              Self.constantTimeEqual(
+                loaded.0.principalDigest,
+                principalDigest
+              ),
+              loaded.0.target.hasSameIdentity(as: target),
+              Self.constantTimeEqual(
+                loaded.0.queryFingerprint,
+                queryFingerprint
+              ) else {
+            throw DatabaseQueryExecutionError.invalidContinuation
+        }
+        guard loaded.0.target == target,
+              loaded.0.schemaGeneration == schemaGeneration else {
+            throw DatabaseQueryExecutionError.querySnapshotStale
+        }
+        if loaded.0.expiresAt <= clock.now {
+            try await clearReserved(
+                snapshotID: snapshotID,
+                principalDigest: loaded.0.principalDigest,
+                slot: loaded.0.slot,
+                expiresAt: loaded.0.expiresAt
+            )
+            throw DatabaseQueryExecutionError.querySnapshotExpired
+        }
+        return (snapshotID, stepID, loaded.0, loaded.1)
+    }
+
+    private func advancedHistoricalUsage(
+        _ usage: HistoricalUsage,
+        replacing currentStepBytes: ByteString,
+        with updatedStepBytes: ByteString,
+        adding successorStepBytes: ByteString
+    ) throws -> HistoricalUsage {
+        guard let currentByteCount = UInt64(
+            exactly: currentStepBytes.count
+        ),
+              let updatedByteCount = UInt64(
+                exactly: updatedStepBytes.count
+              ),
+              let successorByteCount = UInt64(
+                exactly: successorStepBytes.count
+              ),
+              usage.storedStepBytes >= currentByteCount else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        let retainedByteCount = usage.storedStepBytes - currentByteCount
+        let updatedTotal = retainedByteCount.addingReportingOverflow(
+            updatedByteCount
+        )
+        let nextTotal = updatedTotal.partialValue.addingReportingOverflow(
+            successorByteCount
+        )
+        guard !updatedTotal.overflow,
+              !nextTotal.overflow,
+              nextTotal.partialValue <= historicalStorageByteLimit else {
+            throw DatabaseQueryExecutionError
+                .querySnapshotStorageLimitExceeded(
+                    maximumBytes: historicalStorageByteLimit
+                )
+        }
+        return HistoricalUsage(storedStepBytes: nextTotal.partialValue)
+    }
+
+    package func advanceHistoricalQuery(
+        _ current: HistoricalQueryContinuation,
+        to continuation: QueryContinuation
+    ) async throws -> ByteString {
+        guard canPersistHistoricalContinuation(continuation) else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        guard current.manifest.expiresAt > clock.now else {
+            throw DatabaseQueryExecutionError.querySnapshotExpired
+        }
+        for _ in 0..<16 {
+            let proposedID = Self.identifierBytes(
+                identifierGenerator.generate()
+            )
+            let successorID: ByteString? = try await withControlAccess {
+                transaction in
+                guard let manifestBytes = try await transaction.getValue(
+                    for: self.historicalManifestKey(current.snapshotID),
+                    snapshot: false
+                ),
+                      let stepBytes = try await transaction.getValue(
+                        for: self.historicalStepKey(
+                            snapshotID: current.snapshotID,
+                            stepID: current.stepID
+                        ),
+                        snapshot: false
+                      ),
+                      let usageBytes = try await transaction.getValue(
+                        for: self.historicalUsageKey(current.snapshotID),
+                        snapshot: false
+                      ) else {
+                    throw DatabaseQueryExecutionError.invalidContinuation
+                }
+                let manifest: HistoricalManifest
+                let stored: HistoricalQueryStep
+                let usage: HistoricalUsage
+                do {
+                    manifest = try DatabaseServerFrameCodec.decode(
+                        HistoricalManifest.self,
+                        from: manifestBytes
+                    )
+                    stored = try DatabaseServerFrameCodec.decode(
+                        HistoricalQueryStep.self,
+                        from: stepBytes
+                    )
+                    usage = try DatabaseServerFrameCodec.decode(
+                        HistoricalUsage.self,
+                        from: usageBytes
+                    )
+                } catch {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                guard manifest == current.manifest,
+                      stored.describesSameStep(as: current.step) else {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                if let terminalBytes = try await transaction.getValue(
+                    for: self.historicalTerminalKey(current.snapshotID),
+                    snapshot: false
+                ) {
+                    let terminal: HistoricalTerminal
+                    do {
+                        terminal = try DatabaseServerFrameCodec.decode(
+                            HistoricalTerminal.self,
+                            from: terminalBytes
+                        )
+                    } catch {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                    guard terminal.kind != .query
+                            || terminal.stepID != current.stepID else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                }
+                if let successorID = stored.successorID {
+                    guard let successorBytes = try await transaction.getValue(
+                        for: self.historicalStepKey(
+                            snapshotID: current.snapshotID,
+                            stepID: successorID
+                        ),
+                        snapshot: false
+                    ) else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                    let successor = try DatabaseServerFrameCodec.decode(
+                        HistoricalQueryStep.self,
+                        from: successorBytes
+                    )
+                    guard successor.readVersion == current.readVersion,
+                          successor.continuation == continuation.bytes else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                    return successorID
+                }
+                guard try await transaction.getValue(
+                    for: self.historicalStepKey(
+                        snapshotID: current.snapshotID,
+                        stepID: proposedID
+                    ),
+                    snapshot: false
+                ) == nil else {
+                    return nil
+                }
+                let successorBytes = try DatabaseServerFrameCodec.encode(
+                    HistoricalQueryStep(
+                        readVersion: current.readVersion,
+                        continuation: continuation.bytes
+                    )
+                )
+                let updatedCurrentBytes = try DatabaseServerFrameCodec.encode(
+                    HistoricalQueryStep(
+                        readVersion: stored.readVersion,
+                        continuation: stored.continuation,
+                        successorID: proposedID
+                    )
+                )
+                let nextUsage = try self.advancedHistoricalUsage(
+                    usage,
+                    replacing: stepBytes,
+                    with: updatedCurrentBytes,
+                    adding: successorBytes
+                )
+                try transaction.setValue(
+                    successorBytes,
+                    for: self.historicalStepKey(
+                        snapshotID: current.snapshotID,
+                        stepID: proposedID
+                    )
+                )
+                try transaction.setValue(
+                    updatedCurrentBytes,
+                    for: self.historicalStepKey(
+                        snapshotID: current.snapshotID,
+                        stepID: current.stepID
+                    )
+                )
+                try transaction.setValue(
+                    DatabaseServerFrameCodec.encode(nextUsage),
+                    for: self.historicalUsageKey(current.snapshotID)
+                )
+                return proposedID
+            }
+            if let successorID {
+                return continuationToken(
+                    snapshotID: current.snapshotID,
+                    stepID: successorID
+                )
+            }
+        }
+        throw DatabaseQueryExecutionError.querySnapshotUnavailable(
+            "unable to reserve a unique historical continuation identifier"
+        )
+    }
+
+    package func advanceHistoricalGraph(
+        _ current: HistoricalGraphContinuation,
+        toOffset offset: UInt64
+    ) async throws -> ByteString {
+        guard offset > current.offset else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        guard current.manifest.expiresAt > clock.now else {
+            throw DatabaseQueryExecutionError.querySnapshotExpired
+        }
+        for _ in 0..<16 {
+            let proposedID = Self.identifierBytes(
+                identifierGenerator.generate()
+            )
+            let successorID: ByteString? = try await withControlAccess {
+                transaction in
+                guard let manifestBytes = try await transaction.getValue(
+                    for: self.historicalManifestKey(current.snapshotID),
+                    snapshot: false
+                ),
+                      let stepBytes = try await transaction.getValue(
+                        for: self.historicalStepKey(
+                            snapshotID: current.snapshotID,
+                            stepID: current.stepID
+                        ),
+                        snapshot: false
+                      ),
+                      let usageBytes = try await transaction.getValue(
+                        for: self.historicalUsageKey(current.snapshotID),
+                        snapshot: false
+                      ) else {
+                    throw DatabaseQueryExecutionError.invalidContinuation
+                }
+                let manifest: HistoricalManifest
+                let stored: HistoricalGraphStep
+                let usage: HistoricalUsage
+                do {
+                    manifest = try DatabaseServerFrameCodec.decode(
+                        HistoricalManifest.self,
+                        from: manifestBytes
+                    )
+                    stored = try DatabaseServerFrameCodec.decode(
+                        HistoricalGraphStep.self,
+                        from: stepBytes
+                    )
+                    usage = try DatabaseServerFrameCodec.decode(
+                        HistoricalUsage.self,
+                        from: usageBytes
+                    )
+                } catch {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                guard manifest == current.manifest,
+                      stored.describesSameStep(as: current.step) else {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                if let terminalBytes = try await transaction.getValue(
+                    for: self.historicalTerminalKey(current.snapshotID),
+                    snapshot: false
+                ) {
+                    let terminal: HistoricalTerminal
+                    do {
+                        terminal = try DatabaseServerFrameCodec.decode(
+                            HistoricalTerminal.self,
+                            from: terminalBytes
+                        )
+                    } catch {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                    guard terminal.kind != .graph
+                            || terminal.stepID != current.stepID else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                }
+                if let successorID = stored.successorID {
+                    guard let successorBytes = try await transaction.getValue(
+                        for: self.historicalStepKey(
+                            snapshotID: current.snapshotID,
+                            stepID: successorID
+                        ),
+                        snapshot: false
+                    ) else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                    let successor = try DatabaseServerFrameCodec.decode(
+                        HistoricalGraphStep.self,
+                        from: successorBytes
+                    )
+                    guard successor.readVersion == current.readVersion,
+                          successor.resultFingerprint
+                            == current.resultFingerprint,
+                          successor.offset == offset else {
+                        throw DatabaseQueryExecutionError
+                            .querySnapshotCorrupted
+                    }
+                    return successorID
+                }
+                guard try await transaction.getValue(
+                    for: self.historicalStepKey(
+                        snapshotID: current.snapshotID,
+                        stepID: proposedID
+                    ),
+                    snapshot: false
+                ) == nil else {
+                    return nil
+                }
+                let successorBytes = try DatabaseServerFrameCodec.encode(
+                    HistoricalGraphStep(
+                        readVersion: current.readVersion,
+                        resultFingerprint: current.resultFingerprint,
+                        offset: offset
+                    )
+                )
+                let updatedCurrentBytes = try DatabaseServerFrameCodec.encode(
+                    HistoricalGraphStep(
+                        readVersion: stored.readVersion,
+                        resultFingerprint: stored.resultFingerprint,
+                        offset: stored.offset,
+                        successorID: proposedID
+                    )
+                )
+                let nextUsage = try self.advancedHistoricalUsage(
+                    usage,
+                    replacing: stepBytes,
+                    with: updatedCurrentBytes,
+                    adding: successorBytes
+                )
+                try transaction.setValue(
+                    successorBytes,
+                    for: self.historicalStepKey(
+                        snapshotID: current.snapshotID,
+                        stepID: proposedID
+                    )
+                )
+                try transaction.setValue(
+                    updatedCurrentBytes,
+                    for: self.historicalStepKey(
+                        snapshotID: current.snapshotID,
+                        stepID: current.stepID
+                    )
+                )
+                try transaction.setValue(
+                    DatabaseServerFrameCodec.encode(nextUsage),
+                    for: self.historicalUsageKey(current.snapshotID)
+                )
+                return proposedID
+            }
+            if let successorID {
+                return continuationToken(
+                    snapshotID: current.snapshotID,
+                    stepID: successorID
+                )
+            }
+        }
+        throw DatabaseQueryExecutionError.querySnapshotUnavailable(
+            "unable to reserve a unique historical continuation identifier"
+        )
+    }
+
     package func reservePage(
-        in reservation: WriteReservation,
-        transaction: (any TransactionAccess)? = nil
+        in reservation: WriteReservation
     ) async throws -> ByteString {
         for _ in 0..<16 {
             let pageID = Self.identifierBytes(identifierGenerator.generate())
-            let didReserve = try await withControlAccess(
-                transaction: transaction
-            ) { transaction in
+            let didReserve = try await withControlAccess { transaction in
                     guard try await self.validatePending(
                         reservation,
                         transaction: transaction
@@ -787,7 +1914,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         to reservation: WriteReservation,
         consumedPayloadBytes: UInt64,
         maximumIntermediateBytes: UInt64,
-        transaction: (any TransactionAccess)? = nil
+        workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         try await appendResponse(
             .rows(page),
@@ -795,7 +1922,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             to: reservation,
             consumedPayloadBytes: consumedPayloadBytes,
             maximumIntermediateBytes: maximumIntermediateBytes,
-            transaction: transaction
+            workMeter: workMeter
         )
     }
 
@@ -805,7 +1932,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         to reservation: WriteReservation,
         consumedPayloadBytes: UInt64,
         maximumIntermediateBytes: UInt64,
-        transaction: (any TransactionAccess)? = nil
+        workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         try await appendResponse(
             .rdfGraph(page),
@@ -813,7 +1940,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             to: reservation,
             consumedPayloadBytes: consumedPayloadBytes,
             maximumIntermediateBytes: maximumIntermediateBytes,
-            transaction: transaction
+            workMeter: workMeter
         )
     }
 
@@ -823,31 +1950,51 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         to reservation: WriteReservation,
         consumedPayloadBytes: UInt64,
         maximumIntermediateBytes: UInt64,
-        transaction: (any TransactionAccess)?
+        workMeter: DatabaseWorkMeter
     ) async throws -> UInt64 {
         guard pageID.count == 16 else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
-        let payload = try DatabaseWireEncoder(limits: wireLimits)
-            .encodeResponseAndPayload(
-                DatabaseOperationCatalog.queryExecute,
-                requestID: 0,
-                response: response
-            ).payload
-        let maximum = min(
-            maximumIntermediateBytes,
-            Self.maximumSpoolBytes
+        let encoder = DatabaseWireEncoder(limits: wireLimits)
+        let payloadByteCount = try encoder.responsePayloadByteCount(
+            DatabaseOperationCatalog.queryExecute,
+            response: response
         )
+        guard let encodedPayloadByteCount = UInt64(
+            exactly: payloadByteCount
+        ) else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
         let nextTotal = consumedPayloadBytes.addingReportingOverflow(
-            UInt64(payload.count)
+            encodedPayloadByteCount
         )
         guard !nextTotal.overflow,
-              nextTotal.partialValue <= maximum else {
+              nextTotal.partialValue <= Self.maximumSpoolBytes else {
             throw DatabaseWorkLimitError.maximumIntermediateBytes(
                 stage: .resultMaterialization,
                 consumed: consumedPayloadBytes,
-                requested: UInt64(payload.count),
-                maximum: maximum
+                requested: encodedPayloadByteCount,
+                maximum: Self.maximumSpoolBytes
+            )
+        }
+        guard encodedPayloadByteCount <= maximumIntermediateBytes else {
+            throw DatabaseWorkLimitError.maximumIntermediateBytes(
+                stage: .resultMaterialization,
+                consumed: 0,
+                requested: encodedPayloadByteCount,
+                maximum: maximumIntermediateBytes
+            )
+        }
+        let payloadReservation = try workMeter.reserveIntermediate(
+            bytes: encodedPayloadByteCount,
+            at: .resultMaterialization
+        )
+        let payload = try ByteString.copying(count: payloadByteCount) {
+            output in
+            try encoder.encodeResponsePayload(
+                DatabaseOperationCatalog.queryExecute,
+                response: response,
+                into: output
             )
         }
 
@@ -858,17 +2005,16 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         try await writePage(
             payload,
             reservation: reservation,
-            pageID: pageID,
-            transaction: transaction
+            pageID: pageID
         )
+        withExtendedLifetime(payloadReservation) {}
         return nextTotal.partialValue
     }
 
     package func commitWrite(
         _ reservation: WriteReservation,
         pageCount: UInt32,
-        totalPayloadBytes: UInt64,
-        transaction: (any TransactionAccess)? = nil
+        totalPayloadBytes: UInt64
     ) async throws {
         guard pageCount > 0, totalPayloadBytes > 0 else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
@@ -886,8 +2032,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             queryFingerprint: reservation.queryFingerprint,
             expiresAt: reservation.expiresAt,
             pageCount: pageCount,
-            totalPayloadBytes: totalPayloadBytes,
-            transaction: transaction
+            totalPayloadBytes: totalPayloadBytes
         )
     }
 
@@ -1133,12 +2278,12 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         guard continuation.count == Self.continuationByteCount,
               continuation.first == Self.continuationMarker,
               queryFingerprint.count == 32,
-              let principal = authorization.principal else {
+              authorization.principal != nil else {
             throw DatabaseQueryExecutionError.invalidContinuation
         }
         let snapshotID = continuation[1..<17]
         let pageID = continuation[17..<33]
-        let principalDigest = Self.digest(utf8: principal.identifier)
+        let principalDigest = try authorizationDigest(authorization)
         let now = clock.now
 
         let loaded: (Manifest, ByteString)
@@ -1332,8 +2477,72 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                 throw DatabaseQueryExecutionError
                     .querySnapshotCorrupted
             }
+        } else {
+            try await terminalizePage(
+                snapshotID: snapshotID,
+                pageID: pageID,
+                manifest: manifest
+            )
         }
         return response
+    }
+
+    private func terminalizePage(
+        snapshotID: ByteString,
+        pageID: ByteString,
+        manifest expectedManifest: Manifest
+    ) async throws {
+        guard snapshotID.count == 16, pageID.count == 16 else {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        try await withControlAccess { transaction in
+            guard let manifestBytes = try await transaction.getValue(
+                for: self.manifestKey(snapshotID),
+                snapshot: false
+            ) else {
+                throw DatabaseQueryExecutionError.invalidContinuation
+            }
+            let manifest: Manifest
+            do {
+                manifest = try DatabaseServerFrameCodec.decode(
+                    Manifest.self,
+                    from: manifestBytes
+                )
+            } catch {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            guard manifest == expectedManifest else {
+                throw DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+            if let terminalBytes = try await transaction.getValue(
+                for: self.terminalKey(snapshotID),
+                snapshot: false
+            ) {
+                let terminal: TerminalRecord
+                do {
+                    terminal = try DatabaseServerFrameCodec.decode(
+                        TerminalRecord.self,
+                        from: terminalBytes
+                    )
+                } catch {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                guard terminal.pageID == pageID else {
+                    throw DatabaseQueryExecutionError.querySnapshotCorrupted
+                }
+                return
+            }
+            try transaction.setValue(
+                DatabaseServerFrameCodec.encode(TerminalRecord(pageID: pageID)),
+                for: self.terminalKey(snapshotID)
+            )
+            try await self.clearActiveSlotIfOwned(
+                snapshotID: snapshotID,
+                principalDigest: manifest.principalDigest,
+                slot: manifest.slot,
+                transaction: transaction
+            )
+        }
     }
 
     static func queryFingerprint(
@@ -1371,8 +2580,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     private func writePage(
         _ payload: ByteString,
         reservation: WriteReservation,
-        pageID: ByteString,
-        transaction: (any TransactionAccess)?
+        pageID: ByteString
     ) async throws {
         let snapshotID = reservation.snapshotID
         let chunkCount = (payload.count - 1) / Self.chunkByteCount + 1
@@ -1383,7 +2591,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             let start = chunkIndex * Self.chunkByteCount
             let end = min(start + Self.chunkByteCount, payload.count)
             let chunk = payload[start..<end]
-            try await withControlAccess(transaction: transaction) {
+            try await withControlAccess {
                 transaction in
                 try transaction.setValue(
                     chunk,
@@ -1400,7 +2608,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             payloadByteCount: UInt64(payload.count),
             digest: Self.digest(payload)
         )
-        try await withControlAccess(transaction: transaction) { transaction in
+        try await withControlAccess { transaction in
             guard try await self.validatePending(
                 reservation,
                 transaction: transaction
@@ -1460,10 +2668,9 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         queryFingerprint: ByteString,
         expiresAt: Timestamp,
         pageCount: UInt32,
-        totalPayloadBytes: UInt64,
-        transaction: (any TransactionAccess)?
+        totalPayloadBytes: UInt64
     ) async throws {
-        try await withControlAccess(transaction: transaction) {
+        try await withControlAccess {
             transaction in
             try await self.validateCurrentTarget(
                 target,
@@ -1602,16 +2809,19 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         snapshotID: ByteString,
         principalDigest: ByteString,
         expiresAt: Timestamp,
-        now: Timestamp,
-        transaction: (any TransactionAccess)?
+        now: Timestamp
     ) async throws -> PendingSnapshot? {
-        try await withControlAccess(transaction: transaction) { transaction in
+        try await withControlAccess { transaction in
             guard try await transaction.getValue(
                 for: self.pendingKey(snapshotID),
                 snapshot: false
             ) == nil,
                   try await transaction.getValue(
                     for: self.manifestKey(snapshotID),
+                    snapshot: false
+                  ) == nil,
+                  try await transaction.getValue(
+                    for: self.historicalManifestKey(snapshotID),
                     snapshot: false
                   ) == nil else { return nil }
             let selection = try await self.availableSlot(
@@ -1675,26 +2885,10 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     }
 
     private func withControlAccess<Result: Sendable>(
-        transaction: (any TransactionAccess)?,
         _ operation: @Sendable @escaping (
             any TransactionAccess
         ) async throws -> Result
     ) async throws -> Result {
-        if let transaction {
-            return try await operation(transaction)
-        }
-        if container.hasActiveExecutionTransaction {
-            // A Base may live in a different storage domain from control
-            // metadata. Transaction runners intentionally reject nesting even
-            // across domains, so the independently owned control transaction
-            // runs without inheriting the request's TaskLocal transaction.
-            return try await Task.detached {
-                try await self.container.withControlMetadataTransaction {
-                    transaction in
-                    try await operation(transaction.executionStorageAccess)
-                }
-            }.value
-        }
         return try await container.withControlMetadataTransaction {
             transaction in
             try await operation(transaction.executionStorageAccess)
@@ -1781,29 +2975,44 @@ package struct DatabaseQuerySnapshotStore: Sendable {
                     expiresAt: expiresAt
                 )
             )
-            let slotKey = self.principalSlotKey(
+            try await self.clearActiveSlotIfOwned(
+                snapshotID: snapshotID,
                 principalDigest: principalDigest,
-                slot: slot
+                slot: slot,
+                transaction: transaction.executionStorageAccess
             )
-            if let slotBytes = try await transaction.executionStorageAccess.getValue(
-                for: slotKey,
-                snapshot: false
-            ) {
-                let slot: PrincipalSlot
-                do {
-                    slot = try DatabaseServerFrameCodec.decode(
-                        PrincipalSlot.self,
-                        from: slotBytes
-                    )
-                } catch {
-                    throw DatabaseQueryExecutionError
-                        .querySnapshotCorrupted
-                }
-                if slot.snapshotID == snapshotID {
-                    try transaction.executionStorageAccess.clear(key: slotKey)
-                }
-            }
         }
+    }
+
+    private func clearActiveSlotIfOwned(
+        snapshotID: ByteString,
+        principalDigest: ByteString,
+        slot: UInt8,
+        transaction: any TransactionAccess
+    ) async throws {
+        let slotKey = self.principalSlotKey(
+            principalDigest: principalDigest,
+            slot: slot
+        )
+        guard let slotBytes = try await transaction.getValue(
+            for: slotKey,
+            snapshot: false
+        ) else {
+            return
+        }
+        let storedSlot: PrincipalSlot
+        do {
+            storedSlot = try DatabaseServerFrameCodec.decode(
+                PrincipalSlot.self,
+                from: slotBytes
+            )
+        } catch {
+            throw DatabaseQueryExecutionError.querySnapshotCorrupted
+        }
+        guard storedSlot.snapshotID == snapshotID else {
+            return
+        }
+        try transaction.clear(key: slotKey)
     }
 
     private func clearSnapshot(
@@ -1825,8 +3034,39 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         snapshotSubspace(snapshotID).pack(Tuple("manifest"))
     }
 
+    private func historicalManifestKey(
+        _ snapshotID: ByteString
+    ) -> ByteString {
+        snapshotSubspace(snapshotID).pack(Tuple("historical-manifest"))
+    }
+
+    private func historicalStepKey(
+        snapshotID: ByteString,
+        stepID: ByteString
+    ) -> ByteString {
+        snapshotSubspace(snapshotID)
+            .subspace("historical-steps")
+            .pack(Tuple(stepID))
+    }
+
+    private func historicalUsageKey(
+        _ snapshotID: ByteString
+    ) -> ByteString {
+        snapshotSubspace(snapshotID).pack(Tuple("historical-usage"))
+    }
+
+    private func historicalTerminalKey(
+        _ snapshotID: ByteString
+    ) -> ByteString {
+        snapshotSubspace(snapshotID).pack(Tuple("historical-terminal"))
+    }
+
     private func pendingKey(_ snapshotID: ByteString) -> ByteString {
         snapshotSubspace(snapshotID).pack(Tuple("pending"))
+    }
+
+    private func terminalKey(_ snapshotID: ByteString) -> ByteString {
+        snapshotSubspace(snapshotID).pack(Tuple("terminal"))
     }
 
     private func pageSubspace(
@@ -1926,6 +3166,34 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             }
         }
         return accumulator.finalize()
+    }
+
+    private func authorizationDigest(
+        _ authorization: AuthorizationContext
+    ) throws -> ByteString {
+        guard let principal = authorization.principal else {
+            throw DatabaseQueryExecutionError.invalidContinuation
+        }
+        let encoded = try DatabaseWireWriter.encode(limits: wireLimits) {
+            (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
+            try writer.writeString(principal.identifier)
+            let roles = principal.roles.sorted()
+            try writer.writeCount(roles.count)
+            for role in roles {
+                try writer.writeString(role)
+            }
+            try principal.claims.encode(into: &writer)
+        }
+        return Self.digest(encoded)
+    }
+
+    private func continuationToken(
+        snapshotID: ByteString,
+        stepID: ByteString
+    ) -> ByteString {
+        ByteString([Self.continuationMarker])
+            .appending(contentsOf: snapshotID)
+            .appending(contentsOf: stepID)
     }
 
     private static func constantTimeEqual(

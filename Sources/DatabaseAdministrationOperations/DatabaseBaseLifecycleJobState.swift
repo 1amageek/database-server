@@ -22,7 +22,7 @@ public struct DatabaseBaseLifecycleJobState:
         case deleteFinish = 9
     }
 
-    private static let formatVersion: UInt8 = 3
+    private static let formatVersion: UInt8 = 4
 
     package let phase: Phase
     package let descriptor: DatabaseBasePlacementMoveDescriptor?
@@ -174,12 +174,6 @@ public struct DatabaseBaseLifecycleJobState:
                 value: .string(descriptor.sourceDomainID.value)
             ),
             (
-                key: "sourceNamespacePath",
-                value: .array(descriptor.sourceNamespacePath.map {
-                    .string($0)
-                })
-            ),
-            (
                 key: "sourcePlacementGeneration",
                 value: .uint64(descriptor.sourcePlacementGeneration)
             ),
@@ -194,12 +188,6 @@ public struct DatabaseBaseLifecycleJobState:
             (
                 key: "destinationDomainID",
                 value: .string(descriptor.destinationDomainID.value)
-            ),
-            (
-                key: "destinationNamespacePath",
-                value: .array(descriptor.destinationNamespacePath.map {
-                    .string($0)
-                })
             ),
             (
                 key: "destinationPlacementGeneration",
@@ -222,11 +210,10 @@ public struct DatabaseBaseLifecycleJobState:
         _ value: FieldValue
     ) throws(PersistentJobPayloadError) -> DatabaseBasePlacementMoveDescriptor {
         guard let fields = value.objectValue,
-              fields.count == 12,
+              fields.count == 10,
               let baseID = fields["baseID"]?.stringValue,
               let sourcePlacementID = fields["sourcePlacementID"]?.stringValue,
               let sourceDomainID = fields["sourceDomainID"]?.stringValue,
-              let sourcePathValues = fields["sourceNamespacePath"]?.arrayValue,
               let sourceGeneration = fields["sourcePlacementGeneration"]?
                 .uint64Value,
               let movingRevision = fields["movingRevision"]?.uint64Value,
@@ -234,8 +221,6 @@ public struct DatabaseBaseLifecycleJobState:
                 .stringValue,
               let destinationDomainID = fields["destinationDomainID"]?
                 .stringValue,
-              let destinationPathValues = fields["destinationNamespacePath"]?
-                .arrayValue,
               let destinationGeneration = fields[
                 "destinationPlacementGeneration"
               ]?.uint64Value,
@@ -244,8 +229,6 @@ public struct DatabaseBaseLifecycleJobState:
             throw .invalidValue("Invalid Base placement descriptor")
         }
         do {
-            let sourcePath = try Self.path(sourcePathValues)
-            let destinationPath = try Self.path(destinationPathValues)
             let sourceRootPrefix = try Self.optionalBytes(
                 sourceRootValue,
                 field: "source root prefix"
@@ -264,7 +247,6 @@ public struct DatabaseBaseLifecycleJobState:
                 baseID: try Base.ID(baseID),
                 sourcePlacementID: try Base.Placement.ID(sourcePlacementID),
                 sourceDomainID: try DatabaseStorageDomain.ID(sourceDomainID),
-                sourceNamespacePath: sourcePath,
                 sourcePlacementGeneration: sourceGeneration,
                 movingRevision: movingRevision,
                 destinationPlacementID: try Base.Placement.ID(
@@ -273,7 +255,6 @@ public struct DatabaseBaseLifecycleJobState:
                 destinationDomainID: try DatabaseStorageDomain.ID(
                     destinationDomainID
                 ),
-                destinationNamespacePath: destinationPath,
                 destinationPlacementGeneration: destinationGeneration,
                 sourceRootPrefix: sourceRootPrefix,
                 destinationRootPrefix: destinationRootPrefix
@@ -281,25 +262,6 @@ public struct DatabaseBaseLifecycleJobState:
         } catch {
             throw .invalidValue("Invalid Base placement identity")
         }
-    }
-
-    private static func path(
-        _ values: [FieldValue]
-    ) throws(PersistentJobPayloadError) -> [String] {
-        guard !values.isEmpty else {
-            throw .invalidValue("Base placement path is empty")
-        }
-        var result: [String] = []
-        result.reserveCapacity(values.count)
-        for value in values {
-            guard let component = value.stringValue, !component.isEmpty else {
-                throw PersistentJobPayloadError.invalidValue(
-                    "Invalid Base placement path"
-                )
-            }
-            result.append(component)
-        }
-        return result
     }
 
     private static func optionalBytes(

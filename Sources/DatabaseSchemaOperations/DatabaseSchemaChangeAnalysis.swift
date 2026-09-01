@@ -190,13 +190,40 @@ package struct DatabaseSchemaChangeAnalysis: Sendable {
         case .removedField(let entityName, let fieldName, _),
             .renumberedField(let entityName, let fieldName, _, _),
             .changedFieldEncoding(let entityName, let fieldName, _, _),
-            .nonAppendOnlyFieldAddition(let entityName, let fieldName, _, _):
+            .nonAppendOnlyFieldAddition(let entityName, let fieldName, _, _),
+            .addedFieldWithoutDefault(let entityName, let fieldName):
             return issue(
                 code: schemaIssueCode(issueValue),
                 path: "entities.\(entityName).fields.\(fieldName)",
                 message: issueValue.description
             )
+        case .changedDirectoryComponents(let entityName, let group, _, _),
+            .changedDirectoryLayer(let entityName, let group, _, _):
+            return issue(
+                code: schemaIssueCode(issueValue),
+                path: placementPath(entityName: entityName, group: group),
+                message: issueValue.description
+            )
+        case .changedPolymorphicGroup(let entityName, _, _):
+            return issue(
+                code: schemaIssueCode(issueValue),
+                path: "entities.\(entityName).polymorphicGroup",
+                message: issueValue.description
+            )
         }
+    }
+
+    /// Placement issues are reported on the declaration that owns the
+    /// directory identity: the entity itself, or the polymorphic group whose
+    /// shared declaration changed.
+    private static func placementPath(
+        entityName: String,
+        group: String?
+    ) -> String {
+        guard let group else {
+            return "entities.\(entityName).directory"
+        }
+        return "entities.\(entityName).polymorphicGroups.\(group).directory"
     }
 
     private static func schemaIssueCode(
@@ -208,6 +235,10 @@ package struct DatabaseSchemaChangeAnalysis: Sendable {
         case .renumberedField: "field-renumbered"
         case .changedFieldEncoding: "field-encoding-changed"
         case .nonAppendOnlyFieldAddition: "field-number-not-append-only"
+        case .addedFieldWithoutDefault: "field-default-missing"
+        case .changedDirectoryComponents: "directory-components-changed"
+        case .changedDirectoryLayer: "directory-layer-changed"
+        case .changedPolymorphicGroup: "polymorphic-group-changed"
         }
     }
 

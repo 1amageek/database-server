@@ -48,7 +48,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
         graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         state.withLock { state in
@@ -75,9 +75,9 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [RDFGraphName] {
+    ) async throws -> RDFDatasetNamedGraphs {
         try await base.namedGraphs(
             limit: limit,
             readMode: readMode,
@@ -89,7 +89,7 @@ final class TrackingRDFGraphMutationStore: RDFGraphMutationStore, Sendable {
     func containsGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         try await base.containsGraph(

@@ -2626,7 +2626,7 @@ struct DatabasePersistentJobServiceTests {
     }
 
     private func persistentJobRoot(container: DBContainer) -> Subspace {
-        container.controlStorage().root
+        container.controlStorage().systemRoot
             .subspace("persistent-jobs")
     }
 

@@ -1,6 +1,7 @@
 import DatabaseOperationCore
 public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertible {
     case pageLimitMustBePositive
+    case pageLimitExceedsPlatformCapacity(requested: UInt32)
     case solutionModifierMustBeNonNegative(name: String, value: Int)
     case continuationNotSupported(String)
     case invalidContinuation
@@ -11,6 +12,7 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
     case querySnapshotExpired
     case querySnapshotCorrupted
     case querySnapshotLimitExceeded(maximum: UInt8)
+    case querySnapshotStorageLimitExceeded(maximumBytes: UInt64)
     case mutationRequiresMutationOperation
     case featureUnavailable(String)
     #if DATABASE_QUERY_OPERATIONS_GRAPH_INDEXES
@@ -29,6 +31,8 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
         switch self {
         case .pageLimitMustBePositive:
             return "Query page limit must be greater than zero"
+        case .pageLimitExceedsPlatformCapacity(let requested):
+            return "Query page limit \(requested) exceeds platform capacity"
         case .solutionModifierMustBeNonNegative(let name, let value):
             return "Query solution modifier \(name) must be non-negative, got \(value)"
         case .continuationNotSupported(let statement):
@@ -49,6 +53,8 @@ public enum DatabaseQueryExecutionError: Error, Sendable, CustomStringConvertibl
             return "Query snapshot storage is corrupted"
         case .querySnapshotLimitExceeded(let maximum):
             return "Principal already owns the maximum of \(maximum) active query snapshots"
+        case .querySnapshotStorageLimitExceeded(let maximumBytes):
+            return "Query snapshot storage exceeds the maximum of \(maximumBytes) bytes"
         case .mutationRequiresMutationOperation:
             return "Mutation statements must be sent through mutation.execute"
         case .featureUnavailable(let reason):

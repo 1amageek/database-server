@@ -219,7 +219,7 @@ package final class DatabaseSchemaTransitionExecutor: Sendable {
             configuration: .batch
         ) { transaction in
             try await DatabaseSchemaApplicationStore(
-                controlRoot: self.container.controlStorage().root
+                controlRoot: self.container.controlStorage().systemRoot
             ).finish(
                 job: job,
                 transaction: transaction.executionStorageAccess

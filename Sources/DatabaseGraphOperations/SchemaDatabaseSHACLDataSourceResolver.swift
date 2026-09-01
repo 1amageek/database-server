@@ -96,9 +96,8 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
     }
 
     private func ontologyStore() throws -> OntologyStore {
-        let root = try container.operationDataSubspace(
-            relativePath: ["database-framework", "ontology-index"]
-        )
+        let root = try container.operationSystemRoot()
+            .subspace("ontology")
         return OntologyStore(
             subspace: OntologySubspace(base: root)
         )
@@ -138,10 +137,6 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
         do {
             let databaseContext = try container.makeActiveDataContext(
                 authorization: RequestAuthorization.context
-            )
-            try databaseContext.authorizeIndexFieldRead(
-                entity: entity,
-                descriptor: descriptor
             )
             indexSubspace = try await IndexQueryContext(
                 context: databaseContext
@@ -242,7 +237,8 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
             }
             let databaseTransaction = DatabaseTransaction(
                 storageAccess: transaction,
-                container: container
+                container: container,
+                authorization: RequestAuthorization.context
             )
             var subjects = Set<RDFTerm>()
             for identity in identities {
@@ -265,14 +261,11 @@ public struct SchemaDatabaseSHACLDataSourceResolver:
                     .loadPersistedModel(
                     entity: data.entity,
                     id: resolved.id,
-                    partition: resolved.partition
+                    partition: resolved.partition,
+                    fields: [selection.metadata.subjectFieldName]
                     ) else {
                     throw DatabaseSHACLDataSourceError.focusEntityNotFound(identity)
                 }
-                try container.securityDelegate?.evaluateGet(
-                    entity,
-                    fields: [selection.metadata.subjectFieldName]
-                )
                 let fields = try DatabaseEntityProjection.fieldObject(
                     for: entity
                 )

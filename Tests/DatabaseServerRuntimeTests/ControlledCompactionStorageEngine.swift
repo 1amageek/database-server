@@ -38,6 +38,14 @@ final class ControlledCompactionStorageEngine: StorageEngine, Sendable {
         )
     }
 
+    var transactionDomain: StorageTransactionDomain {
+        underlying.transactionDomain
+    }
+
+    var directoryAccess: any DirectoryAccess {
+        underlying.directoryAccess
+    }
+
     func requestShutdown() {
         underlying.requestShutdown()
     }

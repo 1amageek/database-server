@@ -52,33 +52,36 @@ public enum NativeDatabaseStorageConfiguration: Sendable, Hashable {
 /// Host-owned description of one independently transacted storage domain.
 public struct NativeDatabaseStorageDomainConfiguration: Sendable, Hashable {
     public let id: String
-    public let namespacePath: [String]
+    /// Directory path of this domain's database root.
+    public let rootPath: [String]
     public let storage: NativeDatabaseStorageConfiguration
 
     public init(
         id: String,
-        namespacePath: [String],
+        rootPath: [String],
         storage: NativeDatabaseStorageConfiguration
     ) {
         self.id = id
-        self.namespacePath = namespacePath
+        self.rootPath = rootPath
         self.storage = storage
     }
 }
 
-/// Host-owned mapping from a placement name to one domain namespace.
+/// Host-owned mapping from a placement name to one storage domain.
+///
+/// A Base Partition's address is fixed below the database root of its domain,
+/// so a placement carries no path of its own: naming the domain fully
+/// determines where a newly provisioned Base is created.
 public struct NativeDatabaseStoragePlacementConfiguration:
     Sendable,
     Hashable
 {
     public let id: String
     public let domainID: String
-    public let path: [String]
 
-    public init(id: String, domainID: String, path: [String]) {
+    public init(id: String, domainID: String) {
         self.id = id
         self.domainID = domainID
-        self.path = path
     }
 }
 
@@ -107,22 +110,21 @@ public struct NativeDatabaseStorageTopologyConfiguration:
 
     public static func single(
         storage: NativeDatabaseStorageConfiguration,
-        namespacePath: [String]
+        rootPath: [String]
     ) -> Self {
         Self(
             controlDomainID: "primary",
             domains: [
                 NativeDatabaseStorageDomainConfiguration(
                     id: "primary",
-                    namespacePath: namespacePath,
+                    rootPath: rootPath,
                     storage: storage
                 ),
             ],
             placements: [
                 NativeDatabaseStoragePlacementConfiguration(
                     id: "default",
-                    domainID: "primary",
-                    path: ["bases"]
+                    domainID: "primary"
                 ),
             ],
             defaultPlacementID: "default"

@@ -139,7 +139,7 @@ struct DatabaseBaseLifecycleEndpointTests {
             .withControlMetadataTransaction(configuration: .readOnly) {
                 transaction in
                 try await DatabaseBaseDeletionStore(
-                    root: fixture.container.storageTopology.controlDomain.root,
+                    root: fixture.container.storageTopology.controlDomain.systemRoot,
                     collection: "intents"
                 ).load(
                     fixture.baseID,

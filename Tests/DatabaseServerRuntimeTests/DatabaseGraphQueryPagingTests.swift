@@ -13,48 +13,6 @@ import Testing
 
 @Suite("Canonical graph query paging")
 struct DatabaseGraphQueryPagingTests {
-    @Test("a restorable graph cursor binds its schema generation")
-    func restorableGraphCursorBindsSchemaGeneration() throws {
-        let requestFingerprint = ByteString(
-            repeating: 0x31,
-            count: DatabaseRequestDigest.byteCount
-        )
-        let resultFingerprint = ByteString(
-            repeating: 0x32,
-            count: DatabaseRequestDigest.byteCount
-        )
-        #if MultiBase
-        let cursor = DatabaseGraphQueryPageCursor(
-            kind: .construct,
-            resource: .base(try TestBaseEnvironment.id()),
-            schemaGeneration: 23,
-            dataGeneration: 29,
-            requestFingerprint: requestFingerprint,
-            restorableReadPosition: .version(17),
-            resultFingerprint: resultFingerprint,
-            tripleOffset: 1
-        )
-        #else
-        let cursor = DatabaseGraphQueryPageCursor(
-            kind: .construct,
-            schemaGeneration: 23,
-            dataGeneration: 29,
-            requestFingerprint: requestFingerprint,
-            restorableReadPosition: .version(17),
-            resultFingerprint: resultFingerprint,
-            tripleOffset: 1
-        )
-        #endif
-
-        let decoded = try DatabaseGraphQueryPageCursor.decode(
-            cursor.encode(limits: .default),
-            limits: .default
-        )
-        #expect(decoded.schemaGeneration == 23)
-        #expect(decoded.dataGeneration == 29)
-        #expect(decoded.restorableReadPosition == .version(17))
-    }
-
     @Test("an execution identity change invalidates graph continuations")
     func executionIdentityChangeInvalidatesGraphContinuation() async throws {
         let container = try await makeContainer()

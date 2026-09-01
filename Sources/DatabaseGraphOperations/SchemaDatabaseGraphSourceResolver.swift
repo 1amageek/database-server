@@ -41,10 +41,6 @@ public struct SchemaDatabaseGraphSourceResolver: DatabaseGraphSourceResolving {
         let databaseContext = try container.makeActiveDataContext(
             authorization: RequestAuthorization.context
         )
-        try databaseContext.authorizeIndexFieldRead(
-            entity: owned.entity,
-            descriptor: owned.descriptor
-        )
         let queryContext = IndexQueryContext(context: databaseContext)
         guard let readableIndex = try await queryContext.readableIndex(
             named: owned.descriptor.name,

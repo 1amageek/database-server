@@ -271,27 +271,41 @@ struct DatabaseQueryWorkBudgetTests {
         #expect(page.rowCount == 2)
         #expect(page.continuation != nil)
     }
-
     @Test("stable table paging scans only the visible page and one lookahead row")
     func stableTablePageDoesNotRescanTheWholeTable() async throws {
-        let container = try await makeContainer(seedCount: 100)
+        // Work units mix row admission with the byte-processing quanta charged
+        // by `DatabaseByteProcessingMeter` (one unit per 256 processed bytes),
+        // so an absolute constant is not a stable statement about paging. The
+        // invariant that survives an accounting change is that a stable
+        // continuation resumes instead of re-scanning: reading the same two
+        // pages must cost the same regardless of how large the table is.
+        let smallTable = try await stableTablePagingWorkUnits(seedCount: 100)
+        let largeTable = try await stableTablePagingWorkUnits(seedCount: 1_000)
+        #expect(smallTable == largeTable)
+    }
+
+    /// Reads the first two stable pages of a full table scan under one shared
+    /// meter and reports the work units both pages charged.
+    private func stableTablePagingWorkUnits(seedCount: Int) async throws -> UInt64 {
+        let container = try await makeContainer(seedCount: seedCount)
         let context = container.testBaseContext()
         let query = SelectQuery(
             projection: .all,
-            source: .table(
-                TableRef(DatabaseEndpointEntity.persistableType)
-            )
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
         )
+        // Generous enough for two pages of any table size, but far below the
+        // cost of re-scanning a 1000 row table once per page.
         let budget = ExecutionBudget(
             maximumRows: 2,
-            // Includes canonical query fingerprinting and row projection,
-            // but remains below the 100 storage rows the previous
-            // continuation path re-scanned for every page.
-            maximumWorkUnits: 80,
-            timeoutMilliseconds: 1_000
+            maximumWorkUnits: 2_000,
+            timeoutMilliseconds: 10_000
         )
-        let pages = try await context.executeCanonicalRead { transaction in
-            let first = try await context.query(
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: container.monotonicClock
+        )
+        let pages = try await context.withReadSnapshot(workMeter: workMeter) { snapshot in
+            let first = try await snapshot.session.executeCanonical(
                 query,
                 execution: ReadExecutionContext(
                     options: ReadExecutionOptions(
@@ -299,12 +313,12 @@ struct DatabaseQueryWorkBudgetTests {
                         budget: budget,
                         continuationSnapshotIsStable: true
                     ),
-                    monotonicClock: container.monotonicClock
-                ),
-                transaction: transaction
+                    monotonicClock: container.monotonicClock,
+                    workMeter: workMeter
+                )
             )
             let continuation = try #require(first.continuation)
-            let second = try await context.query(
+            let second = try await snapshot.session.executeCanonical(
                 query,
                 execution: ReadExecutionContext(
                     options: ReadExecutionOptions(
@@ -313,9 +327,9 @@ struct DatabaseQueryWorkBudgetTests {
                         budget: budget,
                         continuationSnapshotIsStable: true
                     ),
-                    monotonicClock: container.monotonicClock
-                ),
-                transaction: transaction
+                    monotonicClock: container.monotonicClock,
+                    workMeter: workMeter
+                )
             )
             return (first, second)
         }
@@ -324,62 +338,26 @@ struct DatabaseQueryWorkBudgetTests {
         #expect(pages.0.continuation != nil)
         #expect(pages.1.rows.count == 2)
         #expect(pages.1.continuation != nil)
+        return workMeter.consumedWorkUnits
     }
 
-    @Test("Qualified equality joins use bounded hash candidates")
-    func qualifiedEqualityJoinUsesBoundedHashCandidates() async throws {
+    @Test("Qualified equality joins complete through the operation handler")
+    func qualifiedEqualityJoinExecutesThroughTheHandler() async throws {
         let container = try await makeContainer(seedCount: 100)
-        let entity = DatabaseEndpointEntity.persistableType
-        let query = SelectQuery(
-            projection: .all,
-            source: .join(
-                JoinClause(
-                    type: .inner,
-                    left: .table(
-                        TableRef(table: entity, alias: "left_entity")
-                    ),
-                    right: .table(
-                        TableRef(table: entity, alias: "right_entity")
-                    ),
-                    condition: .on(
-                        .equal(
-                            .column(
-                                ColumnRef(
-                                    table: "left_entity",
-                                    column: "id"
-                                )
-                            ),
-                            .column(
-                                ColumnRef(
-                                    table: "right_entity",
-                                    column: "id"
-                                )
-                            )
-                        )
-                    )
-                )
-            )
-        )
         let request = QueryExecuteOperation.Request(
-            input: .ir(.select(query)),
+            input: .ir(.select(Self.selfEqualityJoin)),
             page: QueryExecuteOperation.Page(limit: 100),
             budget: ExecutionBudget(
                 maximumRows: 100,
-                // A 100-by-100 nested-loop join requires at least 10,000
-                // candidate checks. Keep this below that threshold while
-                // allowing source decoding, hash construction, projection,
-                // and final page materialization to share the same meter.
-                maximumWorkUnits: 5_000,
-                timeoutMilliseconds: 1_000
+                // A guard, not a discriminator: the candidate strategy is
+                // asserted by the scaling test below, which can observe the
+                // meter that `QueryRowPage` does not expose.
+                maximumWorkUnits: 100_000,
+                timeoutMilliseconds: 10_000
             )
         )
 
-        let response = try await handle(
-            request,
-            using: QueryExecuteHandler(),
-            container: container
-        )
-
+        let response = try await handle(request, using: QueryExecuteHandler(), container: container)
         guard case .rows(let page) = response else {
             Issue.record("Expected a row page")
             return
@@ -388,32 +366,101 @@ struct DatabaseQueryWorkBudgetTests {
         #expect(page.continuation == nil)
     }
 
+    @Test("Qualified equality joins use bounded hash candidates")
+    func qualifiedEqualityJoinUsesBoundedHashCandidates() async throws {
+        // A hash join visits each source row a bounded number of times, so its
+        // cost grows with the number of rows. A nested loop compares every left
+        // row against every right row, so doubling the table quadruples the
+        // work. Doubling the row count therefore separates the two strategies
+        // without depending on the absolute unit price of a row, which
+        // `DatabaseByteProcessingMeter` changes whenever byte accounting moves.
+        let half = try await equalityJoinWorkUnits(seedCount: 50)
+        let full = try await equalityJoinWorkUnits(seedCount: 100)
+
+        #expect(half.rowCount == 50)
+        #expect(full.rowCount == 100)
+        // Measured on database-framework 26.0902.0: 7057 and 14107 units, an
+        // exactly linear 2.00x. A nested loop would land near 4x.
+        #expect(full.units < half.units * 3)
+    }
+
+    /// Executes the self equality join over the complete table under one shared
+    /// meter and reports the charged work units with the produced row count.
+    private func equalityJoinWorkUnits(
+        seedCount: Int
+    ) async throws -> (units: UInt64, rowCount: Int) {
+        let container = try await makeContainer(seedCount: seedCount)
+        let context = container.testBaseContext()
+        let budget = ExecutionBudget(
+            maximumRows: UInt32(seedCount),
+            maximumWorkUnits: 1_000_000,
+            timeoutMilliseconds: 30_000
+        )
+        let workMeter = DatabaseWorkMeter(
+            budget: budget,
+            monotonicClock: container.monotonicClock
+        )
+        let page = try await context.withReadSnapshot(workMeter: workMeter) { snapshot in
+            try await snapshot.session.executeCanonical(
+                Self.selfEqualityJoin,
+                execution: ReadExecutionContext(
+                    options: ReadExecutionOptions(pageSize: seedCount, budget: budget),
+                    monotonicClock: container.monotonicClock,
+                    workMeter: workMeter
+                )
+            )
+        }
+        return (workMeter.consumedWorkUnits, page.rows.count)
+    }
+
+    /// An inner join of the seeded table with itself on the qualified primary
+    /// key, which produces exactly one output row per stored row.
+    private static var selfEqualityJoin: SelectQuery {
+        let entity = DatabaseEndpointEntity.persistableType
+        return SelectQuery(
+            projection: .all,
+            source: .join(
+                JoinClause(
+                    type: .inner,
+                    left: .table(TableRef(table: entity, alias: "left_entity")),
+                    right: .table(TableRef(table: entity, alias: "right_entity")),
+                    condition: .on(
+                        .equal(
+                            .column(ColumnRef(table: "left_entity", column: "id")),
+                            .column(ColumnRef(table: "right_entity", column: "id"))
+                        )
+                    )
+                )
+            )
+        )
+    }
+
     @Test("Outer page size does not truncate a nested relational source")
     func outerPageSizeDoesNotTruncateNestedSource() async throws {
         let container = try await makeContainer(seedCount: 100)
         let nested = SelectQuery(
             projection: .all,
-            source: .table(
-                TableRef(DatabaseEndpointEntity.persistableType)
-            )
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
         )
         let query = SelectQuery(
             projection: .items([
-                ProjectionItem(
-                    .aggregate(.count(nil, distinct: false)),
-                    alias: "count"
-                )
+                ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "count")
             ]),
             source: .subquery(nested, alias: "entities")
         )
+
         let response = try await container.testBaseContext().query(
             query,
             options: ReadExecutionOptions(
                 pageSize: 1,
                 budget: ExecutionBudget(
                     maximumRows: 1,
-                    maximumWorkUnits: 5_000,
-                    timeoutMilliseconds: 1_000
+                    // The invariant is the aggregate below, not this number.
+                    // The budget only guards against an unbounded nested scan;
+                    // the measured cost on database-framework 26.0902.0 is 6131
+                    // units, which byte-processing accounting now dominates.
+                    maximumWorkUnits: 12_500,
+                    timeoutMilliseconds: 10_000
                 )
             )
         )

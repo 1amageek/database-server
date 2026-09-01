@@ -53,12 +53,12 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
             transactionCount.withLock { $0 }
         }
 
-        var namespaceResolver: any NamespaceResolver {
-            underlying.namespaceResolver
+        var transactionDomain: StorageTransactionDomain {
+            underlying.transactionDomain
         }
 
-        var namespaceCatalog: (any NamespaceCatalog)? {
-            underlying.namespaceCatalog
+        var directoryAccess: any DirectoryAccess {
+            underlying.directoryAccess
         }
 
         func resetTransactionCount() {
@@ -398,7 +398,7 @@ struct CanonicalDatabaseGraphAlgorithmServiceTests {
         )
         let databaseContext = container.testBaseContext()
         let indexSubspace = try await databaseContext.withDataOperation {
-            try databaseContext.executionStorage().root
+            try databaseContext.executionStorage().dataRoot
                 .subspace("test-indexes")
                 .subspace("canonical-graph-service")
         }

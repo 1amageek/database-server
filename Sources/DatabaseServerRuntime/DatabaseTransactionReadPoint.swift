@@ -6,6 +6,7 @@ import DatabaseMutationOperations
 import DatabaseQueryOperations
 import DatabaseCommandOperations
 import DatabaseOperationCore
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -52,56 +53,26 @@ enum DatabaseTransactionReadPoint {
         }
     }
 
-    enum Error: Swift.Error, Sendable {
-        case invalidVersion(Int64)
-    }
-
-    static func capture(
+    static func value(
         domainID: String,
-        transaction: any TransactionAccess
-    ) async throws -> Value {
-        if transaction.capabilities.readVersion {
-            let signedVersion = try await transaction.getReadVersion()
-            guard let version = UInt64(exactly: signedVersion) else {
-                throw Error.invalidVersion(signedVersion)
-            }
-            #if DATABASE_SERVER_MULTI_BASE
-            return Value(position: .version(version), domainID: domainID)
-            #else
-            return Value(position: .version(version))
-            #endif
-        }
+        snapshot: DatabaseReadSnapshot
+    ) -> Value {
+        let position = storagePosition(snapshot.position)
         #if DATABASE_SERVER_MULTI_BASE
-        return Value(
-            position: .opaque(makeOpaqueIdentifier()),
-            domainID: domainID
-        )
+        return Value(position: position, domainID: domainID)
         #else
-        return Value(position: .opaque(makeOpaqueIdentifier()))
+        return Value(position: position)
         #endif
     }
 
-    static func restore(
-        _ position: DatabaseStorageReadPosition,
-        transaction: any TransactionAccess
-    ) throws -> Bool {
+    private static func storagePosition(
+        _ position: DatabaseReadPosition
+    ) -> DatabaseStorageReadPosition {
         switch position {
         case .version(let version):
-            guard transaction.capabilities.historicalReadVersion,
-                  let signedVersion = Int64(exactly: version) else {
-                return false
-            }
-            try transaction.setReadVersion(signedVersion)
-            return true
-        case .opaque:
-            return false
+            return .version(version)
+        case .opaque(let identifier):
+            return .opaque(identifier)
         }
-    }
-
-    private static func makeOpaqueIdentifier() -> ByteString {
-        var generator = SystemRandomNumberGenerator()
-        return ByteString((0..<32).map { _ in
-            UInt8.random(in: .min ... .max, using: &generator)
-        })
     }
 }

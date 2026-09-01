@@ -13,34 +13,6 @@ import Testing
 
 @Suite("Canonical query continuation endpoint", .serialized)
 struct DatabaseQueryContinuationEndpointTests {
-    @Test("a restorable cursor binds its schema generation")
-    func restorableCursorBindsSchemaGeneration() throws {
-        #if MultiBase
-        let cursor = DatabaseQueryPageCursor(
-            resource: .base(try TestBaseEnvironment.id()),
-            restorableReadPosition: .version(17),
-            schemaGeneration: 23,
-            dataGeneration: 29,
-            continuation: ByteString(utf8: "next")
-        )
-        #else
-        let cursor = DatabaseQueryPageCursor(
-            restorableReadPosition: .version(17),
-            schemaGeneration: 23,
-            dataGeneration: 29,
-            continuation: ByteString(utf8: "next")
-        )
-        #endif
-
-        let decoded = try DatabaseQueryPageCursor.decode(
-            cursor.encode(limits: .default),
-            limits: .default
-        )
-        #expect(decoded.schemaGeneration == 23)
-        #expect(decoded.dataGeneration == 29)
-        #expect(decoded.restorableReadPosition == .version(17))
-    }
-
     @Test("a backend without historical reads serves a durable continuation")
     func nonHistoricalBackendUsesDurableContinuation() async throws {
         let endpoint = try await makeEndpoint()

@@ -163,8 +163,8 @@ struct SPARQLStatementMutationExecutorTests {
             container: container
         )
         #expect(rows.count == 1)
-        #expect(rows[0].ownedQuad().subject.term == .iri(try RDFIRI(subject)))
-        guard case .literal(let literal) = rows[0].ownedQuad().object else {
+        #expect(rows[0].subject.term == .iri(try RDFIRI(subject)))
+        guard case .literal(let literal) = rows[0].object else {
             Issue.record("Expected the replacement RDF literal")
             return
         }
@@ -184,33 +184,35 @@ struct SPARQLStatementMutationExecutorTests {
         )
         #expect(effect.createdGraphs == 1)
 
-        guard let queryExecutor = container.runtimeConfiguration
-            .logicalSourceExecutors.sparqlExecutor else {
-            Issue.record("Expected the SPARQL runtime executor")
-            return
-        }
-        let response = try await container.withTestBaseOperation {
-            try await queryExecutor.execute(
-                context: container.testBaseContext(),
-                selectQuery: SelectQuery(
-                    projection: .all,
-                    source: .graphPattern(
-                        .graph(
-                            name: .variable("graph"),
-                            pattern: .basic([])
-                        )
-                    )
-                ),
-                options: ReadExecutionContext(
-                    monotonicClock: TestProcessMonotonicClock()
-                ),
-                partitions: FieldObject()
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let selectQuery = SelectQuery(
+            projection: .all,
+            source: .graphPattern(
+                .graph(
+                    name: .variable("graph"),
+                    pattern: .basic([])
+                )
             )
+        )
+        let rows = try await container.withTestBaseOperation {
+            try await container.testBaseContext().withReadSnapshot(
+                workMeter: workMeter
+            ) { snapshot in
+                try await snapshot.session.executeCanonical(
+                    selectQuery,
+                    execution: ReadExecutionContext(
+                        monotonicClock: TestProcessMonotonicClock(),
+                        workMeter: workMeter
+                    )
+                ).rows
+            }
         }
-        #expect(response.continuation == nil)
-        #expect(response.rows.count == 1)
+        #expect(rows.count == 1)
         #expect(
-            response.rows[0].fields["graph"]
+            rows[0].fields["graph"]
                 == .rdfTerm(try RDFTerm.iri(validating: graphIRI))
         )
     }
@@ -286,7 +288,7 @@ struct SPARQLStatementMutationExecutorTests {
             graphTarget: .defaultGraph,
             container: container
         )
-        let subjects = Set(rows.map { $0.ownedQuad().subject.term })
+        let subjects = Set(rows.map { $0.subject.term })
         #expect(rows.count == 3)
         #expect(subjects.count == 2)
     }
@@ -341,7 +343,7 @@ struct SPARQLStatementMutationExecutorTests {
         )
         #expect(rows.count == 1)
         #expect(
-            rows[0].ownedQuad().subject.term
+            rows[0].subject.term
                 == .iri(try RDFIRI("https://example.test/events/current"))
         )
     }
@@ -427,8 +429,8 @@ struct SPARQLStatementMutationExecutorTests {
         #expect(targetRows.count == 1)
         #expect(sourceRows.count == 1)
         #expect(
-            targetRows[0].ownedQuad().object
-                == sourceRows[0].ownedQuad().object
+            targetRows[0].object
+                == sourceRows[0].object
         )
     }
 
@@ -710,7 +712,7 @@ struct SPARQLStatementMutationExecutorTests {
         )
         #expect(rows.count == 1)
         #expect(
-            rows[0].ownedQuad().subject.term ==
+            rows[0].subject.term ==
                 .iri(try RDFIRI("https://example.test/events/second"))
         )
     }
@@ -1384,28 +1386,66 @@ struct SPARQLStatementMutationExecutorTests {
         return value
     }
 
+    /// Reads the quads a mutation persisted, through the supported SPARQL
+    /// CONSTRUCT path.
+    ///
+    /// The canonical store returns a linear scan owner whose elements stay
+    /// internal to the framework package, so verification reads the persisted
+    /// graph through the read session's public SPARQL entry point, which
+    /// performs the RDF dataset read admission the runtime executor requires.
     private func scan(
         graphTarget: RDFGraphScanTarget,
         container: DBContainer
-    ) async throws -> RDFDatasetScanResult {
-        try await container.withTestBaseOperation {
-            let store = try canonicalRDFStoreForActiveBase(in: container)
-            return try await container.testDataEngine().withTransaction { transaction in
-                try await store.scan(
-                    subject: nil,
-                    predicate: nil,
-                    object: nil,
-                    graphTarget: graphTarget,
-                    limit: nil,
-                    readMode: .snapshot,
-                    transaction: transaction,
-                    workMeter: DatabaseWorkMeter(
-                        budget: ExecutionBudget(),
-                        monotonicClock: TestProcessMonotonicClock()
-                    )
-                )
+    ) async throws -> [RDFQuad] {
+        let everyQuad = TriplePattern(
+            subject: .variable("subject"),
+            predicate: .variable("predicate"),
+            object: .variable("object")
+        )
+        let pattern: GraphPattern
+        switch graphTarget {
+        case .defaultGraph:
+            pattern = .basic([everyQuad])
+        case .named(let graph):
+            guard case .iri(let iri) = graph.subject else {
+                throw PersistedGraphReadError.unsupportedGraphTarget(graphTarget)
+            }
+            pattern = .graph(
+                name: .iri(iri.rawValue),
+                pattern: .basic([everyQuad])
+            )
+        case .empty, .namedGraphUnion, .allNamedGraphs:
+            throw PersistedGraphReadError.unsupportedGraphTarget(graphTarget)
+        }
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let constructQuery = ConstructQuery(
+            template: [everyQuad],
+            pattern: pattern
+        )
+        return try await container.withTestBaseOperation {
+            try await container.testBaseContext().withReadSnapshot(
+                workMeter: workMeter
+            ) { snapshot in
+                try await snapshot.session.executeSPARQLConstruct(
+                    constructQuery,
+                    nodeNamespace: try GraphResultNodeNamespace(
+                        ByteString(repeating: 0x00, count: 32)
+                    ),
+                    options: ReadExecutionContext(
+                        monotonicClock: TestProcessMonotonicClock(),
+                        workMeter: workMeter
+                    ),
+                    partitions: FieldObject()
+                ).promoteToOutput()
             }
         }
+    }
+
+    private enum PersistedGraphReadError: Error {
+        case unsupportedGraphTarget(RDFGraphScanTarget)
     }
 
     private func containsGraph(
@@ -1441,7 +1481,7 @@ struct SPARQLStatementMutationExecutorTests {
     ) throws -> CanonicalRDFGraphStore {
         CanonicalRDFGraphStore(
             rootSubspace: CanonicalRDFGraphStore.rootSubspace(
-                forBaseRoot: try container.executionStorage().root
+                forDataRoot: try container.executionStorage().dataRoot
             )
         )
     }

@@ -14,6 +14,12 @@ public final class LimitingTransaction: TransactionAccess, Sendable {
         underlying.capabilities
     }
 
+    /// The wrapped transaction's own domain: this wrapper only counts range
+    /// cursors and never rebinds the transaction to another engine's catalog.
+    public var transactionDomain: StorageTransactionDomain {
+        underlying.transactionDomain
+    }
+
     // MARK: - Range Result
 
     /// Delegates range advancement without materializing backend-owned bytes.

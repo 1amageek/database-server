@@ -199,7 +199,7 @@ struct CanonicalDatabaseRDFGraphAlgorithmServiceTests {
         )
         let databaseContext = container.testBaseContext()
         let subspace = try await databaseContext.withDataOperation {
-            try databaseContext.executionStorage().root
+            try databaseContext.executionStorage().dataRoot
                 .subspace("test-indexes")
                 .subspace("canonical-rdf-graph-service")
         }

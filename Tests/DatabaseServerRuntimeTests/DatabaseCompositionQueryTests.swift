@@ -15,6 +15,17 @@ import Synchronization
 import TestSupport
 import Testing
 
+/// One valid read point stands for the snapshot these builder unit tests
+/// publish under. DatabaseWire rejects an empty federated read-point list, and
+/// production always carries at least the domain the Composition read.
+private func testReadConsistency(
+    domain: Base.ID
+) throws -> DatabaseKit.DatabaseReadConsistency {
+    .transactional(
+        try DomainReadPoint(domainID: domain.value, position: .version(1))
+    )
+}
+
 @Suite("Composition query execution", .serialized)
 struct DatabaseCompositionQueryTests {
     @Test("global ordering, provenance, and durable paging are fixed")
@@ -86,6 +97,404 @@ struct DatabaseCompositionQueryTests {
         #expect(try priorities(second) == [3, 4])
         #expect(second.continuation == nil)
     }
+
+    @Test("the first Composition page leaves the intermediate budget")
+    func firstPageLeavesTheIntermediateBudget() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        let selection = CompositionSelection.named(fixture.compositionID)
+        let readMetadata = try await fixture.container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).composition(selection).acquireReadMetadata()
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 8,
+                maximumWorkUnits: 10_000,
+                maximumIntermediateRows: 8,
+                maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: fixture.container.monotonicClock
+        )
+        let builder = DatabaseCompositionQueryResultBuilder(
+            composition: readMetadata.resolution,
+            basePlacementGenerations: readMetadata.basePlacementGenerations,
+            schemaGeneration: fixture.container.schemaGeneration,
+            consistency: try testReadConsistency(
+                domain: fixture.primaryBaseID
+            ),
+            pageLimit: 1,
+            queryFingerprint: ByteString(repeating: 0x41, count: 32),
+            authorization: TestBaseEnvironment.authorization,
+            maximumIntermediateBytes: 1 * 1_024 * 1_024,
+            snapshotStore: fixture.snapshotStore,
+            workMeter: workMeter
+        )
+
+        try await builder.append(
+            DatabaseEngine.QueryRow(fields: ["value": .string("first")]),
+            origin: .source(fixture.primaryBaseID),
+            footprint: 64
+        )
+        try await builder.append(
+            DatabaseEngine.QueryRow(fields: ["value": .string("second")]),
+            origin: .source(fixture.secondaryBaseID),
+            footprint: 64
+        )
+
+        // The first full page is the operation's response. Its size is
+        // governed by the output and page limits, so it is promoted out of
+        // the intermediate budget and only the staging page still claims one.
+        #expect(workMeter.retainedIntermediateRows == 1)
+        #expect(workMeter.retainedIntermediateBytes > 0)
+        _ = try await builder.finish()
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("an append failure releases every staged claim after abort")
+    func appendFailureReleasesStagedClaimsAfterAbort() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        let readMetadata = try await fixture.container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).composition(CompositionSelection.named(fixture.compositionID))
+            .acquireReadMetadata()
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 8,
+                maximumWorkUnits: 10_000,
+                maximumIntermediateRows: 8,
+                maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: fixture.container.monotonicClock
+        )
+        let builder = DatabaseCompositionQueryResultBuilder(
+            composition: readMetadata.resolution,
+            basePlacementGenerations: readMetadata.basePlacementGenerations,
+            schemaGeneration: fixture.container.schemaGeneration,
+            consistency: try testReadConsistency(
+                domain: fixture.primaryBaseID
+            ),
+            pageLimit: 1,
+            queryFingerprint: ByteString(repeating: 0x43, count: 32),
+            authorization: TestBaseEnvironment.authorization,
+            maximumIntermediateBytes: 1 * 1_024 * 1_024,
+            snapshotStore: nil,
+            workMeter: workMeter
+        )
+        let row = DatabaseEngine.QueryRow(
+            fields: ["value": .string("staged")]
+        )
+        let incompatibleRow = DatabaseEngine.QueryRow(
+            fields: ["other": .string("incompatible")]
+        )
+
+        try await builder.append(
+            row,
+            origin: .source(fixture.primaryBaseID),
+            footprint: 64
+        )
+        do {
+            try await builder.append(
+                incompatibleRow,
+                origin: .source(fixture.secondaryBaseID),
+                footprint: 64
+            )
+            Issue.record("Expected incompatible projected columns to fail append")
+        } catch {
+            // The builder rolls back the failed append before abort is called.
+        }
+
+        #expect(workMeter.retainedIntermediateRows == 1)
+        #expect(workMeter.retainedIntermediateBytes > 0)
+        try await builder.abort()
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+        try await builder.abort()
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("cancellation during finish releases staged claims before abort")
+    func cancellationDuringFinishReleasesStagedClaims() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        let readMetadata = try await fixture.container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).composition(CompositionSelection.named(fixture.compositionID))
+            .acquireReadMetadata()
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 8,
+                maximumWorkUnits: 10_000,
+                maximumIntermediateRows: 8,
+                maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: fixture.container.monotonicClock
+        )
+        let builder = DatabaseCompositionQueryResultBuilder(
+            composition: readMetadata.resolution,
+            basePlacementGenerations: readMetadata.basePlacementGenerations,
+            schemaGeneration: fixture.container.schemaGeneration,
+            consistency: try testReadConsistency(
+                domain: fixture.primaryBaseID
+            ),
+            pageLimit: 1,
+            queryFingerprint: ByteString(repeating: 0x44, count: 32),
+            authorization: TestBaseEnvironment.authorization,
+            maximumIntermediateBytes: 1 * 1_024 * 1_024,
+            snapshotStore: fixture.snapshotStore,
+            workMeter: workMeter
+        )
+        let row = DatabaseEngine.QueryRow(
+            fields: ["value": .string("staged")]
+        )
+        try await builder.append(
+            row,
+            origin: .source(fixture.primaryBaseID),
+            footprint: 64
+        )
+        try await builder.append(
+            row,
+            origin: .source(fixture.secondaryBaseID),
+            footprint: 64
+        )
+
+        let gate = BuilderStartGate()
+        let task = Task {
+            await gate.enterAndWait()
+            return try await builder.finish()
+        }
+        await gate.waitUntilEntered()
+        task.cancel()
+        await gate.release()
+        do {
+            _ = try await task.value
+            Issue.record("Expected cancellation to interrupt finish")
+        } catch is CancellationError {
+            // Cancellation must not retain the staged page claim.
+        } catch {
+            Issue.record("Expected CancellationError, got \(error)")
+        }
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+        try await builder.abort()
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("publication failure releases staged claims after abort")
+    func publicationFailureReleasesStagedClaimsAfterAbort() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        let readMetadata = try await fixture.container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).composition(CompositionSelection.named(fixture.compositionID))
+            .acquireReadMetadata()
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 8,
+                maximumWorkUnits: 10_000,
+                maximumIntermediateRows: 8,
+                maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: fixture.container.monotonicClock
+        )
+        let builder = DatabaseCompositionQueryResultBuilder(
+            composition: readMetadata.resolution,
+            basePlacementGenerations: readMetadata.basePlacementGenerations,
+            schemaGeneration: fixture.container.schemaGeneration,
+            consistency: try testReadConsistency(
+                domain: fixture.primaryBaseID
+            ),
+            pageLimit: 1,
+            queryFingerprint: ByteString(repeating: 0x45, count: 32),
+            authorization: TestBaseEnvironment.authorization,
+            maximumIntermediateBytes: 1 * 1_024 * 1_024,
+            snapshotStore: fixture.snapshotStore,
+            workMeter: workMeter
+        )
+        let row = DatabaseEngine.QueryRow(
+            fields: ["value": .string("staged")]
+        )
+        try await builder.append(
+            row,
+            origin: .source(fixture.primaryBaseID),
+            footprint: 64
+        )
+        try await builder.append(
+            row,
+            origin: .source(fixture.secondaryBaseID),
+            footprint: 64
+        )
+
+        _ = try await fixture.container.withControlMetadataTransaction {
+            transaction in
+            try await fixture.container.compositionCatalog.replace(
+                id: fixture.compositionID,
+                bases: [
+                    fixture.primaryBaseID,
+                    fixture.secondaryBaseID,
+                ],
+                expectedRevision: 1,
+                transaction: transaction.executionStorageAccess
+            )
+        }
+
+        do {
+            _ = try await builder.finish()
+            Issue.record("Expected publication to reject the stale composition")
+        } catch {
+            // The finish failure must release in-memory claims before abort.
+        }
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+        try await builder.abort()
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+    }
+
+    #if DATABASE_OPERATIONS_TEST_GRAPH_INDEXES
+    @Test("the first Composition RDF page leaves the intermediate budget")
+    func firstRDFPageLeavesTheIntermediateBudget() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        let selection = CompositionSelection.named(fixture.compositionID)
+        let readMetadata = try await fixture.container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).composition(selection).acquireReadMetadata()
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 8,
+                maximumWorkUnits: 10_000,
+                maximumIntermediateRows: 8,
+                maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: fixture.container.monotonicClock
+        )
+        let builder = try DatabaseCompositionRDFResultBuilder(
+            composition: readMetadata.resolution,
+            basePlacementGenerations: readMetadata.basePlacementGenerations,
+            consistency: try testReadConsistency(
+                domain: fixture.primaryBaseID
+            ),
+            schemaGeneration: fixture.container.schemaGeneration,
+            pageLimit: 1,
+            maximumIntermediateBytes: 1 * 1_024 * 1_024,
+            queryFingerprint: ByteString(repeating: 0x42, count: 32),
+            authorization: TestBaseEnvironment.authorization,
+            snapshotStore: fixture.snapshotStore,
+            workMeter: workMeter
+        )
+        let predicate = try RDFPredicateIRI("urn:composition:predicate")
+
+        try await builder.append(
+            RDFQuad(
+                subject: .iri(try RDFIRI("urn:composition:first")),
+                predicate: predicate,
+                object: .iri(try RDFIRI("urn:composition:object"))
+            ),
+            origin: .source(fixture.primaryBaseID)
+        )
+        try await builder.append(
+            RDFQuad(
+                subject: .iri(try RDFIRI("urn:composition:second")),
+                predicate: predicate,
+                object: .iri(try RDFIRI("urn:composition:object"))
+            ),
+            origin: .source(fixture.secondaryBaseID)
+        )
+
+        // The first full page is promoted out of the intermediate budget, so
+        // one staged quad remains, plus the released framework quad footprint
+        // meter's four-slot scratch worklist, which reserves its slots as
+        // intermediate rows for as long as quads may still arrive.
+        #expect(workMeter.retainedIntermediateRows == 5)
+        _ = try await builder.finish()
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("RDF publication failure releases staged claims after abort")
+    func rdfPublicationFailureReleasesStagedClaimsAfterAbort() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        let readMetadata = try await fixture.container.session(
+            authorization: TestBaseEnvironment.authorization
+        ).composition(CompositionSelection.named(fixture.compositionID))
+            .acquireReadMetadata()
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 8,
+                maximumWorkUnits: 10_000,
+                maximumIntermediateRows: 8,
+                maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: fixture.container.monotonicClock
+        )
+        let builder = try DatabaseCompositionRDFResultBuilder(
+            composition: readMetadata.resolution,
+            basePlacementGenerations: readMetadata.basePlacementGenerations,
+            consistency: try testReadConsistency(
+                domain: fixture.primaryBaseID
+            ),
+            schemaGeneration: fixture.container.schemaGeneration,
+            pageLimit: 1,
+            maximumIntermediateBytes: 1 * 1_024 * 1_024,
+            queryFingerprint: ByteString(repeating: 0x46, count: 32),
+            authorization: TestBaseEnvironment.authorization,
+            snapshotStore: fixture.snapshotStore,
+            workMeter: workMeter
+        )
+        let predicate = try RDFPredicateIRI("urn:composition:predicate")
+        let first = RDFQuad(
+            subject: .iri(try RDFIRI("urn:composition:first")),
+            predicate: predicate,
+            object: .iri(try RDFIRI("urn:composition:object"))
+        )
+        let second = RDFQuad(
+            subject: .iri(try RDFIRI("urn:composition:second")),
+            predicate: predicate,
+            object: .iri(try RDFIRI("urn:composition:object"))
+        )
+        try await builder.append(first, origin: .source(fixture.primaryBaseID))
+        try await builder.append(
+            second,
+            origin: .source(fixture.secondaryBaseID)
+        )
+
+        _ = try await fixture.container.withControlMetadataTransaction {
+            transaction in
+            try await fixture.container.compositionCatalog.replace(
+                id: fixture.compositionID,
+                bases: [
+                    fixture.primaryBaseID,
+                    fixture.secondaryBaseID,
+                ],
+                expectedRevision: 1,
+                transaction: transaction.executionStorageAccess
+            )
+        }
+
+        do {
+            _ = try await builder.finish()
+            Issue.record("Expected RDF publication to reject stale composition")
+        } catch {
+            // The finish failure must release in-memory claims before abort.
+        }
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+        try await builder.abort()
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+    }
+    #endif
 
     @Test("derived Composition executes remotely without a catalog identity")
     func derivedCompositionHasNoSyntheticIdentity() async throws {
@@ -333,10 +742,10 @@ struct DatabaseCompositionQueryTests {
         guard case .ir(.select(let query)) = firstRequest.input else {
             throw TestFailure.unexpectedResponse
         }
-        let lease = try await fixture.container.session(
+        let readMetadata = try await fixture.container.session(
             authorization: TestBaseEnvironment.authorization
-        ).composition(selection).acquireReadLease()
-        var changedGenerations = lease.basePlacementGenerations
+        ).composition(selection).acquireReadMetadata()
+        var changedGenerations = readMetadata.basePlacementGenerations
         let currentGeneration = try #require(
             changedGenerations[fixture.primaryBaseID]
         )
@@ -345,7 +754,7 @@ struct DatabaseCompositionQueryTests {
         do {
             _ = try await fixture.snapshotStore.load(
                 continuation: continuation,
-                composition: lease.resolution,
+                composition: readMetadata.resolution,
                 basePlacementGenerations: changedGenerations,
                 schemaGeneration: fixture.container.schemaGeneration,
                 queryFingerprint: try DatabaseQuerySnapshotStore
@@ -1283,25 +1692,23 @@ struct DatabaseCompositionQueryTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: controlDomainID,
-                    namespacePath: ["database", "control"],
+                    rootPath: ["database", "control"],
                     storageEngine: InMemoryEngine()
                 ),
                 try DatabaseStorageDomain(
                     id: dataDomainID,
-                    namespacePath: ["database", "secondary-data"],
+                    rootPath: ["database", "secondary-data"],
                     storageEngine: InMemoryEngine()
                 ),
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: primaryPlacementID,
-                    domainID: controlDomainID,
-                    path: ["bases"]
+                    domainID: controlDomainID
                 ),
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: secondaryPlacementID,
-                    domainID: dataDomainID,
-                    path: ["bases"]
+                    domainID: dataDomainID
                 ),
             ],
             defaultPlacementID: primaryPlacementID
@@ -1471,10 +1878,10 @@ struct DatabaseCompositionQueryTests {
             authorization: TestBaseEnvironment.authorization
         ).base(baseID).newContext()
         try await context.withDataOperation {
-            let lease = try context.requireOperationDataRoot()
+            let lease = try context.executionStorage()
             let store = CanonicalRDFGraphStore(
                 rootSubspace: CanonicalRDFGraphStore.rootSubspace(
-                    forBaseRoot: lease.root
+                    forDataRoot: lease.dataRoot
                 )
             )
             _ = try await context.container.transactionExecutor
@@ -1749,6 +2156,33 @@ struct DatabaseCompositionQueryTests {
     private enum TestFailure: Error {
         case unexpectedResponse
         case unexpectedRemoteFailure(RemoteOperationError)
+    }
+}
+
+private actor BuilderStartGate {
+    private var didEnter = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func waitUntilEntered() async {
+        guard !didEnter else { return }
+        await withCheckedContinuation { continuation in
+            startWaiter = continuation
+        }
+    }
+
+    func enterAndWait() async {
+        didEnter = true
+        startWaiter?.resume()
+        startWaiter = nil
+        await withCheckedContinuation { continuation in
+            releaseWaiter = continuation
+        }
+    }
+
+    func release() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
     }
 }
 #endif

@@ -246,15 +246,17 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
+    /// A named placement routes newly provisioned Bases to one domain.
+    ///
+    /// A Base Partition's address is fixed below the database root of its
+    /// domain, so a placement declares no path of its own.
     public struct Placement: Codable, Sendable, Equatable {
         public let id: String
         public let domain: String
-        public let path: [String]
 
-        public init(id: String, domain: String, path: [String]) {
+        public init(id: String, domain: String) {
             self.id = id
             self.domain = domain
-            self.path = path
         }
     }
     #endif
@@ -288,7 +290,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
 
     #if DATABASE_SERVER_HOST_MULTI_BASE
     public init(
-        formatVersion: Int = 2,
+        formatVersion: Int = 4,
         controlDomain: String,
         domains: [Domain],
         placements: [Placement],
@@ -379,15 +381,14 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
             domains: domains.map { domain in
                 NativeDatabaseStorageDomainConfiguration(
                     id: domain.id,
-                    namespacePath: domain.namespace,
+                    rootPath: domain.namespace,
                     storage: try domain.storage.runtimeStorage()
                 )
             },
             placements: placements.map { placement in
                 NativeDatabaseStoragePlacementConfiguration(
                     id: placement.id,
-                    domainID: placement.domain,
-                    path: placement.path
+                    domainID: placement.domain
                 )
             },
             defaultPlacementID: defaultPlacement
@@ -458,7 +459,10 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
 
     private func validate() throws {
         #if DATABASE_SERVER_HOST_MULTI_BASE
-        let expectedFormatVersion = 2
+        // Version 4 drops the per-placement path a Base Partition no longer
+        // addresses. An earlier document is rejected rather than loaded with
+        // its declared path ignored.
+        let expectedFormatVersion = 4
         #else
         let expectedFormatVersion = 3
         #endif
@@ -479,8 +483,8 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         var physicalBackends: Set<NativeDatabaseStorageConfiguration> = []
         for domain in topology.domains {
             guard domainIDs.insert(domain.id).inserted,
-                  !domain.namespacePath.isEmpty,
-                  !domain.namespacePath.contains(where: \.isEmpty) else {
+                  !domain.rootPath.isEmpty,
+                  !domain.rootPath.contains(where: \.isEmpty) else {
                 throw DatabaseServerLaunchConfigurationError.invalidTopology
             }
             if case .sqliteMemory = domain.storage {
@@ -499,14 +503,12 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
         var placementIDs: Set<String> = []
         var destinations: Set<String> = []
+        // A placement names only its domain, so two placements on the same
+        // domain address the same destination and only one may declare it.
         for placement in topology.placements {
-            let destination = placement.domainID + "\u{0}"
-                + placement.path.joined(separator: "\u{0}")
             guard placementIDs.insert(placement.id).inserted,
                   domainIDs.contains(placement.domainID),
-                  !placement.path.isEmpty,
-                  !placement.path.contains(where: \.isEmpty),
-                  destinations.insert(destination).inserted else {
+                  destinations.insert(placement.domainID).inserted else {
                 throw DatabaseServerLaunchConfigurationError.invalidTopology
             }
         }

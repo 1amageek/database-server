@@ -61,7 +61,7 @@ public final class DatabaseHostedRuntime: Sendable {
     public static func open(
         application: AnyDatabaseOperationApplication,
         storageEngine: any StorageEngine,
-        databaseRoot: Subspace,
+        databaseRootPath: [String],
         hostServices: DatabaseOperationHostServices,
         requestWireLimits: DatabaseWireLimits = .default,
         responseWireLimits: DatabaseWireLimits = .default
@@ -76,7 +76,7 @@ public final class DatabaseHostedRuntime: Sendable {
         }
         let container = try await definition.open(
             storageEngine: storageEngine,
-            databaseRoot: databaseRoot
+            databaseRootPath: databaseRootPath
         )
         let configuration: DatabaseOperationConfiguration
         do {

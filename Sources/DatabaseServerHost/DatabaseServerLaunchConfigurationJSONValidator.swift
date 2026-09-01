@@ -56,9 +56,12 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
         }
         if let placements = root["placements"] as? [Any] {
             for value in placements {
+                // A placement names only its domain. A document that still
+                // declares a path is rejected rather than loaded with the
+                // path silently discarded.
                 try requireOnly(
                     object(value),
-                    keys: ["id", "domain", "path"]
+                    keys: ["id", "domain"]
                 )
             }
         }

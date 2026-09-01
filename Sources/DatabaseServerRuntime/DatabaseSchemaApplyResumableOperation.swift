@@ -887,7 +887,7 @@ public struct DatabaseSchemaApplyResumableOperation:
                             )
                             return completedRetirementState(state: state)
                         }
-                        try executor.retireSchemaIndexStorage(
+                        try await executor.retireSchemaIndexStorage(
                             target,
                             partitions: entry.partitions,
                             transaction: transaction.executionStorageAccess
@@ -904,7 +904,7 @@ public struct DatabaseSchemaApplyResumableOperation:
                             )
                         }
                     } else {
-                        try executor.retireSchemaIndexStorage(
+                        try await executor.retireSchemaIndexStorage(
                             target,
                             partitions: FieldObject(),
                             transaction: transaction.executionStorageAccess
@@ -912,7 +912,7 @@ public struct DatabaseSchemaApplyResumableOperation:
                     }
 
                 case .polymorphicGroup:
-                    try executor.retireSchemaIndexStorage(
+                    try await executor.retireSchemaIndexStorage(
                         target,
                         partitions: FieldObject(),
                         transaction: transaction.executionStorageAccess

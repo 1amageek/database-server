@@ -280,7 +280,30 @@ struct DatabaseMaintenanceOperationServiceTests {
         }
         let secondIndexes = try secondPage.materializedIndexes(maximumCount: 1)
         #expect(secondIndexes.count == 1)
-        #expect(secondPage.continuation == nil)
+        // Partition enumeration reports a continuation whenever a page ends
+        // exactly on its limit, because resuming re-descends the recorded path
+        // and reports a partition created between two pages. The last target of
+        // an entity therefore leaves a cursor that the following page drains
+        // empty, which is where enumeration reports that it is finished.
+        let finalContinuation = try #require(secondPage.continuation)
+        let final = try await service.execute(
+            MaintenanceExecuteOperation.Request(
+                invocation: .indexStatus(
+                    entity: nil,
+                    index: nil,
+                    partitions: FieldObject()
+                ),
+                continuation: finalContinuation,
+                budget: budget
+            ),
+            context: try operationContext(container: maintenanceContext.container)
+        ).response
+        guard case .indexStatus(let finalPage) = final else {
+            Issue.record("Expected a final index status page")
+            return
+        }
+        #expect(try finalPage.materializedIndexes(maximumCount: 1).isEmpty)
+        #expect(finalPage.continuation == nil)
         let allPartitions = [
             firstIndexes[0].partitions,
             secondIndexes[0].partitions,

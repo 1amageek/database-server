@@ -380,11 +380,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                         ),
                     ],
                     placements: [
-                        .init(
-                            id: "default",
-                            domain: "primary",
-                            path: ["bases"]
-                        ),
+                        .init(id: "default", domain: "primary"),
                     ],
                     defaultPlacement: "default",
                     host: host ?? "127.0.0.1",
@@ -574,7 +570,7 @@ struct DatabaseServerCommand: AsyncParsableCommand {
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
                 storageTopology: .single(
                     storage: try selectedStorage.runtimeStorage(),
-                    namespacePath: try storageOptions.multiBaseNamespace(
+                    rootPath: try storageOptions.multiBaseNamespace(
                         for: selectedStorage
                     )
                 ),

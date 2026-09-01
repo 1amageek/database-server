@@ -131,12 +131,15 @@ host resolves it once and passes the resulting `Subspace` to the framework.
 Platform adapters own their platform-specific storage configuration and do not
 consume this native server configuration.
 The non-default `MultiBase` trait replaces the single storage field with a
-control domain, data domains, and named Base placements. It never contains a
-raw credential. Standard format version 3 and `MultiBase` format version 2
+control domain, data domains, and named Base placements. A placement names
+only its domain: a Base Partition's address is fixed below that domain's
+database root, so the placement declares no path of its own. It never contains
+a raw credential. Standard format version 3 and `MultiBase` format version 4
 are both strict: unknown keys, mismatched root/backend selection, duplicate
-identifiers, missing domain references, duplicate persistent backend
-definitions, and empty paths are rejected before any engine is opened. A
-standard build rejects placement keys rather than ignoring them.
+identifiers, missing domain references, duplicate placement destinations,
+duplicate persistent backend definitions, and empty paths are rejected before
+any engine is opened. A standard build rejects placement keys rather than
+ignoring them.
 
 ```json
 {
@@ -157,7 +160,7 @@ With `MultiBase`, add the placement fields:
 
 ```json
 {
-  "formatVersion": 2,
+  "formatVersion": 4,
   "controlDomain": "primary",
   "domains": [
     {
@@ -170,7 +173,7 @@ With `MultiBase`, add the placement fields:
     }
   ],
   "placements": [
-    { "id": "default", "domain": "primary", "path": ["bases"] }
+    { "id": "default", "domain": "primary" }
   ],
   "defaultPlacement": "default"
 }
@@ -246,9 +249,9 @@ After an attributed package build, set `XCODE_TEST_DERIVED_DATA_PATH` to that
 exact DerivedData directory so the harness builds only the missing test
 products before its isolated `test-without-building` run.
 
-The strict harness requires 296 logical tests for the standard graph. Set
+The strict harness requires 302 logical tests for the standard graph. Set
 `DATABASE_SERVER_TEST_TRAITS=MultiBase` to select that trait in an isolated
-source copy and require 322 tests. Both graphs require zero failures, zero
+source copy and require 334 tests. Both graphs require zero failures, zero
 skips, zero expected failures, zero runtime warnings, and no internal tool
 errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap

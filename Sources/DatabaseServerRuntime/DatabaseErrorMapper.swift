@@ -1037,9 +1037,13 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .querySnapshotCorrupted:
             category = .internalFailure
             code = "QUERY_SNAPSHOT_CORRUPTED"
-        case .querySnapshotLimitExceeded:
+        case .querySnapshotLimitExceeded,
+             .querySnapshotStorageLimitExceeded:
             category = .resourceLimit
             code = "QUERY_SNAPSHOT_LIMIT"
+        case .pageLimitExceedsPlatformCapacity:
+            category = .resourceLimit
+            code = "QUERY_RESOURCE_LIMIT"
         case .compositionAggregateFailure:
             category = .constraint
             code = "COMPOSITION_AGGREGATE_FAILED"
@@ -1972,6 +1976,11 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .entityNotFound, .polymorphicGroupNotFound, .indexNotFound:
             category = .notFound
             code = "INDEX_TARGET_NOT_FOUND"
+        case .directoryNotFound:
+            // The directory prepareResources created is gone, so the
+            // partition was removed under a running job.
+            category = .notFound
+            code = "INDEX_DIRECTORY_NOT_FOUND"
         case .indexGenerationMismatch:
             category = .conflict
             code = "INDEX_GENERATION_MISMATCH"

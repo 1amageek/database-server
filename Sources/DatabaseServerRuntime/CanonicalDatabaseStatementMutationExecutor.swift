@@ -157,8 +157,8 @@ public struct CanonicalDatabaseStatementMutationExecutor:
         }
         return CanonicalRDFGraphStore(
             rootSubspace: CanonicalRDFGraphStore.rootSubspace(
-                forBaseRoot: try context.requireDataContext()
-                    .executionStorage().root
+                forDataRoot: try context.requireDataContext()
+                    .executionStorage().dataRoot
             )
         )
     }

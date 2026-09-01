@@ -22,6 +22,20 @@ private typealias DatabaseQueryBooleanResponse = QueryBooleanResult
 private typealias DatabaseQueryBooleanResponse = Bool
 #endif
 
+private enum DatabaseSelectInitialPlan: Sendable {
+    case page(QueryResponse, DatabaseTransactionReadPoint.Value)
+    case historical(
+        QueryResponse,
+        QueryContinuation,
+        UInt64,
+        DatabaseTransactionReadPoint.Value
+    )
+    case captured(
+        DatabaseSharedRetainedQueryRows,
+        DatabaseTransactionReadPoint.Value
+    )
+}
+
 public struct QueryExecuteHandler: DatabaseOperationHandler {
     public typealias Operation = QueryExecuteOperation
 
@@ -212,11 +226,11 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                         )
                 }
                 let source = try context.requireCompositionExecutor()
-                let lease = try await source.acquireReadLease()
+                let readMetadata = try await source.acquireReadMetadata()
                 let page = try await querySnapshotStore.load(
                     continuation: continuation,
-                    composition: lease.resolution,
-                    basePlacementGenerations: lease
+                    composition: readMetadata.resolution,
+                    basePlacementGenerations: readMetadata
                         .basePlacementGenerations,
                     schemaGeneration: context.executor.schemaGeneration,
                     queryFingerprint: queryFingerprint,
@@ -241,20 +255,95 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         #endif
         let databaseContext = try context.requireDataContext()
         let lease = try databaseContext.executionStorage()
-        if let continuation = request.page.continuation,
-           continuation.count == DatabaseQuerySnapshotStore
-            .continuationByteCount,
-           continuation.first == DatabaseQuerySnapshotStore
-            .continuationMarker {
+        if let continuation = request.page.continuation {
+            guard continuation.count == DatabaseQuerySnapshotStore
+                    .continuationByteCount,
+                  continuation.first == DatabaseQuerySnapshotStore
+                    .continuationMarker else {
+                throw DatabaseQueryExecutionError.invalidContinuation
+            }
             guard let querySnapshotStore else {
                 throw DatabaseQueryExecutionError.invalidContinuation
             }
-            let queryFingerprint = try DatabaseQuerySnapshotStore
-                .queryFingerprint(
-                    query: query,
-                    request: request,
-                    limits: context.wireLimits
+            let queryFingerprint = try Self.queryFingerprint(
+                query,
+                request: request,
+                context: context
+            )
+            if let historical = try await querySnapshotStore
+                .loadHistoricalQuery(
+                    continuation: continuation,
+                    lease: lease,
+                    schemaGeneration: context.executor.schemaGeneration,
+                    queryFingerprint: queryFingerprint,
+                    authorization: context.authorization
+                ) {
+                let executed: (
+                    response: QueryResponse,
+                    readPoint: DatabaseTransactionReadPoint.Value
                 )
+                do {
+                    executed = try await databaseContext.withReadSnapshot(
+                        restoring: .version(historical.readVersion),
+                        workMeter: workMeter
+                    ) { snapshot in
+                        guard snapshot.position
+                            == .version(historical.readVersion) else {
+                            throw DatabaseQueryExecutionError
+                                .querySnapshotCorrupted
+                        }
+                        let prepared = try await databaseContext
+                            .prepareSQLSelectForCanonicalExecution(
+                                query,
+                                workMeter: workMeter,
+                                session: snapshot.session,
+                                structuralLimits: structuralLimits
+                            )
+                        let response = try await prepared.execute(
+                            in: snapshot.session,
+                            execution: try Self.readExecution(
+                                for: request,
+                                continuation: historical.continuation,
+                                workMeter: workMeter,
+                                structuralLimits: structuralLimits,
+                                monotonicClock: context.executor.monotonicClock,
+                                continuationSnapshotIsStable: true
+                            ),
+                            graphPartitions: request.graphPartitions
+                        )
+                        return (
+                            response,
+                            DatabaseTransactionReadPoint.value(
+                                domainID: lease.domainIdentifier,
+                                snapshot: snapshot
+                            )
+                        )
+                    }
+                } catch {
+                    throw Self.mapHistoricalReadFailure(error)
+                }
+                let next: ByteString?
+                if let engineContinuation = executed.response.continuation {
+                    next = try await querySnapshotStore.advanceHistoricalQuery(
+                        historical,
+                        to: engineContinuation
+                    )
+                } else {
+                    next = nil
+                }
+                let page = try Self.rowPage(
+                    executed.response,
+                    continuation: next,
+                    readPoint: executed.readPoint
+                )
+                try Self.recordOutput(page, workMeter: workMeter)
+                if executed.response.continuation == nil {
+                    try await querySnapshotStore.completeHistoricalQuery(
+                        historical
+                    )
+                }
+                return page
+            }
             let page = try await querySnapshotStore.load(
                 continuation: continuation,
                 lease: lease,
@@ -265,141 +354,172 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             try Self.recordOutput(page, workMeter: workMeter)
             return page
         }
-        let cursor = try request.page.continuation.map {
-            try DatabaseQueryPageCursor.decode(
-                $0,
-                limits: context.wireLimits
-            )
-        }
-        #if DATABASE_SERVER_MULTI_BASE
-        guard cursor?.resource == nil || cursor?.resource == lease.resource,
-            cursor?.schemaGeneration == nil
-                || cursor?.schemaGeneration == context.executor.schemaGeneration,
-            cursor?.dataGeneration == nil
-                || cursor?.dataGeneration == lease.generation
-        else {
-            throw DatabaseQueryExecutionError.invalidContinuation
-        }
-        #else
-        guard
-            cursor?.schemaGeneration == nil
-                || cursor?.schemaGeneration == context.executor.schemaGeneration,
-            cursor?.dataGeneration == nil
-                || cursor?.dataGeneration == lease.generation
-        else {
-            throw DatabaseQueryExecutionError.invalidContinuation
-        }
-        #endif
-        let page = try await databaseContext.executeCanonicalRead {
-            transaction in
-            if let restorableReadPosition = cursor?.restorableReadPosition {
-                guard
-                    try DatabaseTransactionReadPoint.restore(
-                        restorableReadPosition,
-                        transaction: transaction
-                    )
-                else {
-                    throw DatabaseQueryExecutionError.invalidContinuation
-                }
-            }
-            let readPoint = try await DatabaseTransactionReadPoint.capture(
-                domainID: lease.domainIdentifier,
-                transaction: transaction
-            )
-            if case .version(let expectedVersion)? = cursor?
-                .restorableReadPosition
-            {
-                guard readPoint.position == .version(expectedVersion) else {
-                    throw DatabaseQueryExecutionError.invalidContinuation
-                }
-            }
+        let plan = try await databaseContext.withReadSnapshot(
+            workMeter: workMeter
+        ) { snapshot in
             let preparedQuery = try await databaseContext
                 .prepareSQLSelectForCanonicalExecution(
                     query,
                     workMeter: workMeter,
-                    transaction: transaction,
+                    session: snapshot.session,
                     structuralLimits: structuralLimits
                 )
-            if !transaction.capabilities.historicalReadVersion {
-                guard cursor == nil else {
-                    throw DatabaseQueryExecutionError.invalidContinuation
-                }
-                return try await executeDurableSnapshotSelect(
-                    originalQuery: query,
-                    preparedQuery: preparedQuery,
-                    request: request,
-                    context: context,
-                    databaseContext: databaseContext,
-                    lease: lease,
-                    transaction: transaction,
-                    readPoint: readPoint,
-                    workMeter: workMeter,
-                    structuralLimits: structuralLimits
-                )
-            }
-            let response = try await preparedQuery.execute(
-                in: databaseContext,
-                execution: try Self.readExecution(
-                    for: request,
-                    continuation: cursor?.continuation,
-                    workMeter: workMeter,
-                    structuralLimits: structuralLimits,
-                    monotonicClock: context.executor.monotonicClock,
-                    continuationSnapshotIsStable: transaction.capabilities
-                        .historicalReadVersion
-                ),
-                graphPartitions: request.graphPartitions,
-                transaction: transaction
+            let readPoint = DatabaseTransactionReadPoint.value(
+                domainID: lease.domainIdentifier,
+                snapshot: snapshot
             )
-            let continuation = try response.continuation.map {
-                try Self.encodeCursor(
-                    continuation: $0.bytes,
-                    readPoint: transaction.capabilities.historicalReadVersion
-                        ? readPoint.position
-                        : nil,
-                    schemaGeneration: context.executor.schemaGeneration,
-                    lease: lease,
-                    limits: context.wireLimits
+            if snapshot.supportsPositionRestoration,
+               case .version(let readVersion) = snapshot.position {
+                let response = try await preparedQuery.execute(
+                    in: snapshot.session,
+                    execution: try Self.readExecution(
+                        for: request,
+                        continuation: nil,
+                        workMeter: workMeter,
+                        structuralLimits: structuralLimits,
+                        monotonicClock: context.executor.monotonicClock,
+                        continuationSnapshotIsStable: true
+                    ),
+                    graphPartitions: request.graphPartitions
+                )
+                guard let continuation = response.continuation else {
+                    return DatabaseSelectInitialPlan.page(
+                        response,
+                        readPoint
+                    )
+                }
+                if querySnapshotStore?.canPersistHistoricalContinuation(
+                    continuation
+                ) == true {
+                    return DatabaseSelectInitialPlan.historical(
+                        response,
+                        continuation,
+                        readVersion,
+                        readPoint
+                    )
+                }
+            }
+            let stagedRows = try await preparedQuery.stageCompleteRows(
+                in: snapshot.session,
+                execution: ReadExecutionContext(
+                    options: ReadExecutionOptions(budget: request.budget),
+                    monotonicClock: context.executor.monotonicClock,
+                    workMeter: workMeter,
+                    queryStructuralLimits: structuralLimits
+                ),
+                graphPartitions: request.graphPartitions
+            )
+            return DatabaseSelectInitialPlan.captured(stagedRows, readPoint)
+        }
+        let page: QueryRowPage
+        switch plan {
+        case .page(let response, let readPoint):
+            page = try Self.rowPage(
+                response,
+                continuation: nil,
+                readPoint: readPoint
+            )
+        case .historical(
+            let response,
+            let continuation,
+            let readVersion,
+            let readPoint
+        ):
+            guard let querySnapshotStore else {
+                throw DatabaseQueryExecutionError.querySnapshotUnavailable(
+                    "the host did not provide durable continuation storage"
                 )
             }
-            return try Self.rowPage(
+            let reservation = try await querySnapshotStore.beginWrite(
+                for: lease,
+                schemaGeneration: context.executor.schemaGeneration,
+                queryFingerprint: try Self.queryFingerprint(
+                    query,
+                    request: request,
+                    context: context
+                ),
+                authorization: context.authorization
+            )
+            let opaqueContinuation: ByteString
+            do {
+                opaqueContinuation = try await querySnapshotStore
+                    .publishHistoricalQuery(
+                        continuation,
+                        readVersion: readVersion,
+                        in: reservation
+                    )
+            } catch {
+                let operationError = error
+                do {
+                    try await querySnapshotStore.abortWrite(reservation)
+                } catch {
+                    throw StorageTransactionCleanupError(
+                        operationError: operationError,
+                        cancellationError: error
+                    )
+                }
+                throw operationError
+            }
+            page = try Self.rowPage(
                 response,
-                continuation: continuation,
+                continuation: opaqueContinuation,
                 readPoint: readPoint
+            )
+        case .captured(let rows, let readPoint):
+            page = try await executeDurableSnapshotSelect(
+                rows: rows,
+                readPoint: readPoint,
+                query: query,
+                request: request,
+                context: context,
+                lease: lease,
+                workMeter: workMeter
             )
         }
         try Self.recordOutput(page, workMeter: workMeter)
         return page
     }
 
+    /// Binds a durable continuation to the query that produced it.
+    ///
+    /// The fingerprint is derived only when a continuation is stored or
+    /// resumed. A single-page result never reaches durable continuation
+    /// storage, so it must not pay this encode or be rejected by a wire limit
+    /// that the request never crossed.
+    private static func queryFingerprint(
+        _ query: SelectQuery,
+        request: QueryExecuteOperation.Request,
+        context: DatabaseOperationContext
+    ) throws -> ByteString {
+        try DatabaseQuerySnapshotStore.queryFingerprint(
+            query: query,
+            request: request,
+            limits: context.wireLimits
+        )
+    }
+
     private func executeDurableSnapshotSelect(
-        originalQuery: SelectQuery,
-        preparedQuery: DatabasePreparedSQLSelect,
+        rows: DatabaseSharedRetainedQueryRows,
+        readPoint: DatabaseTransactionReadPoint.Value,
+        query: SelectQuery,
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
-        databaseContext: DatabaseContext,
         lease: DatabaseExecutionStorage,
-        transaction: any TransactionAccess,
-        readPoint: DatabaseTransactionReadPoint.Value,
-        workMeter: DatabaseWorkMeter,
-        structuralLimits: QueryStructuralLimits
+        workMeter: DatabaseWorkMeter
     ) async throws -> QueryRowPage {
-        let firstResponse = try await preparedQuery.execute(
-            in: databaseContext,
-            execution: try Self.readExecution(
-                for: request,
-                continuation: nil,
-                workMeter: workMeter,
-                structuralLimits: structuralLimits,
-                monotonicClock: context.executor.monotonicClock,
-                continuationSnapshotIsStable: true
-            ),
-            graphPartitions: request.graphPartitions,
-            transaction: transaction
-        )
-        guard var engineContinuation = firstResponse.continuation else {
+        guard let pageLimit = Int(exactly: request.page.limit) else {
+            throw DatabaseQueryExecutionError.pageLimitExceedsPlatformCapacity(
+                requested: request.page.limit
+            )
+        }
+        let rowCount = rows.count
+        let firstEnd = min(pageLimit, rowCount)
+        guard firstEnd < rowCount else {
+            let response = QueryResponse(
+                rows: rows.materializePage(0..<firstEnd)
+            )
             return try Self.rowPage(
-                firstResponse,
+                response,
                 continuation: nil,
                 readPoint: readPoint
             )
@@ -409,57 +529,33 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 "the host did not provide durable query snapshot storage"
             )
         }
-        let queryFingerprint = try DatabaseQuerySnapshotStore.queryFingerprint(
-            query: originalQuery,
-            request: request,
-            limits: context.wireLimits
-        )
-        let snapshotTransaction = querySnapshotStore.controlWriteTransaction(
-            for: lease,
-            active: transaction
-        )
         let reservation = try await querySnapshotStore.beginWrite(
             for: lease,
             schemaGeneration: context.executor.schemaGeneration,
-            queryFingerprint: queryFingerprint,
-            authorization: context.authorization,
-            transaction: snapshotTransaction
+            queryFingerprint: try Self.queryFingerprint(
+                query,
+                request: request,
+                context: context
+            ),
+            authorization: context.authorization
         )
         do {
             let firstContinuationPageID = try await querySnapshotStore
-                .reservePage(
-                    in: reservation,
-                    transaction: snapshotTransaction
-                )
+                .reservePage(in: reservation)
             var currentPageID = firstContinuationPageID
             var continuationPageCount: UInt32 = 0
             var totalPayloadBytes: UInt64 = 0
+            var offset = firstEnd
 
-            while true {
-                let response = try await preparedQuery.execute(
-                    in: databaseContext,
-                    execution: try Self.readExecution(
-                        for: request,
-                        continuation: engineContinuation.bytes,
-                        workMeter: workMeter,
-                        structuralLimits: structuralLimits,
-                        monotonicClock: context.executor.monotonicClock,
-                        continuationSnapshotIsStable: true
-                    ),
-                    graphPartitions: request.graphPartitions,
-                    transaction: transaction
-                )
-                let nextPageID: ByteString?
-                if response.continuation != nil {
-                    nextPageID = try await querySnapshotStore.reservePage(
-                        in: reservation,
-                        transaction: snapshotTransaction
-                    )
-                } else {
-                    nextPageID = nil
-                }
+            while offset < rowCount {
+                let end = min(offset + pageLimit, rowCount)
+                let nextPageID = end < rowCount
+                    ? try await querySnapshotStore.reservePage(in: reservation)
+                    : nil
                 let page = try Self.rowPage(
-                    response,
+                    QueryResponse(
+                        rows: rows.materializePage(offset..<end)
+                    ),
                     continuation: nextPageID.map {
                         reservation.continuation(pageID: $0)
                     },
@@ -472,7 +568,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     consumedPayloadBytes: totalPayloadBytes,
                     maximumIntermediateBytes: request.budget
                         .maximumIntermediateBytes,
-                    transaction: snapshotTransaction
+                    workMeter: workMeter
                 )
                 let incremented = continuationPageCount
                     .addingReportingOverflow(1)
@@ -480,19 +576,17 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     throw DatabaseQueryExecutionError.querySnapshotCorrupted
                 }
                 continuationPageCount = incremented.partialValue
-                guard let continuation = response.continuation,
-                      let nextPageID else {
-                    break
-                }
-                engineContinuation = continuation
-                currentPageID = nextPageID
+                offset = end
+                if let nextPageID { currentPageID = nextPageID }
             }
 
             try await querySnapshotStore.commitWrite(
                 reservation,
                 pageCount: continuationPageCount,
-                totalPayloadBytes: totalPayloadBytes,
-                transaction: snapshotTransaction
+                totalPayloadBytes: totalPayloadBytes
+            )
+            let firstResponse = QueryResponse(
+                rows: rows.materializePage(0..<firstEnd)
             )
             return try Self.rowPage(
                 firstResponse,
@@ -503,13 +597,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             )
         } catch {
             let operationError = error
-            // Co-located control/data writes are uncommitted mutations in the
-            // caller-owned transaction; its rollback is the sole cleanup
-            // authority. Starting another control transaction here would be a
-            // nested runner and could not observe those uncommitted writes.
-            guard snapshotTransaction == nil else {
-                throw operationError
-            }
             do {
                 try await querySnapshotStore.abortWrite(reservation)
             } catch {
@@ -520,6 +607,63 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             }
             throw operationError
         }
+    }
+
+    private static func readExecution(
+        for request: QueryExecuteOperation.Request,
+        continuation: QueryContinuation?,
+        workMeter: DatabaseWorkMeter,
+        structuralLimits: QueryStructuralLimits,
+        monotonicClock: any StorageMonotonicClock,
+        continuationSnapshotIsStable: Bool
+    ) throws -> ReadExecutionContext {
+        guard let pageSize = Int(exactly: request.page.limit) else {
+            throw DatabaseQueryExecutionError.pageLimitExceedsPlatformCapacity(
+                requested: request.page.limit
+            )
+        }
+        let continuationScope = try DatabaseWireWriter.encode {
+            (writer: inout DatabaseWireWriter) throws(DatabaseWireError) in
+            try request.graphPartitions.encode(into: &writer)
+        }
+        return ReadExecutionContext(
+            options: ReadExecutionOptions(
+                pageSize: pageSize,
+                continuation: continuation,
+                budget: request.budget,
+                continuationScope: continuationScope,
+                continuationSnapshotIsStable:
+                    continuationSnapshotIsStable
+            ),
+            monotonicClock: monotonicClock,
+            workMeter: workMeter,
+            queryStructuralLimits: structuralLimits
+        )
+    }
+
+    private static func mapHistoricalReadFailure(
+        _ error: any Error
+    ) -> any Error {
+        if let error = error as? DatabaseQueryExecutionError {
+            return error
+        }
+        if let error = error as? DatabaseReadPositionError {
+            switch error {
+            case .positionIsNotRestorable:
+                return DatabaseQueryExecutionError.querySnapshotExpired
+            case .versionExceedsStorageRange,
+                 .invalidStorageVersion,
+                 .restoredPositionChanged:
+                return DatabaseQueryExecutionError.querySnapshotCorrupted
+            }
+        }
+        if let error = error as? StorageError,
+           error.code == .transactionTooOld
+            || error.code == .transactionFutureVersion
+        {
+            return DatabaseQueryExecutionError.querySnapshotExpired
+        }
+        return error
     }
 
     private static func recordOutput(
@@ -558,11 +702,11 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             )
         if let continuation = request.page.continuation {
             let source = try context.requireCompositionExecutor()
-            let lease = try await source.acquireReadLease()
+            let readMetadata = try await source.acquireReadMetadata()
             let page = try await querySnapshotStore.loadRDFGraph(
                 continuation: continuation,
-                composition: lease.resolution,
-                basePlacementGenerations: lease.basePlacementGenerations,
+                composition: readMetadata.resolution,
+                basePlacementGenerations: readMetadata.basePlacementGenerations,
                 schemaGeneration: context.executor.schemaGeneration,
                 queryFingerprint: queryFingerprint,
                 authorization: context.authorization
@@ -627,31 +771,25 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             )
         }
         #endif
-        guard let executor = context.executor.runtimeConfiguration
-            .logicalSourceExecutors.sparqlExecutor else {
-            throw CanonicalReadError.unsupportedSource(
-                "SPARQL source executor is not registered"
-            )
-        }
         let databaseContext = try context.requireDataContext()
         let lease = try databaseContext.executionStorage()
-        let response = try await databaseContext.executeCanonicalRead {
-            transaction in
-            let value = try await executor.executeAskInTransaction(
-                context: databaseContext,
-                askQuery: query,
+        let response = try await databaseContext.withReadSnapshot(
+            workMeter: workMeter
+        ) {
+            snapshot in
+            let value = try await snapshot.session.executeSPARQLAsk(
+                query,
                 options: ReadExecutionContext(
                     options: ReadExecutionOptions(budget: request.budget),
                     monotonicClock: context.executor.monotonicClock,
                     workMeter: workMeter,
                     queryStructuralLimits: structuralLimits
                 ),
-                partitions: request.graphPartitions,
-                transaction: transaction
+                partitions: request.graphPartitions
             )
-            let readPoint = try await DatabaseTransactionReadPoint.capture(
+            let readPoint = DatabaseTransactionReadPoint.value(
                 domainID: lease.domainIdentifier,
-                transaction: transaction
+                snapshot: snapshot
             )
             #if DATABASE_SERVER_MULTI_BASE
             return try QueryBooleanResult(
@@ -701,82 +839,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
     #endif
 
     #endif
-
-    private static func readExecution(
-        for request: QueryExecuteOperation.Request,
-        continuation continuationBytes: ByteString?,
-        workMeter: DatabaseWorkMeter,
-        structuralLimits: QueryStructuralLimits,
-        monotonicClock: any StorageMonotonicClock,
-        continuationSnapshotIsStable: Bool
-    ) throws -> ReadExecutionContext {
-        let continuation: QueryContinuation?
-        if let bytes = continuationBytes {
-            continuation = QueryContinuation(bytes)
-        } else {
-            continuation = nil
-        }
-        let boundedPageSize = min(
-            request.page.limit,
-            request.budget.maximumRows
-        )
-        guard let pageSize = Int(exactly: boundedPageSize) else {
-            throw DatabaseOperationConfigurationError
-                .unsupportedOnCurrentPlatform(
-                    limit: .maximumRows,
-                    actual: UInt64(boundedPageSize),
-                    maximum: UInt64(Int.max)
-                )
-        }
-        return ReadExecutionContext(
-            options: ReadExecutionOptions(
-                pageSize: pageSize,
-                continuation: continuation,
-                budget: request.budget,
-                continuationScope: try continuationScope(for: request),
-                continuationSnapshotIsStable: continuationSnapshotIsStable
-            ),
-            monotonicClock: monotonicClock,
-            workMeter: workMeter,
-            queryStructuralLimits: structuralLimits
-        )
-    }
-
-    private static func continuationScope(
-        for request: QueryExecuteOperation.Request
-    ) throws -> ByteString {
-        try DatabaseWireWriter.encode {
-            (
-                writer: inout DatabaseWireWriter
-            ) throws(DatabaseWireError) in
-            try request.graphPartitions.encode(into: &writer)
-        }
-    }
-
-    private static func encodeCursor(
-        continuation: ByteString,
-        readPoint: DatabaseStorageReadPosition?,
-        schemaGeneration: UInt64,
-        lease: DatabaseExecutionStorage,
-        limits: DatabaseWireLimits
-    ) throws -> ByteString {
-        #if DATABASE_SERVER_MULTI_BASE
-        return try DatabaseQueryPageCursor(
-            resource: lease.resource,
-            restorableReadPosition: readPoint,
-            schemaGeneration: schemaGeneration,
-            dataGeneration: lease.generation,
-            continuation: continuation
-        ).encode(limits: limits)
-        #else
-        return try DatabaseQueryPageCursor(
-            restorableReadPosition: readPoint,
-            schemaGeneration: schemaGeneration,
-            dataGeneration: lease.generation,
-            continuation: continuation
-        ).encode(limits: limits)
-        #endif
-    }
 
     private static func rowPage(
         _ response: QueryResponse,

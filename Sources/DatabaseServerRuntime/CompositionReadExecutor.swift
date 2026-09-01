@@ -32,14 +32,15 @@ package final class CompositionReadExecutor: Sendable {
         ObjectIdentifier(container)
     }
 
-    package func acquireReadLease() async throws -> DatabaseCompositionLease {
-        try await dataSource.acquireReadLease()
+    package func acquireReadMetadata() async throws
+        -> DatabaseCompositionReadMetadata {
+        try await dataSource.acquireReadMetadata()
     }
 
     package func resolveNamedRecord() async throws
         -> DatabaseCompositionRecord {
-        let lease = try await acquireReadLease()
-        guard let record = lease.namedRecord else {
+        let metadata = try await acquireReadMetadata()
+        guard let record = metadata.namedRecord else {
             throw DatabaseCompositionAccessError.unavailable(selection)
         }
         return record
