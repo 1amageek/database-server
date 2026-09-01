@@ -66,26 +66,48 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         private struct ArmedGate: Sendable {
             let gate: CommitGate
             let kind: CommitKind
+            var remainingSkips: Int
         }
 
-        private let armed = Mutex<ArmedGate?>(nil)
+        private struct State: Sendable {
+            var armed: ArmedGate?
+            var mutatingCommits = 0
+        }
 
-        func arm(_ kind: CommitKind) -> CommitGate {
+        private let state = Mutex(State())
+
+        var mutatingCommitCount: Int {
+            state.withLock { $0.mutatingCommits }
+        }
+
+        func arm(_ kind: CommitKind, skipping: Int) -> CommitGate {
             let newGate = CommitGate()
-            armed.withLock {
-                $0 = ArmedGate(gate: newGate, kind: kind)
+            state.withLock {
+                $0.armed = ArmedGate(
+                    gate: newGate,
+                    kind: kind,
+                    remainingSkips: skipping
+                )
             }
             return newGate
         }
 
         func take(containsMutation: Bool) -> CommitGate? {
-            armed.withLock { armed in
-                guard let current = armed,
+            state.withLock { state in
+                if containsMutation {
+                    state.mutatingCommits += 1
+                }
+                guard var current = state.armed,
                       current.kind.matches(containsMutation: containsMutation)
                 else {
                     return nil
                 }
-                armed = nil
+                guard current.remainingSkips == 0 else {
+                    current.remainingSkips -= 1
+                    state.armed = current
+                    return nil
+                }
+                state.armed = nil
                 return current.gate
             }
         }
@@ -271,8 +293,26 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
         _ = configuration
     }
 
+    /// The number of mutating commits this engine has reached.
+    ///
+    /// A commit is counted when it arrives, whether or not a gate takes it, so
+    /// a caller can measure one request's mutating commits and then gate a
+    /// specific one of them on an identically seeded engine.
+    var mutatingCommitCount: Int {
+        commitGateState.mutatingCommitCount
+    }
+
     func suspendNextMutatingCommit() -> CommitGate {
-        commitGateState.arm(.mutating)
+        commitGateState.arm(.mutating, skipping: 0)
+    }
+
+    /// Suspends a mutating commit after letting `skipping` of them through.
+    ///
+    /// Gating a commit by its position is how a caller reaches work that only
+    /// a later commit performs, such as the publication that follows a
+    /// query snapshot's spooled pages.
+    func suspendMutatingCommit(skipping: Int) -> CommitGate {
+        commitGateState.arm(.mutating, skipping: skipping)
     }
 
     /// Suspends the next read-only commit.
@@ -281,7 +321,7 @@ final class CommitGatedInMemoryEngine: StorageEngine, Sendable {
     /// the seam that holds a caller between a completed read and the work the
     /// read result decides to perform. A mutating commit never consumes it.
     func suspendNextReadOnlyCommit() -> CommitGate {
-        commitGateState.arm(.readOnly)
+        commitGateState.arm(.readOnly, skipping: 0)
     }
 
     func createTransaction() throws -> CommitGatedTransaction {

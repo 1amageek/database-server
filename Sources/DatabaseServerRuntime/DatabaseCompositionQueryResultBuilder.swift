@@ -468,7 +468,7 @@ actor DatabaseCompositionQueryResultBuilder {
     private func publish() async throws -> QueryRowPage {
         guard firstPageBuffer != nil else {
             let page = try makePage(currentPageBuffer, continuation: nil)
-            try recordOutput(page)
+            try workMeter.recordOutput(page)
             if let writeReservation {
                 guard let snapshotStore else {
                     throw DatabaseQueryExecutionError.querySnapshotCorrupted
@@ -504,7 +504,7 @@ actor DatabaseCompositionQueryResultBuilder {
                 pageID: firstContinuationPageID
             )
         )
-        try recordOutput(firstPage)
+        try workMeter.recordOutput(firstPage)
         try await snapshotStore.commitWrite(
             writeReservation,
             pageCount: continuationPageCount,
@@ -575,23 +575,6 @@ actor DatabaseCompositionQueryResultBuilder {
         currentPageBuffer.release()
         currentPageBuffer = PageBuffer()
         self.currentPageID = nextPageID
-    }
-
-    /// Claims the response page against the request's output budget.
-    ///
-    /// The claim is made while the write reservation is still live, so a
-    /// refused or cancelled claim aborts the reservation instead of leaving a
-    /// committed manifest whose continuation was never returned to a caller.
-    private func recordOutput(_ page: QueryRowPage) throws {
-        guard let rowCount = UInt32(exactly: page.rowCount) else {
-            throw DatabaseWorkLimitError.maximumRows(
-                stage: .resultMaterialization,
-                consumed: workMeter.consumedRows,
-                requested: UInt32.max,
-                maximum: workMeter.budget.maximumRows
-            )
-        }
-        try workMeter.recordOutputRows(rowCount)
     }
 
     private func makePage(

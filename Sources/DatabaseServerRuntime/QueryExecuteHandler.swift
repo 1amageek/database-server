@@ -236,7 +236,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     queryFingerprint: queryFingerprint,
                     authorization: context.authorization
                 )
-                try Self.recordOutput(page, workMeter: workMeter)
+                try workMeter.recordOutput(page)
                 return page
             }
             let page = try await DatabaseCompositionQueryAdapter(
@@ -335,7 +335,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     continuation: next,
                     readPoint: executed.readPoint
                 )
-                try Self.recordOutput(page, workMeter: workMeter)
+                try workMeter.recordOutput(page)
                 if executed.response.continuation == nil {
                     try await querySnapshotStore.completeHistoricalQuery(
                         historical
@@ -350,7 +350,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 queryFingerprint: queryFingerprint,
                 authorization: context.authorization
             )
-            try Self.recordOutput(page, workMeter: workMeter)
+            try workMeter.recordOutput(page)
             return page
         }
         let plan = try await databaseContext.withReadSnapshot(
@@ -418,7 +418,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 continuation: nil,
                 readPoint: readPoint
             )
-            try Self.recordOutput(page, workMeter: workMeter)
+            try workMeter.recordOutput(page)
         case .historical(
             let response,
             let continuation,
@@ -457,7 +457,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     continuation: opaqueContinuation,
                     readPoint: readPoint
                 )
-                try Self.recordOutput(published, workMeter: workMeter)
+                try workMeter.recordOutput(published)
                 page = published
             } catch {
                 let operationError = error
@@ -528,7 +528,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 continuation: nil,
                 readPoint: readPoint
             )
-            try Self.recordOutput(page, workMeter: workMeter)
+            try workMeter.recordOutput(page)
             return page
         }
         guard let querySnapshotStore else {
@@ -602,7 +602,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 ),
                 readPoint: readPoint
             )
-            try Self.recordOutput(firstPage, workMeter: workMeter)
+            try workMeter.recordOutput(firstPage)
             return firstPage
         } catch {
             let operationError = error
@@ -675,21 +675,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         return error
     }
 
-    private static func recordOutput(
-        _ page: QueryRowPage,
-        workMeter: DatabaseWorkMeter
-    ) throws {
-        guard let rowCount = UInt32(exactly: page.rowCount) else {
-            throw DatabaseWorkLimitError.maximumRows(
-                stage: .resultMaterialization,
-                consumed: workMeter.consumedRows,
-                requested: UInt32.max,
-                maximum: workMeter.budget.maximumRows
-            )
-        }
-        try workMeter.recordOutputRows(rowCount)
-    }
-
     #if DATABASE_OPERATIONS_GRAPH_INDEXES && DATABASE_SERVER_MULTI_BASE
     private func executeCompositionRDFGraph(
         _ statement: DatabaseCompositionRDFQueryAdapter.Statement,
@@ -720,7 +705,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 queryFingerprint: queryFingerprint,
                 authorization: context.authorization
             )
-            try Self.recordOutput(page, workMeter: workMeter)
+            try workMeter.recordOutput(page)
             return page
         }
         let page = try await DatabaseCompositionRDFQueryAdapter(
@@ -812,21 +797,6 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         }
         try workMeter.recordOutputRows(1)
         return response
-    }
-
-    private static func recordOutput(
-        _ page: RDFGraphPage,
-        workMeter: DatabaseWorkMeter
-    ) throws {
-        guard let quadCount = UInt32(exactly: page.quadCount) else {
-            throw DatabaseWorkLimitError.maximumRows(
-                stage: .resultMaterialization,
-                consumed: workMeter.consumedRows,
-                requested: UInt32.max,
-                maximum: workMeter.budget.maximumRows
-            )
-        }
-        try workMeter.recordOutputRows(quadCount)
     }
 
     #if DATABASE_SERVER_MULTI_BASE

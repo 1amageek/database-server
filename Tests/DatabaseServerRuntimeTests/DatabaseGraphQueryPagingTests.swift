@@ -91,6 +91,76 @@ struct DatabaseGraphQueryPagingTests {
         #expect(Set(triples).count == 4)
     }
 
+    @Test("a cancelled graph output claim releases the durable reservation")
+    func cancelledGraphOutputClaimReleasesTheReservation() async throws {
+        // The non-historical graph spool publishes its manifest with
+        // `commitWrite` before the first page is charged against the request
+        // budget, and the charge checks cancellation. A request cancelled at
+        // that point must release the reservation it just published:
+        // otherwise it keeps one of the principal's eight active snapshot
+        // slots until the reservation expires, and the manifest it committed
+        // is never returned to any caller.
+        //
+        // The row budget cannot refuse this claim -- the page limit is
+        // rejected up front when it exceeds the budget, and spooled pages
+        // consume intermediate bytes rather than rows -- so cancellation is
+        // the only refusal this publication path can reach.
+        //
+        // The publication is the request's last mutating commit, so gating
+        // that commit reaches the window between the committed manifest and
+        // the charge without hard-coding how many pages the fixture spools.
+        let calibrationEngine = CommitGatedInMemoryEngine()
+        let calibrationContainer = try await makeContainer(
+            engine: calibrationEngine
+        )
+        let commitsBeforeRequest = calibrationEngine.mutatingCommitCount
+        _ = try await execute(
+            request(.construct(constructQuery()), limit: 1),
+            container: calibrationContainer
+        )
+        let requestCommits =
+            calibrationEngine.mutatingCommitCount - commitsBeforeRequest
+        try #require(requestCommits > 0)
+
+        let engine = CommitGatedInMemoryEngine()
+        let container = try await makeContainer(engine: engine)
+        let gate = engine.suspendMutatingCommit(skipping: requestCommits - 1)
+        let cancelled = Task {
+            try await execute(
+                request(.construct(constructQuery()), limit: 1),
+                container: container
+            )
+        }
+        await gate.waitUntilStarted()
+        cancelled.cancel()
+        await gate.release()
+
+        if case .success = await cancelled.result {
+            Issue.record("Expected the cancelled request to fail")
+            return
+        }
+
+        // A principal owns eight active snapshot slots. Every publication
+        // below holds one for the rest of the test, so a slot the cancelled
+        // request leaked leaves room for only seven.
+        for attempt in 0..<8 {
+            do {
+                let page = try graphPage(
+                    try await execute(
+                        request(.construct(constructQuery()), limit: 1),
+                        container: container
+                    )
+                )
+                #expect(page.continuation != nil)
+            } catch {
+                Issue.record(
+                    "Publication \(attempt) failed after the cancelled request: \(error)"
+                )
+                return
+            }
+        }
+    }
+
     @Test("CONSTRUCT deduplicates globally and scopes template blank nodes per binding")
     func constructDeduplicatesAndScopesBlankNodes() async throws {
         let container = try await makeContainer()

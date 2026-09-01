@@ -183,6 +183,10 @@ The four supported result modes have the same lifecycle vocabulary:
   requesting terminalization, and a durable page spool accounts inside the
   region that aborts the write. A refused output claim releases the published
   snapshot instead of orphaning a committed manifest and an active slot.
+- One owner converts a response page into the rows it charges. A response page
+  declares its materialized element count and the work meter charges that
+  count, so no publication path restates the conversion, and an element count
+  outside the budget counter's range is refused rather than truncated.
 - A completion failure prevents a success response and leaves the continuation
   retryable.
 - A terminal or expired transition may never clear a newer snapshot that reused

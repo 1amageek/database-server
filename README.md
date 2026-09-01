@@ -249,9 +249,9 @@ After an attributed package build, set `XCODE_TEST_DERIVED_DATA_PATH` to that
 exact DerivedData directory so the harness builds only the missing test
 products before its isolated `test-without-building` run.
 
-The strict harness requires 304 logical tests for the standard graph. Set
+The strict harness requires 305 logical tests for the standard graph. Set
 `DATABASE_SERVER_TEST_TRAITS=MultiBase` to select that trait in an isolated
-source copy and require 336 tests. Both graphs require zero failures, zero
+source copy and require 337 tests. Both graphs require zero failures, zero
 skips, zero expected failures, zero runtime warnings, and no internal tool
 errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap

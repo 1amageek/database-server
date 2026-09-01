@@ -214,7 +214,7 @@ struct DatabaseGraphQueryService: Sendable {
                     continuation: next,
                     readPoint: resumed.readPoint
                 )
-                try Self.recordOutput(page, workMeter: workMeter)
+                try workMeter.recordOutput(page)
                 if next == nil {
                     try await querySnapshotStore.completeHistoricalGraph(
                         historical
@@ -229,7 +229,7 @@ struct DatabaseGraphQueryService: Sendable {
                 queryFingerprint: queryFingerprint,
                 authorization: context.authorization
             )
-            try Self.recordOutput(page, workMeter: workMeter)
+            try workMeter.recordOutput(page)
             return page
         }
         let plan = try await databaseContext.withReadSnapshot(
@@ -289,7 +289,7 @@ struct DatabaseGraphQueryService: Sendable {
                 continuation: nil,
                 readPoint: readPoint
             )
-            try Self.recordOutput(page, workMeter: workMeter)
+            try workMeter.recordOutput(page)
         case .historical(
             let graph,
             let readVersion,
@@ -326,7 +326,7 @@ struct DatabaseGraphQueryService: Sendable {
                     continuation: opaqueContinuation,
                     readPoint: readPoint
                 )
-                try Self.recordOutput(published, workMeter: workMeter)
+                try workMeter.recordOutput(published)
                 page = published
             } catch {
                 let operationError = error
@@ -434,7 +434,7 @@ struct DatabaseGraphQueryService: Sendable {
                 ),
                 readPoint: readPoint
             )
-            try Self.recordOutput(firstPage, workMeter: workMeter)
+            try workMeter.recordOutput(firstPage)
             return firstPage
         } catch {
             let operationError = error
@@ -484,21 +484,6 @@ struct DatabaseGraphQueryService: Sendable {
             }
         )
         #endif
-    }
-
-    private static func recordOutput(
-        _ page: RDFGraphPage,
-        workMeter: DatabaseWorkMeter
-    ) throws {
-        guard let quadCount = UInt32(exactly: page.quadCount) else {
-            throw DatabaseWorkLimitError.maximumRows(
-                stage: .resultMaterialization,
-                consumed: workMeter.consumedRows,
-                requested: UInt32.max,
-                maximum: workMeter.budget.maximumRows
-            )
-        }
-        try workMeter.recordOutputRows(quadCount)
     }
 
     private func mapHistoricalReadFailure(
