@@ -91,25 +91,25 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.0902.1",
+            from: "26.0904.0",
             traits: frameworkTraits
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.0807.0"
+            from: "26.0831.1"
         ),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
-            exact: "0.4.0"
+            from: "0.4.1"
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0819.0",
+            from: "26.0831.1",
             traits: databaseKitTraits
         ),
         .package(
             url: "https://github.com/1amageek/database-types.git",
-            from: "26.0730.0"
+            from: "26.0831.0"
         ),
         .package(
             url: "https://github.com/hummingbird-project/hummingbird.git",
