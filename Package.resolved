@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-framework.git",
       "state" : {
-        "revision" : "a1bad0ff141298f36468785955967b1d7d368e11",
-        "version" : "26.904.0"
+        "revision" : "5b82b8ba0a8582512ccb646c911739751249febe",
+        "version" : "26.905.0"
       }
     },
     {
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "1666339eaeaae193b628834286413c4bccd2d3af",
-        "version" : "26.831.1"
+        "revision" : "2e00d3954829e4438693a9236a4927ac739b5f09",
+        "version" : "26.905.0"
       }
     },
     {
