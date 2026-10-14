@@ -16,8 +16,9 @@ are source and test boundaries, not reusable package products.
 Parent: the workspace system design at [`../DESIGN.md`](../DESIGN.md), which
 indexes this package; the workspace `AGENTS.md` defines the package dependency
 direction and shared contracts.
-Children: `DatabaseServerRuntime` and `DatabaseServerHost` are internal
-composition boundaries represented by the corresponding source directories.
+Children: [DatabaseServerRuntime](Sources/DatabaseServerRuntime/DESIGN.md) owns
+the internal operation-runtime design. `DatabaseServerHost` remains the
+internal native composition boundary represented by its source directory.
 
 ## Responsibilities and Boundaries
 
@@ -70,7 +71,7 @@ may not reinterpret an operation payload.
 | [`database-framework/DESIGN.md`](../database-framework/DESIGN.md) | depends on | Framework execution, read-snapshot, retained-result, and Composition contracts | Provides in-process query and graph semantics. | A server result must use an API available at the selected revision; obsolete Lease names and raw retained-value escapes are not contracts. |
 | [`database-framework/Sources/DatabaseEngine/QueryExecution/DESIGN.md`](../database-framework/Sources/DatabaseEngine/QueryExecution/DESIGN.md) | depends on | retained ownership, bounded materialization, and transaction-scoped borrowing | Defines ownership and lifetime rules for query results. | A borrowing closure does not make a Copyable value durable; server staging must retain an admitted owner. |
 | [`database-kit/DESIGN.md`](../database-kit/DESIGN.md) | depends on | DatabaseWire operation and response model | Defines canonical wire semantics consumed by dispatch. | The server maps and transports the model; it does not define query meaning. |
-| [`storage-kit/DESIGN.md`](../storage-kit/DESIGN.md) | depends on | StorageEngine transaction and shutdown contracts | Provides control-storage and host-selected backend behavior. | A control transaction is an independent StorageKit transaction. StorageKit does not require it to be disjoint in time from a data read, so a Composition spool write may commit while a source read is still emitting; each control write must be independently committable. |
+| [`storage-kit/DESIGN.md`](../storage-kit/DESIGN.md) | depends on | StorageEngine transaction and shutdown contracts | Provides control-storage and host-selected backend behavior. | Server control transactions begin only after every producing Framework data transaction closes, as required by SPEC.md. |
 
 ## Architecture
 
@@ -95,31 +96,27 @@ admit + authorize
            +--> release active slot only at terminal transition
 ```
 
-Composition bounds peak memory by spooling, not by deferring:
+Composition preserves the same data-closure boundary as ordinary SQL. Memory
+is admitted and bounded while Framework collects; exceeding that bound is a
+typed failure. Server spooling cannot weaken the closure requirement:
 
 ```text
-Composition source read
-   |
-   +--> emit row/quad --> bounded page window (exact claim)
-   |          |
-   |          +-- window full --> spool the full page to control storage
-   |                              (the first full page is kept as the response)
-   |
-   +--> source read ends
-            |
-            +--> control transaction: append last page, publish manifest
-            +--> release staged claims
-            +--> wire response
+Composition source read -> Framework collecting owner + exact claims
+  -> close every producing transaction, cursor, and member operation
+  -> consume into ready owner
+  -> admitted page transfer -> Server publication owner
+  -> control transaction: spool pages and publish manifest
+  -> release publication claims -> wire response
 ```
 
 The four supported result modes have the same lifecycle vocabulary:
 
 | Mode | Data-read state | Staging state | Control-publication state | Terminal state |
 |---|---|---|---|---|
-| SQL | framework snapshot executes the query | bounded retained pages are encoded while the snapshot is active; no control I/O | page chunks and manifest are committed after the data snapshot closes | final response has no successor; active slot is released and replay state is non-active |
+| SQL | framework snapshot executes the query | Framework retains admitted payload and exact claims until data closure; Server receives only a ready result | page chunks and manifest are committed after the data snapshot closes | final response has no successor; active slot is released and replay state is non-active |
 | Graph | graph executor produces a bounded page or graph result | graph rows/quads remain in an admitted owner until encoding finishes | graph page descriptor/chunks and manifest commit in control storage | terminal graph page releases the slot without deleting required replay semantics prematurely |
-| Relational Composition | member reads occur under one Composition data snapshot | the builder holds one staging page window whose rows carry exact request claims, plus the retained first page, which is the response and is governed by the output and page limits | full pages are spooled during emission; the last page and the manifest commit after the source read ends | final page and claims are transferred/released after authoritative publication |
-| RDF Composition | member graph reads occur under one Composition data snapshot | the builder holds one staging quad page window whose quads carry exact request claims, plus the retained first page, which is the response and is governed by the output and page limits | full pages are spooled during emission; the last page and the manifest commit after the source read ends | final graph page and claims are transferred/released after authoritative publication |
+| Relational Composition | member reads occur under one Composition data snapshot | Framework retains rows and claims under its collection limits until all member/data transactions close | admitted pages are transferred and spooled only from the ready owner; manifest commits in control storage | final page and claims are transferred/released after authoritative publication |
+| RDF Composition | member graph reads occur under one Composition data snapshot | Framework retains quads and claims under its collection limits until all member/data transactions close | admitted graph pages are transferred and spooled only from the ready owner; manifest commits in control storage | final graph page and claims are transferred/released after authoritative publication |
 
 ## Contracts and Invariants
 
@@ -153,21 +150,20 @@ The four supported result modes have the same lifecycle vocabulary:
 - SQL and graph modes finish their bounded data capture before any control read
   or write, because the framework page is already materialized when the snapshot
   returns.
-- Composition modes spool from inside the framework emit callback, so a control
-  write may commit while the source read is still emitting. This is what keeps
-  peak retention governed by the page limit instead of the result size; each
-  spool write is independently committable and no partial manifest is visible.
+- Composition modes receive a ready result only after all Framework data and
+  member transactions close. Control writes never run inside a producing
+  callback. Framework collection limits bound retention before that closure;
+  Server page/publication limits bound subsequent transfers and spooling.
 - A staged page is bounded by both the request intermediate-byte limit and the
   server spool limit. Failure is explicit and does not publish a partial
   manifest.
 - Historical continuation usage includes encoded step state and its terminal
   replay record; terminalization cannot exceed the configured historical byte
   limit.
-- The staged owner, the row/quad claims of the page still being filled, and
-  each spool's encoded payload reservation remain live until the operation
-  either publishes authoritatively or aborts. The first full page is the
-  operation's response: it is promoted out of the intermediate budget when it
-  is retained, because the output and page limits already govern its size.
+- The staged owner, row/quad claims, and each encoded publication reservation
+  remain live until authoritative control commit or abort. Retaining the
+  first page is not final promotion: its owner and exact claim survive control
+  commit, and only then may final output be promoted.
 
 ### Continuation and active-slot contract
 
@@ -210,15 +206,13 @@ The four supported result modes have the same lifecycle vocabulary:
 
 ### Composition contract
 
-- A Composition emitter retains at most one intermediate page window plus the
-  first page, which it has already promoted to the response. Deferring every page until the source
-  read ends would make peak retention proportional to the result and is not a
-  supported shape.
-- The framework Composition emit callback is asynchronous and throwing, so a
-  full page is spooled to control storage from inside it. A spool failure fails
-  the emission instead of dropping rows or publishing a partial manifest.
-- While a page is being spooled, a further append is rejected with a typed
-  corruption failure rather than racing the durable write.
+- Framework collection owns every produced row/quad with its exact claim
+  under the admitted collection budget. A limit violation fails the data
+  operation rather than publishing a partial result or starting control I/O.
+- After data closure, Server transfers admitted pages from the ready owner
+  into its publication owner and spools under the control transaction.
+- The first page is retained through control commit; subsequent transfer
+  cannot detach payload from its corresponding claim.
 - Provenance remains attached to each staged row/quad through encoding and
   publication. It is not reconstructed after the source transaction closes.
 
@@ -229,8 +223,9 @@ The four supported result modes have the same lifecycle vocabulary:
 1. Admit the request and derive its continuation identity.
 2. Execute under a framework read snapshot.
 3. If the result fits one page, return it without durable paging state.
-4. Otherwise, capture/encode bounded successor pages while the read snapshot is
-   active, then close that snapshot.
+4. Otherwise, Framework collects bounded successor payload with its claims,
+   closes the producing snapshot, and transfers a ready result. Server page
+   encoding and control publication occur after that closure.
 5. Reserve and write control pages, publish the manifest, and return the first
    page with an opaque continuation.
 6. On each continuation request, validate identity and expiry, load the page,
@@ -242,13 +237,14 @@ The four supported result modes have the same lifecycle vocabulary:
 ### Composition flow
 
 1. Resolve Composition metadata and authorize the request.
-2. Stage each emitted row or quad, with its provenance and an exact claim, into
-   the bounded page window.
-3. When the window is full, reserve a continuation page and write it to control
-   storage. The first full page becomes the response and keeps its claim.
-4. When the source read ends, append the final page and publish the manifest.
-5. Transfer or release claims only after the authoritative write succeeds;
-   abort releases all staged state.
+2. Framework collects rows/quads, provenance, and exact claims under its
+   admitted data-operation limits.
+3. Close every producing data/member transaction and resource, then consume
+   the collecting result into a ready owner.
+4. Server admits page/publication ownership, transfers successor pages, and
+   commits the control manifest while retaining all required claims.
+5. After authoritative control commit, promote the first-page final output;
+   abort releases all publication state and preserves typed failures.
 
 ## State, Ownership, and Lifecycle
 
