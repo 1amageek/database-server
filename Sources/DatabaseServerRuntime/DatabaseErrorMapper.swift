@@ -1093,7 +1093,7 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .literalTooLarge:
             category = .resourceLimit
             code = "QUERY_RESOURCE_LIMIT"
-        case .nullTermUnsupported, .arrayTermUnsupported,
+        case .queryLiteralConversion, .nullTermUnsupported, .arrayTermUnsupported,
              .invalidLexicalForm:
             category = .invalidRequest
             code = "INVALID_RDF_LITERAL"
@@ -1239,6 +1239,14 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
              .fieldNotRepresentable, .fieldValueNotRepresentable:
             category = .invalidRequest
             code = "INVALID_ENTITY"
+        case .invalidQueryValue(_, let cause):
+            if case .resourceLimit = cause {
+                category = .resourceLimit
+                code = "MUTATION_LIMIT"
+            } else {
+                category = .invalidRequest
+                code = "INVALID_ENTITY"
+            }
         case .duplicateChange, .duplicatePrecondition,
              .incompatiblePreconditions:
             category = .invalidRequest
@@ -2295,6 +2303,13 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(_ error: CanonicalReadError) -> RemoteOperationError {
         switch error {
+        case .expressionEvaluation(let cause):
+            return RemoteOperationError(
+                category: .invalidRequest,
+                code: "INVALID_QUERY_EXPRESSION",
+                message: cause.description,
+                retryability: .never
+            )
         case .invalidContinuation:
             return RemoteOperationError(
                 category: .invalidRequest,

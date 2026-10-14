@@ -9,11 +9,11 @@ struct ByteBufferByteStringOwner: ByteStringOwner {
     }
 
     var retainedByteCount: Int? {
-        buffer.capacity
+        buffer.storageCapacity
     }
 
     var isStorageSelfContained: Bool {
-        buffer.readerIndex == 0 && buffer.readableBytes == buffer.capacity
+        buffer.readerIndex == 0 && buffer.readableBytes == buffer.storageCapacity
     }
 
     func borrowBytes(

@@ -276,6 +276,18 @@ struct DatabaseErrorMapperTests {
         let context = try await makeContext()
         let mapper = CanonicalDatabaseErrorMapper()
 
+        let unsupportedLiteral = mapper.remoteError(
+            for: SPARQLLiteralConversionError.queryLiteralConversion(
+                .unsupportedSPARQLLiteral
+            ),
+            context: context
+        )
+        expect(
+            unsupportedLiteral,
+            category: .invalidRequest,
+            code: "INVALID_RDF_LITERAL"
+        )
+
         let resourceLimit = mapper.remoteError(
             for: SPARQLLiteralConversionError.literalTooLarge(
                 requiredUTF8Count: 2_048,
@@ -402,10 +414,24 @@ struct DatabaseErrorMapperTests {
         )
     }
 
-    @Test("Database query limits are distinguished from invalid RDF bindings")
+    @Test("Query limits, RDF bindings, and expression failures preserve categories")
     func databaseQueryExecutionFailures() async throws {
         let context = try await makeContext()
         let mapper = CanonicalDatabaseErrorMapper()
+
+        let cause = DatabaseExpressionEvaluationError.typeMismatch(
+            operation: "numeric expression"
+        )
+        let invalidExpression = mapper.remoteError(
+            for: CanonicalReadError.expressionEvaluation(cause),
+            context: context
+        )
+        expect(
+            invalidExpression,
+            category: .invalidRequest,
+            code: "INVALID_QUERY_EXPRESSION"
+        )
+        #expect(invalidExpression.message == cause.description)
 
         let resourceLimit = mapper.remoteError(
             for: DatabaseQueryExecutionError.rdfLiteralTooLarge(
@@ -500,6 +526,20 @@ struct DatabaseErrorMapperTests {
                     ),
                     .invalidRequest,
                     "INVALID_ENTITY"
+                ),
+                (
+                    DatabaseEntityMutationError.invalidQueryValue(
+                        entity: "Event", cause: .invalidPersistencePayload(reason: "invalid rich envelope")
+                    ),
+                    .invalidRequest,
+                    "INVALID_ENTITY"
+                ),
+                (
+                    DatabaseEntityMutationError.invalidQueryValue(
+                        entity: "Event", cause: .resourceLimit(resource: "retainedBytes", actual: 2, maximum: 1)
+                    ),
+                    .resourceLimit,
+                    "MUTATION_LIMIT"
                 ),
                 (
                     DatabaseEntityMutationError.invalidCompiledSchema(

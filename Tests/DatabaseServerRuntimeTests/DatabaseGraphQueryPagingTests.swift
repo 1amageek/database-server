@@ -1353,7 +1353,8 @@ struct DatabaseGraphQueryPagingTests {
               row.values.indices.contains(index) else {
             return nil
         }
-        return row.values[index]
+        guard case .primitive(let value) = row.values[index] else { return nil }
+        return value
     }
 
     private struct MaterializedGraphPage {

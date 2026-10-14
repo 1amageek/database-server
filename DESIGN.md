@@ -129,6 +129,22 @@ The four supported result modes have the same lifecycle vocabulary:
 - The server uses URL dependencies and one coherent resolved graph for release
   evidence. A local path dependency is diagnostic-only.
 
+### Native inbound byte ownership
+
+`ByteBufferByteStringOwner` retains NIO's complete underlying storage. Its
+retained byte count is `ByteBuffer.storageCapacity`, including when stdio
+framing exposes a smaller `readSlice` view. A view is self-contained only when
+its reader index is zero and its readable bytes cover that complete storage.
+The host does not compact or copy a slice to evade the Wire root-retention
+budget. Wire admission therefore rejects a small visible query frame whose
+retained native allocation exceeds the configured root limit.
+
+`DatabaseStdioFrameDecoder.decodeFrame(buffer:)` owns the same stateful prefix
+and payload-slice operation used by its channel callback. The existing
+`DatabaseStdioFrameCodecTests/bigEndianLengthPrefix()` case verifies a real
+slice from that path, retained ownership after the input buffer is released,
+and successful/failing typed query admission at the root-capacity boundary.
+
 ### Host storage topology contract
 
 - A storage domain declares the Directory path of its own database root. The
@@ -286,8 +302,8 @@ or test discovery alone.
 
 | Invariant | Required proof |
 |---|---|
-| Bounded Composition retention | A durable multi-page Composition read whose result exceeds the request intermediate-row budget proves peak intermediate retention stays within one page window, and that the retained first page is charged to the output limits instead, for both relational and RDF modes. |
-| Exact staging ownership | Success, append failure, commit failure, cancellation, and abort tests prove the staging page's row/quad and byte claims remain until publication or abort, that the first page's claim is released exactly when it becomes output, and that every claim is released once. |
+| Bounded Composition retention | Consume Framework's budget-admitted Ready owner after authoritative domain closure. Verify that preparation exceeding its request budget fails before control staging, and that Server's first and active page containers remain charged through manifest commit or abort. See the [runtime contract](Sources/DatabaseServerRuntime/DESIGN.md). |
+| Exact staging ownership | Success, append failure, commit failure, cancellation, and abort tests prove that retained staging and first-page claims survive asynchronous publication and are released exactly once after commit or abort. |
 | Terminal quota release | Fill all eight active slots, complete each continuation, then admit a ninth request; verify terminal replay convergence, slot reuse isolation, expiry, failure, and cancellation. |
 | Continuation identity | Cross-principal, target, schema, query, malformed, and expired continuations are rejected with typed errors. |
 | Wire/transport boundary | Standard and MultiBase harnesses execute HTTP, HTTPS, WebSocket, and stdio through the real executable and report exact counts, skips, expected failures, runtime warnings, and internal errors. |

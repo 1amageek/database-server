@@ -520,7 +520,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         let rowCount = rows.count
         let firstEnd = min(pageLimit, rowCount)
         guard firstEnd < rowCount else {
-            let response = QueryResponse(
+            let response = try QueryResponse(
+                columns: rows.columns,
                 rows: rows.materializePage(0..<firstEnd)
             )
             let page = try Self.rowPage(
@@ -561,6 +562,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     : nil
                 let page = try Self.rowPage(
                     QueryResponse(
+                        columns: rows.columns,
                         rows: rows.materializePage(offset..<end)
                     ),
                     continuation: nextPageID.map {
@@ -592,7 +594,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 pageCount: continuationPageCount,
                 totalPayloadBytes: totalPayloadBytes
             )
-            let firstResponse = QueryResponse(
+            let firstResponse = try QueryResponse(
+                columns: rows.columns,
                 rows: rows.materializePage(0..<firstEnd)
             )
             let firstPage = try Self.rowPage(
@@ -823,24 +826,15 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         continuation: ByteString?,
         readPoint: DatabaseTransactionReadPoint.Value
     ) throws -> QueryRowPage {
-        let columnNames = Set(
-            response.rows.flatMap { $0.fields.keys }
-        ).sorted()
-        let columns = try columnNames.enumerated().map {
-            offset,
-            name -> QueryColumn in
-            guard let number = UInt32(exactly: offset + 1) else {
-                throw DatabaseWireError.byteCountOverflow
-            }
-            return QueryColumn(number: number, name: name)
-        }
+        let columns = response.columns
+        try QueryColumn.validate(columns)
         #if DATABASE_SERVER_MULTI_BASE
         return try QueryRowPage(
             columns: columns,
             rows: try response.rows.map {
                 try DatabaseQueryRowEncoder.encode(
                     $0,
-                    columnNames: columnNames
+                    columns: columns
                 )
             },
             continuation: continuation,
@@ -853,7 +847,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
             rows: try response.rows.map {
                 try DatabaseQueryRowEncoder.encode(
                     $0,
-                    columnNames: columnNames
+                    columns: columns
                 )
             },
             continuation: continuation,

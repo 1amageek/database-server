@@ -578,15 +578,15 @@ struct DatabaseQueryHistoricalContinuationStoreTests {
             )
         )
         let page = try QueryRowPage(
-            columns: [QueryColumn(number: 1, name: "value")],
-            rows: [DatabaseWire.QueryRow(values: [.string("terminal")])],
+            columns: [try QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)],
+            rows: [DatabaseWire.QueryRow(values: [.primitive(.string("terminal"))])],
             provenance: nil,
             consistency: pageConsistency
         )
         #else
         let page = try QueryRowPage(
-            columns: [QueryColumn(number: 1, name: "value")],
-            rows: [DatabaseWire.QueryRow(values: [.string("terminal")])],
+            columns: [try QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)],
+            rows: [DatabaseWire.QueryRow(values: [.primitive(.string("terminal"))])],
             snapshotVersion: nil
         )
         #endif

@@ -18,8 +18,9 @@ package enum DatabaseQueryRowEncoder {
 
     package static func encode(
         _ row: DatabaseEngine.QueryRow,
-        columnNames: [String]
+        columns: [QueryColumn]
     ) throws -> DatabaseWire.QueryRow {
+        try row.validate(columns: columns)
         let version: ByteString?
         if let token = row.version {
             version = try PersistableVersionTokenCodec.digest(from: token)
@@ -27,7 +28,7 @@ package enum DatabaseQueryRowEncoder {
             version = nil
         }
         return DatabaseWire.QueryRow(
-            values: columnNames.map { row.fields[$0] ?? .null },
+            values: row.values,
             annotations: try encodeFields(row.annotations),
             version: version
         )

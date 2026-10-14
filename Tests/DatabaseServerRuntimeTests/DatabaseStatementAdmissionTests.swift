@@ -64,7 +64,7 @@ struct DatabaseStatementAdmissionTests {
                     QueryParameter(
                         position: 1,
                         name: "value",
-                        value: value
+                        value: .primitive(value)
                     ),
                 ]
             )

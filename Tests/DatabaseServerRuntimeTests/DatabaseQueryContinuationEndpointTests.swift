@@ -13,6 +13,88 @@ import Testing
 
 @Suite("Canonical query continuation endpoint", .serialized)
 struct DatabaseQueryContinuationEndpointTests {
+    @Test("positional duplicate labels survive first and durable continuation pages")
+    func duplicateLabelsSurviveContinuation() async throws {
+        let endpoint = try await makeEndpoint()
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.col("id"), alias: "duplicate"),
+                ProjectionItem(.col("title"), alias: "duplicate"),
+            ]),
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
+            orderBy: [SortKey(.col("id"))]
+        )
+        let first = try await successfulPage(request(query: query, pageLimit: 2), requestID: 100, endpoint: endpoint)
+        let continuation = try #require(first.continuation)
+        let second = try await successfulPage(
+            request(query: query, pageLimit: 2, continuation: continuation),
+            requestID: 101, endpoint: endpoint
+        )
+        #expect(first.columns.map(\.name) == ["duplicate", "duplicate"])
+        #expect(first.columns.map(\.number) == [1, 2])
+        #expect(first.columns == second.columns)
+        #expect(try first.materializedRows(maximumCount: 2).first?.values == [
+            .primitive(.string("entity-0")), .primitive(.string("Title 0")),
+        ])
+        #expect(try second.materializedRows(maximumCount: 2).first?.values == [
+            .primitive(.string("entity-2")), .primitive(.string("Title 2")),
+        ])
+    }
+
+    @Test("an empty result retains ordered typed columns")
+    func emptyResultRetainsTypedColumns() async throws {
+        let endpoint = try await makeEndpoint()
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.col("priority"), alias: "z"),
+                ProjectionItem(.col("id"), alias: "a"),
+            ]),
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
+            filter: .equal(.col("id"), .string("missing"))
+        )
+        let page = try await successfulPage(request(query: query, pageLimit: 2), requestID: 102, endpoint: endpoint)
+        #expect(page.rowCount == 0)
+        #expect(page.columns.map(\.name) == ["z", "a"])
+        #expect(page.columns.map(\.type) == [.primitive(.int64), .primitive(.string)])
+        #expect(page.columns.map(\.isNullable) == [false, false])
+        #expect(page.continuation == nil)
+    }
+
+    @Test("rich positional values and typmods survive durable paging")
+    func richValuesSurviveDurablePaging() async throws {
+        let endpoint = try await makeEndpoint()
+        let limits = QueryValueLimits(maximumRetainedBytes: 1_024 * 1_024,
+                                      maximumTotalNodes: 1_000, maximumNestingDepth: 16,
+                                      maximumCollectionElements: 1_000)
+        let json = try QueryJSONValue(bytes: ByteString(Array(" { \"a\": 1 } ".utf8)), limits: limits)
+        let numeric = try QueryNumericValue(value: ExactDecimal(coefficient: 123, scale: 2), displayScale: 4)
+        let array = try QueryArrayValue(
+            elementType: .integer,
+            dimensions: [QueryArrayDimension(lowerBound: -2, length: 2)],
+            elements: [.primitive(.int32(7)), .primitive(.null)], limits: limits
+        )
+        let interval = try QueryIntervalValue(period: CalendarPeriod(months: 2, days: 3), time: TimeSpan(seconds: 4))
+        let values: [QueryValue] = [.numeric(numeric), .json(json), .jsonb(try QueryJSONBValue(json: json, limits: limits)), .array(array), .interval(interval)]
+        let types: [QueryColumnType] = [.sql(.decimal(precision: nil, scale: nil)), .sql(.json), .sql(.jsonb), .sql(.array(.integer)), .sql(.interval)]
+        let query = SelectQuery(
+            projection: .items(zip(values, types).enumerated().map { index, pair in
+                ProjectionItem(.literal(.queryValue(pair.0, type: pair.1)), alias: "rich-\(index)")
+            }),
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
+        )
+        let first = try await successfulPage(request(query: query, pageLimit: 2), requestID: 103, endpoint: endpoint)
+        let continuation = try #require(first.continuation)
+        let second = try await successfulPage(
+            request(query: query, pageLimit: 2, continuation: continuation),
+            requestID: 104, endpoint: endpoint
+        )
+        #expect(first.columns.map(\.type) == types)
+        #expect(first.columns == second.columns)
+        for page in [first, second] {
+            for row in try page.materializedRows(maximumCount: 2) { #expect(row.values == values) }
+        }
+    }
+
     @Test("a backend without historical reads serves a durable continuation")
     func nonHistoricalBackendUsesDurableContinuation() async throws {
         let endpoint = try await makeEndpoint()
@@ -485,7 +567,7 @@ struct DatabaseQueryContinuationEndpointTests {
     ) throws -> String {
         guard let index = columns.firstIndex(where: { $0.name == "id" }),
               row.values.indices.contains(index),
-              case .string(let identifier) = row.values[index] else {
+              case .primitive(.string(let identifier)) = row.values[index] else {
             Issue.record("Expected each row to contain a string id")
             throw ContinuationEndpointAssertionError.missingIdentifier
         }

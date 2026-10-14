@@ -197,7 +197,7 @@ struct SPARQLStatementMutationExecutorTests {
                 )
             )
         )
-        let rows = try await container.withTestBaseOperation {
+        let response = try await container.withTestBaseOperation {
             try await container.testBaseContext().withReadSnapshot(
                 workMeter: workMeter
             ) { snapshot in
@@ -207,13 +207,15 @@ struct SPARQLStatementMutationExecutorTests {
                         monotonicClock: TestProcessMonotonicClock(),
                         workMeter: workMeter
                     )
-                ).rows
+                )
             }
         }
+        #expect(response.columns.map(\.name) == ["graph"])
+        let rows = response.rows
         #expect(rows.count == 1)
         #expect(
-            rows[0].fields["graph"]
-                == .rdfTerm(try RDFTerm.iri(validating: graphIRI))
+            rows[0].values
+                == [.primitive(.rdfTerm(try RDFTerm.iri(validating: graphIRI)))]
         )
     }
 

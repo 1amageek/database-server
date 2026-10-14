@@ -22,10 +22,15 @@ package struct DatabaseStatementAdmission: Sendable {
             structuralLimits: structuralLimits
         )
         let bound = try binder.bind(parsed)
-        try SPARQLSemanticValidator.validate(
-            bound,
-            limits: structuralLimits
-        )
+        switch bound {
+        case .select(let query) where !query.source.usesSPARQLSemantics:
+            break
+        default:
+            try SPARQLSemanticValidator.validate(
+                bound,
+                limits: structuralLimits
+            )
+        }
         return ValidatedDatabaseStatement(
             statement: bound,
             structuralLimits: structuralLimits

@@ -65,7 +65,8 @@ public struct SchemaDescribeHandler: DatabaseOperationHandler {
                         for: field,
                         entity: entity,
                         runtimeConfiguration: runtimeConfiguration
-                    )
+                    ),
+                    queryType: field.queryType
                 )
             }
 

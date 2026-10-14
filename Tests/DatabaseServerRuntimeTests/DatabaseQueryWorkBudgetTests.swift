@@ -71,7 +71,7 @@ struct DatabaseQueryWorkBudgetTests {
                 QueryParameter(
                     position: 1,
                     name: "value",
-                    value: value
+                    value: .primitive(value)
                 )
             ],
             page: QueryExecuteOperation.Page(limit: 1)
@@ -524,7 +524,8 @@ struct DatabaseQueryWorkBudgetTests {
 
         let row = try #require(response.rows.first)
         #expect(response.rows.count == 1)
-        #expect(row.fields["count"] == .int64(100))
+        #expect(response.columns.map(\.name) == ["count"])
+        #expect(row.values == [.primitive(.int64(100))])
     }
 
     private func makeContainer(seedCount: Int = 3) async throws -> DBContainer {

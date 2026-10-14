@@ -28,6 +28,84 @@ private func testReadConsistency(
 
 @Suite("Composition query execution", .serialized)
 struct DatabaseCompositionQueryTests {
+    private func valueColumns() throws -> [QueryColumn] {
+        [try QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)]
+    }
+
+    @Test("Composition preserves duplicate column labels across durable pages")
+    func duplicateColumnsPreserveProvenance() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        try await seed(fixture)
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.col("id"), alias: "value"),
+                ProjectionItem(.col("priority"), alias: "value"),
+            ]),
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
+        )
+        let first = try await successfulPage(
+            QueryExecuteOperation.Request(input: .ir(.select(query)), page: .init(limit: 2)),
+            requestID: 900, fixture: fixture
+        )
+        let continuation = try #require(first.continuation)
+        let second = try await successfulPage(
+            QueryExecuteOperation.Request(input: .ir(.select(query)), page: .init(limit: 2, continuation: continuation)),
+            requestID: 901, fixture: fixture
+        )
+        #expect(first.columns.map(\.name) == ["value", "value"])
+        #expect(first.columns.map(\.type) == [.primitive(.string), .primitive(.int64)])
+        #expect(second.columns == first.columns)
+        let expectedPriorities: [String: Int64] = [
+            "primary-1": 1, "primary-3": 3, "other-2": 2, "other-4": 4,
+        ]
+        var identifiers = Set<String>()
+        for page in [first, second] {
+            #expect(page.provenance?.originCount == page.rowCount)
+            #expect(page.rowCount == 2)
+            let provenance = try #require(page.provenance)
+            var origins = provenance.makeOriginIterator()
+            for row in try page.materializedRows(maximumCount: 2) {
+                #expect(row.values.count == 2)
+                guard case .primitive(.string(let id)) = row.values[0],
+                      case .primitive(.int64(let priority)) = row.values[1] else {
+                    Issue.record("Expected positional identifier and priority values")
+                    continue
+                }
+                #expect(expectedPriorities[id] == priority)
+                let inserted = identifiers.insert(id).inserted
+                #expect(inserted)
+                let baseID = id.hasPrefix("primary-")
+                    ? fixture.primaryBaseID : fixture.secondaryBaseID
+                #expect(try origins.next() == .source(baseID))
+            }
+            #expect(try origins.next() == nil)
+        }
+        #expect(identifiers == Set(expectedPriorities.keys))
+    }
+
+    @Test("An empty Composition preserves its bound column schema")
+    func emptyCompositionRetainsColumns() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.col("priority"), alias: "z"),
+                ProjectionItem(.col("id"), alias: "a"),
+            ]),
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
+        )
+        let page = try await successfulPage(
+            QueryExecuteOperation.Request(input: .ir(.select(query)), page: .init(limit: 2)),
+            requestID: 902, fixture: fixture
+        )
+        #expect(page.rowCount == 0)
+        #expect(page.columns.map(\.name) == ["z", "a"])
+        #expect(page.columns.map(\.type) == [.primitive(.int64), .primitive(.string)])
+        #expect(page.provenance?.originCount == 0)
+        #expect(page.continuation == nil)
+    }
+
     @Test("global ordering, provenance, and durable paging are fixed")
     func globalOrderAndDurablePaging() async throws {
         let fixture = try await makeFixture()
@@ -98,8 +176,8 @@ struct DatabaseCompositionQueryTests {
         #expect(second.continuation == nil)
     }
 
-    @Test("the first Composition page leaves the intermediate budget")
-    func firstPageLeavesTheIntermediateBudget() async throws {
+    @Test("the first Composition page retains its destination claim until publication")
+    func firstPageRetainsTheIntermediateBudget() async throws {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
         let selection = CompositionSelection.named(fixture.compositionID)
@@ -116,8 +194,9 @@ struct DatabaseCompositionQueryTests {
             ),
             monotonicClock: fixture.container.monotonicClock
         )
-        let builder = DatabaseCompositionQueryResultBuilder(
+        let builder = try DatabaseCompositionQueryResultBuilder(
             composition: readMetadata.resolution,
+            columns: try valueColumns(),
             basePlacementGenerations: readMetadata.basePlacementGenerations,
             schemaGeneration: fixture.container.schemaGeneration,
             consistency: try testReadConsistency(
@@ -131,25 +210,105 @@ struct DatabaseCompositionQueryTests {
             workMeter: workMeter
         )
 
-        try await builder.append(
-            DatabaseEngine.QueryRow(fields: ["value": .string("first")]),
-            origin: .source(fixture.primaryBaseID),
-            footprint: 64
-        )
-        try await builder.append(
-            DatabaseEngine.QueryRow(fields: ["value": .string("second")]),
-            origin: .source(fixture.secondaryBaseID),
-            footprint: 64
-        )
+        try await builder.append(CompositionQueryRow(
+            row: try DatabaseEngine.QueryRow(values: [.primitive(.string("first"))], columns: valueColumns()),
+            origin: .source(fixture.primaryBaseID)
+        ))
+        try await builder.append(CompositionQueryRow(
+            row: try DatabaseEngine.QueryRow(values: [.primitive(.string("second"))], columns: valueColumns()),
+            origin: .source(fixture.secondaryBaseID)
+        ))
 
-        // The first full page is the operation's response. Its size is
-        // governed by the output and page limits, so it is promoted out of
-        // the intermediate budget and only the staging page still claims one.
-        #expect(workMeter.retainedIntermediateRows == 1)
+        // Both destination page windows remain admitted until publication.
+        #expect(workMeter.retainedIntermediateRows == 2)
         #expect(workMeter.retainedIntermediateBytes > 0)
         _ = try await builder.finish()
         #expect(workMeter.retainedIntermediateRows == 0)
         #expect(workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("first-page claims survive blocked publication commit and release on success or abort", .timeLimit(.minutes(1)))
+    func firstPageReservationSurvivesBlockedPublication() async throws {
+        for invalidatesTarget in [false, true] {
+            let engine = CommitGatedInMemoryEngine()
+            let fixture = try await makeFixture(controlEngine: engine)
+            defer { await fixture.container.shutdown() }
+            let metadata = try await fixture.container.session(
+                authorization: TestBaseEnvironment.authorization
+            ).composition(CompositionSelection.named(fixture.compositionID)).acquireReadMetadata()
+            let workMeter = DatabaseWorkMeter(
+                budget: ExecutionBudget(maximumRows: 8, maximumWorkUnits: 10_000,
+                    maximumIntermediateRows: 8, maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                    timeoutMilliseconds: 30_000),
+                monotonicClock: fixture.container.monotonicClock
+            )
+            let builder = try DatabaseCompositionQueryResultBuilder(
+                composition: metadata.resolution,
+                columns: valueColumns(),
+                basePlacementGenerations: metadata.basePlacementGenerations,
+                schemaGeneration: fixture.container.schemaGeneration,
+                consistency: testReadConsistency(domain: fixture.primaryBaseID),
+                pageLimit: 1,
+                queryFingerprint: ByteString(repeating: 0x47, count: 32),
+                authorization: TestBaseEnvironment.authorization,
+                maximumIntermediateBytes: 1 * 1_024 * 1_024,
+                snapshotStore: fixture.snapshotStore,
+                workMeter: workMeter
+            )
+            for (value, origin) in [("first", fixture.primaryBaseID), ("second", fixture.secondaryBaseID)] {
+                try await builder.append(CompositionQueryRow(
+                    row: DatabaseEngine.QueryRow(values: [.primitive(.string(value))], columns: valueColumns()),
+                    origin: .source(origin)
+                ))
+            }
+            #expect(workMeter.retainedIntermediateRows == 2)
+            let retainedBytes = workMeter.retainedIntermediateBytes
+            #expect(retainedBytes > 0)
+
+            // This small page writes one payload chunk and its descriptor.
+            // The third mutating commit publishes the authoritative manifest.
+            let commitsBeforeFinish = engine.mutatingCommitCount
+            let gate = engine.suspendMutatingCommit(skipping: 2)
+            let finish = Task { try await builder.finish() }
+            defer {
+                await gate.release()
+                _ = await finish.result
+                do { try await builder.abort() }
+                catch { Issue.record("Publication cleanup failed: \(error)") }
+            }
+            await gate.waitUntilStarted()
+            #expect(engine.mutatingCommitCount == commitsBeforeFinish + 3)
+            #expect(workMeter.retainedIntermediateRows == 2)
+            #expect(workMeter.retainedIntermediateBytes == retainedBytes)
+            if invalidatesTarget {
+                _ = try await fixture.container.withControlMetadataTransaction { transaction in
+                    try await fixture.container.compositionCatalog.replace(
+                        id: fixture.compositionID,
+                        bases: [fixture.primaryBaseID, fixture.secondaryBaseID],
+                        expectedRevision: 1,
+                        transaction: transaction.executionStorageAccess
+                    )
+                }
+            }
+            await gate.release()
+            if invalidatesTarget {
+                let failure = await #expect(throws: DatabaseQueryExecutionError.self) {
+                    try await finish.value
+                }
+                if case .querySnapshotStale? = failure {} else {
+                    Issue.record("Expected a stale snapshot after the target changed")
+                }
+                try await builder.abort()
+                try await builder.abort()
+            } else {
+                let page = try await finish.value
+                #expect(page.rowCount == 1)
+                #expect(page.continuation != nil)
+                #expect(try page.materializedRows(maximumCount: 1).first?.values == [.primitive(.string("first"))])
+            }
+            #expect(workMeter.retainedIntermediateRows == 0)
+            #expect(workMeter.retainedIntermediateBytes == 0)
+        }
     }
 
     @Test("an append failure releases every staged claim after abort")
@@ -170,8 +329,9 @@ struct DatabaseCompositionQueryTests {
             ),
             monotonicClock: fixture.container.monotonicClock
         )
-        let builder = DatabaseCompositionQueryResultBuilder(
+        let builder = try DatabaseCompositionQueryResultBuilder(
             composition: readMetadata.resolution,
+            columns: try valueColumns(),
             basePlacementGenerations: readMetadata.basePlacementGenerations,
             schemaGeneration: fixture.container.schemaGeneration,
             consistency: try testReadConsistency(
@@ -184,24 +344,23 @@ struct DatabaseCompositionQueryTests {
             snapshotStore: nil,
             workMeter: workMeter
         )
-        let row = DatabaseEngine.QueryRow(
-            fields: ["value": .string("staged")]
+        let row = try DatabaseEngine.QueryRow(
+            values: [.primitive(.string("staged"))], columns: valueColumns()
         )
-        let incompatibleRow = DatabaseEngine.QueryRow(
-            fields: ["other": .string("incompatible")]
+        let incompatibleRow = try DatabaseEngine.QueryRow(
+            values: [.primitive(.int64(1))],
+            columns: [QueryColumn(number: 1, name: "value", type: .primitive(.int64), isNullable: false)]
         )
 
-        try await builder.append(
-            row,
-            origin: .source(fixture.primaryBaseID),
-            footprint: 64
-        )
+        try await builder.append(CompositionQueryRow(
+            row: row,
+            origin: .source(fixture.primaryBaseID)
+        ))
         do {
-            try await builder.append(
-                incompatibleRow,
-                origin: .source(fixture.secondaryBaseID),
-                footprint: 64
-            )
+            try await builder.append(CompositionQueryRow(
+                row: incompatibleRow,
+                origin: .source(fixture.secondaryBaseID)
+        ))
             Issue.record("Expected incompatible projected columns to fail append")
         } catch {
             // The builder rolls back the failed append before abort is called.
@@ -235,8 +394,9 @@ struct DatabaseCompositionQueryTests {
             ),
             monotonicClock: fixture.container.monotonicClock
         )
-        let builder = DatabaseCompositionQueryResultBuilder(
+        let builder = try DatabaseCompositionQueryResultBuilder(
             composition: readMetadata.resolution,
+            columns: try valueColumns(),
             basePlacementGenerations: readMetadata.basePlacementGenerations,
             schemaGeneration: fixture.container.schemaGeneration,
             consistency: try testReadConsistency(
@@ -249,19 +409,17 @@ struct DatabaseCompositionQueryTests {
             snapshotStore: fixture.snapshotStore,
             workMeter: workMeter
         )
-        let row = DatabaseEngine.QueryRow(
-            fields: ["value": .string("staged")]
+        let row = try DatabaseEngine.QueryRow(
+            values: [.primitive(.string("staged"))], columns: valueColumns()
         )
-        try await builder.append(
-            row,
-            origin: .source(fixture.primaryBaseID),
-            footprint: 64
-        )
-        try await builder.append(
-            row,
-            origin: .source(fixture.secondaryBaseID),
-            footprint: 64
-        )
+        try await builder.append(CompositionQueryRow(
+            row: row,
+            origin: .source(fixture.primaryBaseID)
+        ))
+        try await builder.append(CompositionQueryRow(
+            row: row,
+            origin: .source(fixture.secondaryBaseID)
+        ))
 
         let gate = BuilderStartGate()
         let task = Task {
@@ -304,8 +462,9 @@ struct DatabaseCompositionQueryTests {
             ),
             monotonicClock: fixture.container.monotonicClock
         )
-        let builder = DatabaseCompositionQueryResultBuilder(
+        let builder = try DatabaseCompositionQueryResultBuilder(
             composition: readMetadata.resolution,
+            columns: try valueColumns(),
             basePlacementGenerations: readMetadata.basePlacementGenerations,
             schemaGeneration: fixture.container.schemaGeneration,
             consistency: try testReadConsistency(
@@ -318,19 +477,17 @@ struct DatabaseCompositionQueryTests {
             snapshotStore: fixture.snapshotStore,
             workMeter: workMeter
         )
-        let row = DatabaseEngine.QueryRow(
-            fields: ["value": .string("staged")]
+        let row = try DatabaseEngine.QueryRow(
+            values: [.primitive(.string("staged"))], columns: valueColumns()
         )
-        try await builder.append(
-            row,
-            origin: .source(fixture.primaryBaseID),
-            footprint: 64
-        )
-        try await builder.append(
-            row,
-            origin: .source(fixture.secondaryBaseID),
-            footprint: 64
-        )
+        try await builder.append(CompositionQueryRow(
+            row: row,
+            origin: .source(fixture.primaryBaseID)
+        ))
+        try await builder.append(CompositionQueryRow(
+            row: row,
+            origin: .source(fixture.secondaryBaseID)
+        ))
 
         _ = try await fixture.container.withControlMetadataTransaction {
             transaction in
@@ -812,8 +969,16 @@ struct DatabaseCompositionQueryTests {
         let row = try #require(
             page.materializedRows(maximumCount: 1).first
         )
+        #expect(page.columns.map(\.name) == ["count", "sum", "average", "minimum", "maximum"])
+        #expect(page.columns.map(\.type) == [
+            .sql(.bigint), .sql(.decimal(precision: nil, scale: nil)),
+            .sql(.doublePrecision), .primitive(.int64), .primitive(.int64),
+        ])
+        let sum = try QueryNumericValue(
+            value: ExactDecimal(coefficient: 10, scale: 0), displayScale: 0
+        )
         #expect(try value("count", row: row, page: page) == .int64(4))
-        #expect(try value("sum", row: row, page: page) == .int64(10))
+        #expect(row.values[1] == .numeric(sum))
         #expect(
             try value("average", row: row, page: page) == .float64(2.5)
         )
@@ -859,59 +1024,78 @@ struct DatabaseCompositionQueryTests {
             fixture: fixture
         )
 
-        #expect(error.category == .constraint)
-        #expect(error.code == "COMPOSITION_AGGREGATE_FAILED")
+        #expect(error.category == .invalidRequest)
+        #expect(error.code == "INVALID_QUERY_EXPRESSION")
         #expect(
             error.message
-                == "Composition aggregate failed: Aggregate operand is not numeric"
+                == "Expression operands are incompatible with numeric expression"
         )
     }
 
-    @Test("durable unordered paging stays within a bounded intermediate row budget")
+    @Test("durable unordered paging enforces the complete Ready and destination row bound")
     func durableUnorderedPagingUsesBoundedMemory() async throws {
+        let rowCount = 48
+        let pageSize = 2
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
         try await insert(
-            stride(from: 0, to: 48, by: 2).map {
+            stride(from: 0, to: rowCount, by: 2).map {
                 ("primary-\($0)", Int64($0))
             },
             into: fixture.primaryBaseID,
             container: fixture.container
         )
         try await insert(
-            stride(from: 1, to: 48, by: 2).map {
+            stride(from: 1, to: rowCount, by: 2).map {
                 ("secondary-\($0)", Int64($0))
             },
             into: fixture.secondaryBaseID,
             container: fixture.container
         )
-        let budget = ExecutionBudget(
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
+        )
+        let insufficientBudget = ExecutionBudget(
             maximumRows: 100,
             maximumWorkUnits: 1_000_000,
             maximumIntermediateRows: 8,
             maximumIntermediateBytes: 1 * 1_024 * 1_024,
             timeoutMilliseconds: 30_000
         )
+        let rejected = try await remoteFailure(
+            QueryExecuteOperation.Request(
+                input: .ir(.select(query)),
+                page: .init(limit: UInt32(pageSize)),
+                budget: insufficientBudget
+            ),
+            requestID: 26,
+            fixture: fixture
+        )
+        #expect(rejected.category == .resourceLimit)
+        #expect(rejected.code == "QUERY_RESOURCE_LIMIT")
+        #expect(rejected.message.contains("exceeding 8"))
+
+        // Framework retains Ready rows and source/projected page owners with
+        // at most one lookahead row each. Server adds two destination pages.
+        let sourcePageCount = (rowCount + pageSize - 1) / pageSize
+        let readyRowBound = rowCount + 2 * sourcePageCount * (pageSize + 1)
+        let budget = ExecutionBudget(
+            maximumRows: 100,
+            maximumWorkUnits: 1_000_000,
+            maximumIntermediateRows: UInt32(readyRowBound + 2 * pageSize),
+            maximumIntermediateBytes: 1 * 1_024 * 1_024,
+            timeoutMilliseconds: 30_000
+        )
         var continuation: ByteString?
         var values: [Int64] = []
-        var requestID: UInt64 = 26
+        var requestID: UInt64 = 27
         repeat {
             let page = try await successfulPage(
                 QueryExecuteOperation.Request(
-                    input: .ir(
-                        .select(
-                            SelectQuery(
-                                projection: .all,
-                                source: .table(
-                                    TableRef(
-                                        DatabaseEndpointEntity.persistableType
-                                    )
-                                )
-                            )
-                        )
-                    ),
+                    input: .ir(.select(query)),
                     page: QueryExecuteOperation.Page(
-                        limit: 2,
+                        limit: UInt32(pageSize),
                         continuation: continuation
                     ),
                     budget: budget
@@ -923,8 +1107,8 @@ struct DatabaseCompositionQueryTests {
             continuation = page.continuation
             requestID += 1
         } while continuation != nil
-        #expect(values.count == 48)
-        #expect(values.sorted() == (0..<48).map(Int64.init))
+        #expect(values.count == rowCount)
+        #expect(values.sorted() == (0..<rowCount).map(Int64.init))
     }
 
     @Test("DISTINCT merges exact rows and retains every contributor")
@@ -1676,7 +1860,8 @@ struct DatabaseCompositionQueryTests {
 
     private func makeFixture(
         schema: Schema? = nil,
-        runtimeConfiguration: DatabaseRuntimeConfiguration? = nil
+        runtimeConfiguration: DatabaseRuntimeConfiguration? = nil,
+        controlEngine: any StorageEngine = InMemoryEngine()
     ) async throws -> Fixture {
         let controlDomainID = try DatabaseStorageDomain.ID("control")
         let dataDomainID = try DatabaseStorageDomain.ID("secondary-data")
@@ -1693,7 +1878,7 @@ struct DatabaseCompositionQueryTests {
                 try DatabaseStorageDomain(
                     id: controlDomainID,
                     rootPath: ["database", "control"],
-                    storageEngine: InMemoryEngine()
+                    storageEngine: controlEngine
                 ),
                 try DatabaseStorageDomain(
                     id: dataDomainID,
@@ -1911,7 +2096,7 @@ struct DatabaseCompositionQueryTests {
         let index = try #require(page.columns.firstIndex { $0.name == name })
         return try page.materializedRows(maximumCount: page.rowCount).map {
             row in
-            guard case .rdfTerm(let term) = row.values[index] else {
+            guard case .primitive(.rdfTerm(let term)) = row.values[index] else {
                 throw TestFailure.unexpectedResponse
             }
             return term
@@ -2042,7 +2227,7 @@ struct DatabaseCompositionQueryTests {
         let index = try #require(page.columns.firstIndex { $0.name == name })
         return try page.materializedRows(maximumCount: page.rowCount).map {
             row in
-            guard case .string(let value) = row.values[index] else {
+            guard case .primitive(.string(let value)) = row.values[index] else {
                 throw TestFailure.unexpectedResponse
             }
             return value
@@ -2137,7 +2322,7 @@ struct DatabaseCompositionQueryTests {
         )
         return try page.materializedRows(maximumCount: page.rowCount).map {
             row in
-            guard case .int64(let value) = row.values[index] else {
+            guard case .primitive(.int64(let value)) = row.values[index] else {
                 throw TestFailure.unexpectedResponse
             }
             return value
@@ -2150,7 +2335,10 @@ struct DatabaseCompositionQueryTests {
         page: QueryRowPage
     ) throws -> FieldValue {
         let index = try #require(page.columns.firstIndex { $0.name == name })
-        return row.values[index]
+        guard case .primitive(let value) = row.values[index] else {
+            throw TestFailure.unexpectedResponse
+        }
+        return value
     }
 
     private enum TestFailure: Error {

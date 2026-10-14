@@ -8,10 +8,90 @@ TEST_TRAITS="${DATABASE_SERVER_TEST_TRAITS:-}"
 TOOLCHAIN_IDENTIFIER="org.swift.64202608141a"
 XCODE_TOOLCHAIN_IDENTIFIER="com.apple.dt.toolchain.XcodeDefault"
 BUILD_TIMEOUT_SECONDS="${XCODE_TEST_BUILD_TIMEOUT_SECONDS:-1200}"
+BUILD_JOB_COUNT="${XCODE_TEST_BUILD_JOBS:-6}"
 TEST_TIMEOUT_SECONDS="${XCODE_TEST_TIMEOUT_SECONDS:-300}"
 RESULT_DIRECTORY="${XCODE_TEST_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-server-xcode-results}"
 WORK_ROOT=""
 EXTERNAL_DERIVED_DATA="${XCODE_TEST_DERIVED_DATA_PATH:-}"
+
+ONLY_TESTING=()
+EXPECTED_TEST_COUNT=""
+DIAGNOSTIC_SOURCE_ROOT=""
+PRESERVE_WORK_ROOT=false
+REUSE_WORK_ROOT=""
+HARNESS_LOCK_OWNED=false
+temporary_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+expected_prefix="$temporary_root/database-server-xcode-test."
+ownership_marker="database-server-xcode-test-work-root-v1 uid=$(id -u)"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/xcode-test-harness [options]
+  --only-testing <identifier>  Select a test target, suite, or method. Repeatable.
+  --expected-count <count>     Required exact positive count for focused tests.
+  --preserve-work-root        Preserve the owned source directory for reuse.
+  --reuse-work-root <path>    Synchronize and rebuild a preserved work root.
+  --diagnostic-source-root <path>
+                              Copy prepared absolute local dependencies;
+                              diagnostic evidence only.
+  -h, --help                  Show this help.
+EOF
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --only-testing|--expected-count|--diagnostic-source-root|--reuse-work-root)
+      if [[ -z "${2:-}" || "$2" == --* ]]; then
+        echo "error: $1 requires a value" >&2
+        exit 2
+      fi
+      case "$1" in
+        --only-testing) ONLY_TESTING+=("-only-testing:$2") ;;
+        --expected-count) EXPECTED_TEST_COUNT="$2" ;;
+        --diagnostic-source-root) DIAGNOSTIC_SOURCE_ROOT="$2" ;;
+        --reuse-work-root) REUSE_WORK_ROOT="$2"; PRESERVE_WORK_ROOT=true ;;
+      esac
+      shift 2
+      ;;
+    --preserve-work-root) PRESERVE_WORK_ROOT=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if (( ${#ONLY_TESTING[@]} > 0 )); then
+  if ! [[ "$EXPECTED_TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: focused tests require --expected-count with a positive integer" >&2
+    exit 2
+  fi
+elif [[ -n "$EXPECTED_TEST_COUNT" ]]; then
+  echo "error: --expected-count requires --only-testing; full counts are package-owned" >&2
+  exit 2
+fi
+if [[ -n "${DATABASE_SERVER_EXPECTED_TEST_COUNT:-}" ]]; then
+  echo "error: use --only-testing with --expected-count; full counts are package-owned" >&2
+  exit 2
+fi
+
+validate_owned_work_root() {
+  local path="$1"
+  local suffix="${path#"$expected_prefix"}"
+  if [[ "$path" != /* || "$path" != "$expected_prefix"* \
+      || ! "$suffix" =~ ^[A-Za-z0-9]+$ || -L "$path" || ! -d "$path" \
+      || "$(stat -f '%u' "$path")" != "$(id -u)" \
+      || ! -f "$path/.reusable-work-root" || -L "$path/.reusable-work-root" \
+      || "$(stat -f '%u' "$path/.reusable-work-root")" != "$(id -u)" \
+      || "$(<"$path/.reusable-work-root")" != "$ownership_marker" \
+      || ! -d "$path/source" || -L "$path/source" \
+      || "$(stat -f '%u' "$path/source")" != "$(id -u)" ]]; then
+    echo "error: invalid owned harness work root: $path" >&2
+    return 2
+  fi
+}
+
+if [[ -n "$REUSE_WORK_ROOT" ]]; then
+  validate_owned_work_root "$REUSE_WORK_ROOT"
+fi
 
 timeout_command() {
   local seconds="$1"
@@ -20,12 +100,17 @@ timeout_command() {
 }
 
 cleanup() {
-  if [[ -z "$WORK_ROOT" || ! -d "$WORK_ROOT" ]]; then
+  if [[ -z "$WORK_ROOT" || "$HARNESS_LOCK_OWNED" != true ]]; then
     return
   fi
-  local expected_prefix="${TMPDIR:-/tmp}/database-server-xcode-test."
-  if [[ "$WORK_ROOT" != "$expected_prefix"* ]]; then
-    echo "error: refusing to remove unexpected harness path: $WORK_ROOT" >&2
+  if ! validate_owned_work_root "$WORK_ROOT"; then
+    return
+  fi
+  rm -f -- "$WORK_ROOT/.harness-lock/owner-pid"
+  rmdir "$WORK_ROOT/.harness-lock"
+  HARNESS_LOCK_OWNED=false
+  if [[ "$PRESERVE_WORK_ROOT" == true ]]; then
+    echo "Preserved harness work root: $WORK_ROOT" >&2
     return
   fi
   rm -rf -- "$WORK_ROOT"
@@ -83,6 +168,17 @@ inject_testing_runtime() {
     configuration_index=$((configuration_index + 1))
   done
 
+  local top_level_key
+  while IFS= read -r top_level_key; do
+    if ! plutil -extract "$top_level_key.BlueprintName" raw \
+        "$plist" >/dev/null 2>&1; then
+      continue
+    fi
+    prepend_library_path \
+      "$plist" "$top_level_key.TestingEnvironmentVariables" "$testing_library_path"
+    target_count=$((target_count + 1))
+  done < <(plutil -p "$plist" | sed -n 's/^  "\([^"]*\)" => {$/\1/p')
+
   if (( target_count == 0 )); then
     echo "error: no test targets found in $plist" >&2
     return 1
@@ -102,24 +198,24 @@ reject_internal_tool_errors() {
 summary_number() {
   local summary="$1"
   local key="$2"
-  printf '%s' "$summary" | plutil -extract "$key" raw -
+  printf '%s' "$summary" | jq -er ".${key}"
 }
 
 case "$TEST_TRAITS" in
   "")
-    default_expected_test_count=305
+    default_expected_test_count=311
     ;;
   "MultiBase")
-    default_expected_test_count=337
+    default_expected_test_count=346
     ;;
   *)
     echo "error: DATABASE_SERVER_TEST_TRAITS must be empty or MultiBase" >&2
     exit 2
     ;;
 esac
-EXPECTED_TEST_COUNT="${DATABASE_SERVER_EXPECTED_TEST_COUNT:-$default_expected_test_count}"
+EXPECTED_TEST_COUNT="${EXPECTED_TEST_COUNT:-$default_expected_test_count}"
 
-for command in cmp grep xcodebuild xcrun plutil perl rsync tee; do
+for command in cmp find grep jq xcodebuild xcrun plutil perl python3 rsync shasum stat tee; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 1
@@ -127,28 +223,98 @@ for command in cmp grep xcodebuild xcrun plutil perl rsync tee; do
 done
 
 if ! [[ "$EXPECTED_TEST_COUNT" =~ ^[0-9]+$ ]]; then
-  echo "error: DATABASE_SERVER_EXPECTED_TEST_COUNT must be a non-negative integer" >&2
+  echo "error: expected test count must be a positive integer" >&2
   exit 2
 fi
+
+if ! [[ "$BUILD_JOB_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "error: XCODE_TEST_BUILD_JOBS must be a positive integer" >&2
+  exit 2
+fi
+
+for timeout_value in "$BUILD_TIMEOUT_SECONDS" "$TEST_TIMEOUT_SECONDS"; do
+  if ! [[ "$timeout_value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: Xcode build and test timeouts must be positive integers" >&2
+    exit 2
+  fi
+done
 
 PINNED_SWIFTC="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
 xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swift --version
 xcodebuild -version
 
-has_local_dependencies=false
-if grep -En '\.package\(path:' "$ROOT_DIR/Package.swift" >/dev/null; then
-  has_local_dependencies=true
-  if [[ "${DATABASE_SERVER_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]]; then
-    echo "error: release verification requires URL dependencies" >&2
-    exit 2
-  fi
-fi
-if [[ -n "$TEST_TRAITS" && "$has_local_dependencies" == true ]]; then
-  echo "error: isolated trait verification requires URL dependencies" >&2
+if perl -0777 -ne 'exit(/\.package\(\s*path:/ ? 0 : 1)' "$ROOT_DIR/Package.swift"; then
+  echo "error: source Package.swift must retain URL dependencies" >&2
   exit 2
 fi
+original_package_digest="$(shasum -a 256 "$ROOT_DIR/Package.swift")"
+original_resolved_digest="$(shasum -a 256 "$ROOT_DIR/Package.resolved")"
+input_root="$ROOT_DIR"
+verification_mode="url"
+local_identities='[]'
+if [[ -n "$DIAGNOSTIC_SOURCE_ROOT" ]]; then
+  input_root="$(cd "$DIAGNOSTIC_SOURCE_ROOT" && pwd -P)"
+  if [[ "$input_root" == "$(cd "$ROOT_DIR" && pwd -P)" \
+      || ! -f "$input_root/Package.swift" || ! -f "$input_root/Package.resolved" ]]; then
+    echo "error: diagnostic source must be a separate prepared package with Package.resolved" >&2
+    exit 2
+  fi
+  verification_mode="diagnostic-local"
+  local_paths="$(perl -0777 -ne 'while (/\.package\(\s*path:\s*"([^"\\]+)"/g) { print "$1\n"; }' "$input_root/Package.swift")"
+  if [[ -z "$local_paths" ]]; then
+    echo "error: diagnostic source must declare explicit .package(path:) overrides" >&2
+    exit 2
+  fi
+  local_names=()
+  while IFS= read -r dependency_path; do
+    if [[ "$dependency_path" != /* || ! -f "$dependency_path/Package.swift" ]]; then
+      echo "error: diagnostic dependency paths must be absolute package roots: $dependency_path" >&2
+      exit 2
+    fi
+    dependency_root="$(cd "$dependency_path" && pwd -P)"
+    local_names+=("$(basename "$dependency_root" | tr '[:upper:]' '[:lower:]')")
+  done <<< "$local_paths"
+  local_identities="$(printf '%s\n' "${local_names[@]}" | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')"
+fi
+input_package_digest="$(shasum -a 256 "$input_root/Package.swift")"
+input_resolved_digest="$(shasum -a 256 "$input_root/Package.resolved")"
+file_digest() {
+  local digest
+  local digest_path
+  read -r digest digest_path < <(shasum -a 256 "$1")
+  printf '%s' "$digest"
+}
+source_digest() {
+  python3 - "$1" <<'PY'
+from pathlib import Path
+import hashlib, sys
+root = Path(sys.argv[1])
+digest = hashlib.sha256()
+for directory in (root / "Sources", root / "Tests"):
+    for path in sorted(directory.rglob("*")):
+        if path.is_file():
+            digest.update(str(path.relative_to(root)).encode() + b"\0")
+            digest.update(path.read_bytes())
+print(digest.hexdigest())
+PY
+}
+original_source_digest="$(source_digest "$ROOT_DIR")"
+input_source_digest="$(source_digest "$input_root")"
+echo "Verification mode: $verification_mode (local graphs are diagnostic, not URL final evidence)"
 
-WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/database-server-xcode-test.XXXXXX")"
+if [[ -n "$REUSE_WORK_ROOT" ]]; then
+  WORK_ROOT="$REUSE_WORK_ROOT"
+else
+  WORK_ROOT="$(mktemp -d "$expected_prefix"XXXXXX)"
+  mkdir "$WORK_ROOT/source"
+  printf '%s\n' "$ownership_marker" > "$WORK_ROOT/.reusable-work-root"
+fi
+if ! mkdir "$WORK_ROOT/.harness-lock" 2>/dev/null; then
+  echo "error: harness work root is already in use: $WORK_ROOT" >&2
+  exit 2
+fi
+HARNESS_LOCK_OWNED=true
+printf '%s\n' "$$" > "$WORK_ROOT/.harness-lock/owner-pid"
 if [[ -n "$EXTERNAL_DERIVED_DATA" ]]; then
   derived_data="$EXTERNAL_DERIVED_DATA"
 else
@@ -156,23 +322,102 @@ else
 fi
 mkdir -p "$derived_data" "$RESULT_DIRECTORY"
 locked_resolved="$WORK_ROOT/Package.resolved"
-cp "$ROOT_DIR/Package.resolved" "$locked_resolved"
-build_root="$ROOT_DIR"
+cp "$input_root/Package.resolved" "$locked_resolved"
+source_root="$WORK_ROOT/source"
+mkdir -p "$source_root"
+normalized_package="$WORK_ROOT/.normalized-package"
+cp "$input_root/Package.swift" "$normalized_package"
 if [[ -n "$TEST_TRAITS" ]]; then
-  source_root="$WORK_ROOT/source"
-  mkdir -p "$source_root"
-  rsync -a --delete \
-    --exclude '.git' \
-    --exclude '.build' \
-    --exclude '.swiftpm' \
-    --exclude '*.xcresult' \
-    "$ROOT_DIR/" "$source_root/"
   perl -0pi -e '
     my $replacement = q{.default(enabledTraits: ["AllRuntimeFeatures", "SQLiteBackend", "MultiBase"])};
     my $count = s/\.default\(enabledTraits:\s*\[[^\]]*\]\)/$replacement/s;
     die "expected one default trait declaration\n" unless $count == 1;
-  ' "$source_root/Package.swift"
-  build_root="$source_root"
+  ' "$normalized_package"
+fi
+rsync -a --checksum --delete \
+  --exclude '.git' --exclude '.build' --exclude '.swiftpm' --exclude '*.xcresult' \
+  --exclude '/Package.swift' \
+  "$input_root/" "$source_root/"
+if ! cmp -s "$normalized_package" "$source_root/Package.swift"; then
+  cp "$normalized_package" "$source_root/Package.swift"
+fi
+if [[ "$derived_data" != /* || -L "$derived_data" \
+    || "$(cd "$derived_data" && pwd -P)" != "$derived_data" \
+    || "$(stat -f '%u' "$derived_data")" != "$(id -u)" ]]; then
+  echo "error: DerivedData must be an absolute, owned, non-symlink directory" >&2
+  exit 2
+fi
+cache_owner="$ownership_marker root=$WORK_ROOT"
+cache_owner_file="$derived_data/.database-server-harness-owner"
+cache_input_file="$derived_data/.database-server-harness-inputs"
+cache_input_signature="$(printf '%s\n' \
+  "$TOOLCHAIN_IDENTIFIER" "$PINNED_SWIFTC" "$TEST_TRAITS" \
+  "$(file_digest "$PINNED_SWIFTC")" \
+  "$(file_digest "$normalized_package")" \
+  "$(file_digest "$locked_resolved")")"
+if [[ -e "$cache_owner_file" || -L "$cache_owner_file" ]]; then
+  if [[ ! -f "$cache_owner_file" || -L "$cache_owner_file" \
+      || "$(stat -f '%u' "$cache_owner_file")" != "$(id -u)" \
+      || "$(<"$cache_owner_file")" != "$cache_owner" \
+      || ! -f "$cache_input_file" || -L "$cache_input_file" \
+      || "$(stat -f '%u' "$cache_input_file")" != "$(id -u)" ]]; then
+    echo "error: DerivedData is not owned by this harness work root" >&2
+    exit 2
+  fi
+  if [[ "$(<"$cache_input_file")" != "$cache_input_signature" ]]; then
+    echo "Invalidating owned DerivedData after compiler, trait, manifest or pin change"
+    rm -rf -- "$derived_data"
+    mkdir -p "$derived_data"
+  fi
+elif [[ -n "$(find "$derived_data" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+  echo "error: refusing to adopt unmarked DerivedData: $derived_data" >&2
+  exit 2
+fi
+printf '%s\n' "$cache_owner" > "$cache_owner_file"
+printf '%s\n' "$cache_input_signature" > "$cache_input_file"
+rm "$normalized_package"
+if [[ "$(source_digest "$source_root")" != "$input_source_digest" ]]; then
+  echo "error: synchronized source does not match the prepared input" >&2
+  exit 1
+fi
+build_root="$source_root"
+
+verify_pins() {
+  if [[ "$verification_mode" == "url" ]]; then
+    if ! cmp -s "$locked_resolved" "$build_root/Package.resolved"; then
+      echo "error: dependency resolution changed the pinned package graph" >&2
+      return 1
+    fi
+  else
+    local projection='[.pins[] | select(.identity as $id | $locals | index($id) | not) | {identity, kind, location, state}] | sort_by(.identity)'
+    jq -S --argjson locals "$local_identities" "$projection" "$ROOT_DIR/Package.resolved" > "$WORK_ROOT/.original-url-pins"
+    jq -S --argjson locals "$local_identities" "$projection" "$locked_resolved" > "$WORK_ROOT/.locked-url-pins"
+    jq -S --argjson locals "$local_identities" "$projection" "$build_root/Package.resolved" > "$WORK_ROOT/.resolved-url-pins"
+    if ! cmp -s "$WORK_ROOT/.original-url-pins" "$WORK_ROOT/.locked-url-pins" \
+        || ! cmp -s "$WORK_ROOT/.locked-url-pins" "$WORK_ROOT/.resolved-url-pins"; then
+      echo "error: diagnostic resolution changed a URL dependency pin" >&2
+      return 1
+    fi
+  fi
+}
+
+verify_source_files() {
+  if [[ "$(shasum -a 256 "$ROOT_DIR/Package.swift")" != "$original_package_digest" \
+      || "$(shasum -a 256 "$ROOT_DIR/Package.resolved")" != "$original_resolved_digest" \
+      || "$(shasum -a 256 "$input_root/Package.swift")" != "$input_package_digest" \
+      || "$(shasum -a 256 "$input_root/Package.resolved")" != "$input_resolved_digest" \
+      || "$(source_digest "$ROOT_DIR")" != "$original_source_digest" \
+      || "$(source_digest "$input_root")" != "$input_source_digest" \
+      || "$(source_digest "$build_root")" != "$input_source_digest" ]]; then
+    echo "error: source Package.swift or Package.resolved changed during verification" >&2
+    return 1
+  fi
+}
+
+verify_pins
+resolve_version_flags=(-onlyUsePackageVersionsFromResolvedFile)
+if [[ "$verification_mode" == "diagnostic-local" ]]; then
+  resolve_version_flags=()
 fi
 run_identifier="$(date -u +%Y%m%d-%H%M%S)-$$"
 resolve_log="$RESULT_DIRECTORY/Resolve-$run_identifier.log"
@@ -190,7 +435,7 @@ set +e
     -scheme "$SCHEME" \
     -derivedDataPath "$derived_data" \
     -disablePackageRepositoryCache \
-    -onlyUsePackageVersionsFromResolvedFile \
+    ${resolve_version_flags[@]+"${resolve_version_flags[@]}"} \
     SWIFT_EXEC="$PINNED_SWIFTC" \
     2>&1 | tee "$resolve_log"
 )
@@ -201,10 +446,28 @@ if (( resolve_status != 0 )); then
   echo "error: dependency resolution exited with status $resolve_status" >&2
   exit "$resolve_status"
 fi
-if ! cmp -s "$locked_resolved" "$build_root/Package.resolved"; then
-  echo "error: dependency resolution changed the pinned package graph" >&2
-  exit 1
-fi
+verify_pins
+verify_source_files
+cp "$build_root/Package.resolved" "$RESULT_DIRECTORY/Resolved-$run_identifier.json"
+{
+  echo "Verification mode: $verification_mode"
+  echo "Additional traits: ${TEST_TRAITS:-none}"
+  echo "Toolchain: $TOOLCHAIN_IDENTIFIER"
+  echo "Compiler: $PINNED_SWIFTC"
+  echo "Compiler SHA-256: $(shasum -a 256 "$PINNED_SWIFTC")"
+  echo "Work root: $WORK_ROOT"
+  echo "DerivedData: $derived_data"
+  echo "Cache input signature: $cache_input_signature"
+  echo "Original source SHA-256: $original_source_digest"
+  echo "Input source SHA-256: $input_source_digest"
+  echo "Original manifest: $original_package_digest"
+  echo "Original pins: $original_resolved_digest"
+  echo "Input manifest: $input_package_digest"
+  echo "Input pins: $input_resolved_digest"
+  echo "Normalized manifest: $(shasum -a 256 "$build_root/Package.swift")"
+  echo "Local dependency identities: $local_identities"
+  echo "Local dependency paths: ${local_paths:-none}"
+} > "$RESULT_DIRECTORY/Inputs-$run_identifier.log"
 
 set +e
 (
@@ -212,6 +475,7 @@ set +e
   timeout_command "$BUILD_TIMEOUT_SECONDS" env \
     TOOLCHAINS="$XCODE_TOOLCHAIN_IDENTIFIER" \
     xcodebuild build-for-testing \
+    -jobs "$BUILD_JOB_COUNT" \
     -scheme "$SCHEME" \
     -destination "$DESTINATION" \
     -derivedDataPath "$derived_data" \
@@ -220,6 +484,7 @@ set +e
     -enableCodeCoverage NO \
     -onlyUsePackageVersionsFromResolvedFile \
     -skipPackageUpdates \
+    ${ONLY_TESTING[@]+"${ONLY_TESTING[@]}"} \
     SWIFT_EXEC="$PINNED_SWIFTC" \
     2>&1 | tee "$build_log"
 )
@@ -256,6 +521,7 @@ timeout_command "$TEST_TIMEOUT_SECONDS" env \
   -destination "$DESTINATION" \
   -resultBundlePath "$test_result" \
   -enableCodeCoverage NO \
+  ${ONLY_TESTING[@]+"${ONLY_TESTING[@]}"} \
   2>&1 | tee "$test_log"
 test_status=$?
 set -e
@@ -272,7 +538,7 @@ passed_count="$(summary_number "$summary" passedTests)"
 failed_count="$(summary_number "$summary" failedTests)"
 skipped_count="$(summary_number "$summary" skippedTests)"
 expected_failure_count="$(summary_number "$summary" expectedFailures)"
-runtime_warning_count="$(summary_number "$summary" runtimeWarnings)"
+runtime_warning_count="$(printf '%s' "$summary" | jq -er '.runtimeWarnings | length')"
 if (( total_count != EXPECTED_TEST_COUNT \
     || passed_count != EXPECTED_TEST_COUNT \
     || failed_count != 0 \
@@ -284,7 +550,10 @@ if (( total_count != EXPECTED_TEST_COUNT \
   exit 1
 fi
 
+verify_pins
+verify_source_files
 printf '%s\n' "$summary"
+echo "Verification mode: $verification_mode"
 echo "database-server tests: $passed_count passed"
 echo "Additional traits: ${TEST_TRAITS:-none}"
 echo "Result directory: $RESULT_DIRECTORY"

@@ -453,6 +453,42 @@ struct DatabaseWireEndpointTests {
         #expect(schema.entities[0].fields.map(\.type) == [.string, .string, .int64])
     }
 
+    @Test("schema describe preserves explicit rich query metadata")
+    func describesRichQueryTypes() async throws {
+        let type = QueryColumnType.sql(.decimal(precision: 12, scale: 4))
+        let schema = try Schema(entities: [Schema.Entity(
+            name: "RichSchemaEntity", identifierType: .string,
+            fields: [
+                FieldSchema(name: "id", fieldNumber: 1, type: .string),
+                FieldSchema(name: "amount", fieldNumber: 2, type: .object, isOptional: true, queryType: type),
+            ], directoryComponents: [.staticPath("rich-schema-description")]
+        )], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: DBConfiguration.testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(identifier: "rich-schema-description", revision: 1),
+                schema: schema
+            ), security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        #if MultiBase
+        try await container.grantTestDatabaseAccess(to: .principal("test-runner"), access: .read)
+        #endif
+        let endpoint = DatabaseWireEndpoint(
+            container: container,
+            registry: try DatabaseOperationRegistry(
+                handlers: [AnyDatabaseOperationHandler(SchemaDescribeHandler())],
+                requiredOperations: [.schemaDescribe]
+            ), admissionPolicy: Self.unrestrictedAdmissionPolicy
+        )
+        let response = try await invoke(DatabaseOperationCatalog.schemaDescribe, requestID: 102, endpoint: endpoint, authorization: TestBaseEnvironment.authorization)
+        let fields = try #require(response.entities.first).fields
+        #expect(fields.map(\.queryType) == [nil, type])
+        #expect(fields[1].nullable)
+        #expect(fields[1].type == .object)
+    }
+
     private func makeContainer() async throws -> DBContainer {
         let schema = try Schema(
             entities: [try DatabaseEndpointEntity.schemaEntity],

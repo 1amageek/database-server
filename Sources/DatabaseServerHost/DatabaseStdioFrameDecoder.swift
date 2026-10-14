@@ -15,9 +15,18 @@ final class DatabaseStdioFrameDecoder: ByteToMessageDecoder {
         context: ChannelHandlerContext,
         buffer: inout ByteBuffer
     ) throws -> DecodingState {
+        guard let payload = try decodeFrame(buffer: &buffer) else {
+            return .needMoreData
+        }
+        context.fireChannelRead(Self.wrapInboundOut(payload))
+        return .continue
+    }
+
+    /// Consumes one prefix and payload, retaining the inbound storage in its slice.
+    func decodeFrame(buffer: inout ByteBuffer) throws -> ByteBuffer? {
         if expectedPayloadBytes == nil {
             guard buffer.readableBytes >= 4 else {
-                return .needMoreData
+                return nil
             }
             guard let length = buffer.readInteger(
                 endianness: .big,
@@ -40,14 +49,13 @@ final class DatabaseStdioFrameDecoder: ByteToMessageDecoder {
             preconditionFailure("A decoded prefix must define a payload length")
         }
         guard buffer.readableBytes >= expectedPayloadBytes else {
-            return .needMoreData
+            return nil
         }
         guard let payload = buffer.readSlice(length: expectedPayloadBytes) else {
             preconditionFailure("Readable payload must produce a buffer slice")
         }
         self.expectedPayloadBytes = nil
-        context.fireChannelRead(Self.wrapInboundOut(payload))
-        return .continue
+        return payload
     }
 
     func decodeLast(

@@ -42,8 +42,9 @@ struct DatabaseCompositionQueryAdapter {
                 guard builder == nil else {
                     throw DatabaseQueryExecutionError.querySnapshotCorrupted
                 }
-                builder = DatabaseCompositionQueryResultBuilder(
+                builder = try DatabaseCompositionQueryResultBuilder(
                     composition: metadata.composition,
+                    columns: metadata.columns,
                     basePlacementGenerations: metadata
                         .basePlacementGenerations,
                     schemaGeneration: metadata.schemaGeneration,
@@ -59,12 +60,7 @@ struct DatabaseCompositionQueryAdapter {
                 guard let builder else {
                     throw DatabaseQueryExecutionError.querySnapshotCorrupted
                 }
-                try await builder.append(
-                    result.row,
-                    origin: result.origin,
-                    footprint: try DatabaseCompositionQueryAdapter
-                        .rowFootprint(result.row)
-                )
+                try await builder.append(result)
             }
         }
 
@@ -209,41 +205,6 @@ struct DatabaseCompositionQueryAdapter {
         default:
             return false
         }
-    }
-
-    private static func rowFootprint(
-        _ row: DatabaseEngine.QueryRow
-    ) throws -> UInt64 {
-        var bytes: UInt64 = 128
-        for (key, value) in row.fields.sorted(by: { $0.key < $1.key }) {
-            bytes = try adding(bytes, UInt64(key.utf8.count))
-            bytes = try adding(
-                bytes,
-                UInt64(try FieldValueTupleCodec.encodedByteCount(for: value))
-            )
-        }
-        for (key, value) in row.annotations.sorted(by: { $0.key < $1.key }) {
-            bytes = try adding(bytes, UInt64(key.utf8.count))
-            bytes = try adding(
-                bytes,
-                UInt64(try FieldValueTupleCodec.encodedByteCount(for: value))
-            )
-        }
-        if let version = row.version {
-            bytes = try adding(bytes, UInt64(version.value.utf8.count))
-        }
-        return bytes
-    }
-
-    private static func adding(_ lhs: UInt64, _ rhs: UInt64) throws -> UInt64 {
-        let result = lhs.addingReportingOverflow(rhs)
-        guard !result.overflow else {
-            throw DatabaseIntermediateFootprintError.byteAdditionOverflow(
-                left: lhs,
-                right: rhs
-            )
-        }
-        return result.partialValue
     }
 }
 

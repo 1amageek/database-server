@@ -22,9 +22,8 @@ import DatabaseTypes
 /// retain the whole result.
 actor DatabaseCompositionQueryResultBuilder {
     private struct PageBuffer: Sendable {
-        // These values are canonical budget units for the two retained Array
-        // containers. They mirror the framework retained-array growth model;
-        // they are not allocator measurements.
+        // These canonical budget units cover row, origin and producer-event
+        // Arrays using the framework growth model, not allocator measurements.
         struct AppendAdmission: Sendable {
             let rows: UInt64
             let bytes: UInt64
@@ -53,6 +52,7 @@ actor DatabaseCompositionQueryResultBuilder {
 
         var rows: [DatabaseWire.QueryRow] = []
         var origins: [CompositionOrigin] = []
+        var sourceEvents: [CompositionQueryRow] = []
         var reservation: DatabaseIntermediateReservation?
         private var accountedCapacity = 0
 
@@ -60,7 +60,7 @@ actor DatabaseCompositionQueryResultBuilder {
         var hasReservation: Bool { reservation != nil }
 
         mutating func prepareAppend(
-            footprint: UInt64,
+            footprint: (rows: UInt64, bytes: UInt64),
             origin: CompositionOrigin,
             workMeter: DatabaseWorkMeter
         ) throws -> AppendAdmission {
@@ -74,7 +74,7 @@ actor DatabaseCompositionQueryResultBuilder {
                 toFit: requiredCount
             )
             var bytes = try Self.adding(
-                footprint,
+                footprint.bytes,
                 Self.appendAdmissionByteCount
             )
             bytes = try Self.adding(
@@ -90,6 +90,7 @@ actor DatabaseCompositionQueryResultBuilder {
                     bytes,
                     Self.originContainerByteCount
                 )
+                bytes = try Self.adding(bytes, UInt64(MemoryLayout<[CompositionQueryRow]>.stride))
             }
             bytes = try Self.adding(
                 bytes,
@@ -99,13 +100,13 @@ actor DatabaseCompositionQueryResultBuilder {
 
             if let reservation {
                 try reservation.reserveAdditional(
-                    rows: 1,
+                    rows: footprint.rows,
                     bytes: bytes,
                     at: .resultMaterialization
                 )
             } else {
                 reservation = try workMeter.reserveIntermediate(
-                    rows: 1,
+                    rows: footprint.rows,
                     bytes: bytes,
                     at: .resultMaterialization
                 )
@@ -113,9 +114,10 @@ actor DatabaseCompositionQueryResultBuilder {
             if growth.capacity > accountedCapacity {
                 rows.reserveCapacity(growth.capacity)
                 origins.reserveCapacity(growth.capacity)
+                sourceEvents.reserveCapacity(growth.capacity)
             }
             return AppendAdmission(
-                rows: 1,
+                rows: footprint.rows,
                 bytes: bytes,
                 capacity: growth.capacity
             )
@@ -123,11 +125,12 @@ actor DatabaseCompositionQueryResultBuilder {
 
         mutating func appendReserved(
             row: DatabaseWire.QueryRow,
-            origin: CompositionOrigin,
+            event: CompositionQueryRow,
             using admission: AppendAdmission
         ) {
             rows.append(row)
-            origins.append(origin)
+            origins.append(event.origin)
+            sourceEvents.append(event)
             accountedCapacity = admission.capacity
         }
 
@@ -154,17 +157,7 @@ actor DatabaseCompositionQueryResultBuilder {
             self.reservation = nil
             rows.removeAll(keepingCapacity: false)
             origins.removeAll(keepingCapacity: false)
-            accountedCapacity = 0
-            reservation?.release()
-        }
-
-        /// The first page is already the operation's final output. Its row
-        /// count is governed by the output/page limits, so keeping it while
-        /// the remaining pages are durably spooled must not also consume the
-        /// intermediate-row budget.
-        mutating func promoteToOutput() {
-            let reservation = self.reservation
-            self.reservation = nil
+            sourceEvents.removeAll(keepingCapacity: false)
             accountedCapacity = 0
             reservation?.release()
         }
@@ -202,7 +195,8 @@ actor DatabaseCompositionQueryResultBuilder {
             )
             return (
                 capacity,
-                try adding(rowBytes, originBytes)
+                try adding(try adding(rowBytes, originBytes),
+                    multiplying(additionalSlots, UInt64(max(1, MemoryLayout<CompositionQueryRow>.stride))))
             )
         }
 
@@ -254,7 +248,7 @@ actor DatabaseCompositionQueryResultBuilder {
             )
         }
 
-        private static func adding(
+        static func adding(
             _ lhs: UInt64,
             _ rhs: UInt64
         ) throws -> UInt64 {
@@ -265,7 +259,7 @@ actor DatabaseCompositionQueryResultBuilder {
             return result.partialValue
         }
 
-        private static func multiplying(
+        static func multiplying(
             _ lhs: UInt64,
             _ rhs: UInt64
         ) throws -> UInt64 {
@@ -298,8 +292,8 @@ actor DatabaseCompositionQueryResultBuilder {
     private let workMeter: DatabaseWorkMeter
 
     private var phase: Phase = .accumulating
-    private var columnNames: [String]?
-    private var columns: [QueryColumn] = []
+    private let columns: [QueryColumn]
+    private var schemaReservation: DatabaseIntermediateReservation?
     private var firstPageBuffer: PageBuffer?
     private var currentPageBuffer = PageBuffer()
     private var writeReservation:
@@ -311,6 +305,7 @@ actor DatabaseCompositionQueryResultBuilder {
 
     init(
         composition: CompositionResolution,
+        columns: [QueryColumn],
         basePlacementGenerations: [Base.ID: UInt64],
         schemaGeneration: UInt64,
         consistency: DatabaseKit.DatabaseReadConsistency,
@@ -320,7 +315,23 @@ actor DatabaseCompositionQueryResultBuilder {
         maximumIntermediateBytes: UInt64,
         snapshotStore: DatabaseQuerySnapshotStore?,
         workMeter: DatabaseWorkMeter
-    ) {
+    ) throws {
+        try QueryColumn.validate(columns)
+        var schemaBytes = try PageBuffer.multiplying(
+            UInt64(MemoryLayout<QueryColumn>.stride), UInt64(columns.capacity)
+        )
+        schemaBytes = try PageBuffer.adding(
+            schemaBytes, UInt64(MemoryLayout<[QueryColumn]>.stride) + 64
+        )
+        for column in columns {
+            schemaBytes = try PageBuffer.adding(
+                schemaBytes, UInt64(column.name.utf8.count)
+            )
+        }
+        self.schemaReservation = try workMeter.reserveIntermediate(
+            bytes: schemaBytes, at: .resultMaterialization
+        )
+        self.columns = columns
         self.composition = composition
         self.basePlacementGenerations = basePlacementGenerations
         self.schemaGeneration = schemaGeneration
@@ -335,36 +346,17 @@ actor DatabaseCompositionQueryResultBuilder {
 
     /// Stages one row, spooling the current page first when it is already full.
     ///
-    /// Column validation and encoding run before admission so that a rejected
-    /// row consumes no budget, and the admission is rolled back if any step
-    /// after it fails.
-    func append(
-        _ row: DatabaseEngine.QueryRow,
-        origin: CompositionOrigin,
-        footprint: UInt64
-    ) async throws {
+    /// Column validation precedes destination admission. A failed encoding
+    /// releases its destination claim; retained producer events keep their
+    /// payload claims live until page transfer or authoritative abort.
+    func append(_ event: CompositionQueryRow) async throws {
+        let row = event.row
         guard phase == .accumulating else {
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
         try Task.checkCancellation()
 
-        let names = row.fields.keys.sorted()
-        let newColumns: [QueryColumn]?
-        if let columnNames {
-            guard names == columnNames else {
-                throw DatabaseQueryExecutionError.compositionPlanUnsupported(
-                    "Composition members produced incompatible projected columns"
-                )
-            }
-            newColumns = nil
-        } else {
-            newColumns = try names.enumerated().map { offset, name in
-                guard let number = UInt32(exactly: offset + 1) else {
-                    throw DatabaseWireError.byteCountOverflow
-                }
-                return QueryColumn(number: number, name: name)
-            }
-        }
+        try row.validate(columns: columns)
 
         if currentPageBuffer.count == pageLimit {
             phase = .spooling
@@ -378,28 +370,24 @@ actor DatabaseCompositionQueryResultBuilder {
         }
 
         let admission = try currentPageBuffer.prepareAppend(
-            footprint: footprint,
-            origin: origin,
+            footprint: try event.retainedTransferFootprint(workMeter: workMeter),
+            origin: event.origin,
             workMeter: workMeter
         )
         do {
             try Task.checkCancellation()
             let wireRow = try DatabaseQueryRowEncoder.encode(
                 row,
-                columnNames: names
+                columns: columns
             )
             currentPageBuffer.appendReserved(
                 row: wireRow,
-                origin: origin,
+                event: event,
                 using: admission
             )
         } catch {
             currentPageBuffer.rollback(admission)
             throw error
-        }
-        if let newColumns {
-            columnNames = names
-            columns = newColumns
         }
     }
 
@@ -458,6 +446,8 @@ actor DatabaseCompositionQueryResultBuilder {
     }
 
     private func releaseStagedBuffers() {
+        schemaReservation?.release()
+        schemaReservation = nil
         currentPageBuffer.release()
         if var firstPageBuffer {
             firstPageBuffer.release()
@@ -475,7 +465,7 @@ actor DatabaseCompositionQueryResultBuilder {
                 }
                 try await snapshotStore.abortWrite(writeReservation)
             }
-            currentPageBuffer.release()
+            releaseStagedBuffers()
             return page
         }
         guard let writeReservation,
@@ -511,18 +501,16 @@ actor DatabaseCompositionQueryResultBuilder {
             totalPayloadBytes: totalPayloadBytes
         )
 
-        // The still-staging page and the write reservation are released only
-        // after the manifest is authoritative. The first page released its
-        // intermediate claim when it became the operation's output.
+        // Both page windows retain their destination claims until the manifest
+        // commit is authoritative. The first page can now transfer to output.
         releaseStagedBuffers()
         return firstPage
     }
 
     /// Publishes the full current page to control storage and starts a new one.
     ///
-    /// The first full page becomes the operation's response, so it is retained
-    /// but promoted out of the intermediate budget: its size is already
-    /// governed by the request's output and page limits.
+    /// The first full page remains staged with its destination claim until
+    /// the manifest commits or the publication is aborted.
     private func makeRoomForAdditionalRow() async throws {
         guard let snapshotStore else {
             throw DatabaseQueryExecutionError.querySnapshotUnavailable(
@@ -547,9 +535,7 @@ actor DatabaseCompositionQueryResultBuilder {
             let pageID = try await snapshotStore.reservePage(in: reservation)
             firstContinuationPageID = pageID
             currentPageID = pageID
-            var outputPageBuffer = currentPageBuffer
-            outputPageBuffer.promoteToOutput()
-            firstPageBuffer = outputPageBuffer
+            firstPageBuffer = currentPageBuffer
             currentPageBuffer = PageBuffer()
             return
         }
