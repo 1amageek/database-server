@@ -1005,16 +1005,17 @@ struct DatabaseCompositionQueryTests {
         #expect(page.columns.map(\.name) == ["count", "sum", "average", "minimum", "maximum"])
         #expect(page.columns.map(\.type) == [
             .sql(.bigint), .sql(.decimal(precision: nil, scale: nil)),
-            .sql(.doublePrecision), .primitive(.int64), .primitive(.int64),
+            .sql(.decimal(precision: nil, scale: nil)), .primitive(.int64), .primitive(.int64),
         ])
         let sum = try QueryNumericValue(
             value: ExactDecimal(coefficient: 10, scale: 0), displayScale: 0
         )
+        let average = try QueryNumericValue(
+            value: ExactDecimal(coefficient: 25, scale: 1), displayScale: 16
+        )
         #expect(try value("count", row: row, page: page) == .int64(4))
         #expect(row.values[1] == .numeric(sum))
-        #expect(
-            try value("average", row: row, page: page) == .float64(2.5)
-        )
+        #expect(row.values[2] == .numeric(average))
         #expect(try value("minimum", row: row, page: page) == .int64(1))
         #expect(try value("maximum", row: row, page: page) == .int64(4))
         let provenance = try #require(page.provenance)

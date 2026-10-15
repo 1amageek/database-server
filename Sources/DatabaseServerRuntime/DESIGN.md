@@ -235,3 +235,13 @@ parameters would incorrectly equate distinct executions. An unchanged request
 can resume its saved result; a changed parameter value, declared type, or name
 rejects that continuation before returning rows. SPARQL substitution retains
 its admitted statement and the same supplied parameter identity.
+
+### S04 selected numeric failure mapping
+
+QueryExecution owns selected numeric arithmetic failures through
+`CanonicalReadError.expressionEvaluation` with its optional decisive Kit
+occurrence. Local SQL source annotation remains Database-owned; S16 owns
+remote occurrence details. Runtime maps zero division,
+numeric overflow/underflow, nonfinite input and numeric-domain rejection to
+distinct invalid-request codes without converting resource/cancellation errors
+into arithmetic errors. SQLSTATE and remote occurrence details remain S16.

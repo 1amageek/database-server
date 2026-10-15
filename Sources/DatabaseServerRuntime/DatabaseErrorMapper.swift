@@ -2303,10 +2303,19 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
 
     private static func map(_ error: CanonicalReadError) -> RemoteOperationError {
         switch error {
-        case .expressionEvaluation(let cause):
+        case .expressionEvaluation(let cause, _):
+            let code: String
+            switch cause {
+            case .divisionByZero: code = "DIVISION_BY_ZERO"
+            case .numericOverflow: code = "NUMERIC_OVERFLOW"
+            case .numericUnderflow: code = "NUMERIC_UNDERFLOW"
+            case .nonFiniteValue: code = "NON_FINITE_NUMERIC_VALUE"
+            case .numericDomain: code = "INVALID_NUMERIC_DOMAIN"
+            default: code = "INVALID_QUERY_EXPRESSION"
+            }
             return RemoteOperationError(
                 category: .invalidRequest,
-                code: "INVALID_QUERY_EXPRESSION",
+                code: code,
                 message: cause.description,
                 retryability: .never
             )

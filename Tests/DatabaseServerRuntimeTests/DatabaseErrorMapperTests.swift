@@ -433,6 +433,23 @@ struct DatabaseErrorMapperTests {
         )
         #expect(invalidExpression.message == cause.description)
 
+        let numericFailures: [(DatabaseExpressionEvaluationError, String)] = [
+            (.divisionByZero, "DIVISION_BY_ZERO"),
+            (.numericOverflow, "NUMERIC_OVERFLOW"),
+            (.numericUnderflow, "NUMERIC_UNDERFLOW"),
+            (.nonFiniteValue, "NON_FINITE_NUMERIC_VALUE"),
+            (.numericDomain(operation: "SQRT"), "INVALID_NUMERIC_DOMAIN"),
+        ]
+        for (numericCause, expectedCode) in numericFailures {
+            let mapped = mapper.remoteError(
+                for: CanonicalReadError.expressionEvaluation(numericCause),
+                context: context
+            )
+            expect(mapped, category: .invalidRequest, code: expectedCode)
+            #expect(mapped.message == numericCause.description)
+            #expect(mapped.retryability == .never)
+        }
+
         let resourceLimit = mapper.remoteError(
             for: DatabaseQueryExecutionError.rdfLiteralTooLarge(
                 requiredUTF8Count: 4_096,
