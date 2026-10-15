@@ -1016,7 +1016,7 @@ struct DatabaseGraphQueryPagingTests {
         let container = try await makeContainer()
         let entity = DatabaseGraphQueryStatement.persistableType
         let sparqlFunction = FunctionCall(
-            name: "SPARQL",
+            name: "sparql",
             arguments: [
                 .column(ColumnRef(entity)),
                 .literal(

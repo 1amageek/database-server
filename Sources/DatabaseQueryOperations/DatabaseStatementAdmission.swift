@@ -21,19 +21,24 @@ package struct DatabaseStatementAdmission: Sendable {
             parameters: parameters,
             structuralLimits: structuralLimits
         )
-        let bound = try binder.bind(parsed)
-        switch bound {
-        case .select(let query) where !query.source.usesSPARQLSemantics:
-            break
-        default:
-            try SPARQLSemanticValidator.validate(
-                bound,
-                limits: structuralLimits
+        if case .select(let query) = parsed,
+           !query.source.usesSPARQLSemantics {
+            try binder.validate(parsed)
+            return ValidatedDatabaseStatement(
+                statement: parsed,
+                structuralLimits: structuralLimits,
+                parameters: parameters
             )
         }
+        let bound = try binder.bind(parsed)
+        try SPARQLSemanticValidator.validate(
+            bound,
+            limits: structuralLimits
+        )
         return ValidatedDatabaseStatement(
             statement: bound,
-            structuralLimits: structuralLimits
+            structuralLimits: structuralLimits,
+            parameters: []
         )
     }
 

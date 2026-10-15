@@ -156,7 +156,8 @@ struct DatabaseCompositionQueryAdapter {
                     source: source,
                     options: CompositionQueryExecutionOptions(
                         pageSize: pageLimit,
-                        readContext: execution
+                        readContext: execution,
+                        parameters: request.parameters
                     )
                 ) { event in
                     try await adapter.receive(event)

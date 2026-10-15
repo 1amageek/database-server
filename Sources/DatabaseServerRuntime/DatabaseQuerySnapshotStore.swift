@@ -2586,7 +2586,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
     ) throws -> ByteString {
         let normalized = QueryExecuteOperation.Request(
             input: .ir(statement),
-            parameters: [],
+            parameters: request.parameters,
             graphPartitions: request.graphPartitions,
             page: QueryExecuteOperation.Page(limit: request.page.limit),
             budget: request.budget

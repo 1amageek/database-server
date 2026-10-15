@@ -82,7 +82,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 request: request,
                 context: context,
                 workMeter: workMeter,
-                structuralLimits: admittedStatement.structuralLimits
+                structuralLimits: admittedStatement.structuralLimits,
+                parameters: admittedStatement.parameters
             )
         }
     }
@@ -92,7 +93,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter,
-        structuralLimits: QueryStructuralLimits
+        structuralLimits: QueryStructuralLimits,
+        parameters: [QueryParameter]
     ) async throws -> QueryExecuteOperation.Response {
         #if DATABASE_SERVER_MULTI_BASE
         if case .composition = context.target {
@@ -114,7 +116,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     request: request,
                     context: context,
                     workMeter: workMeter,
-                    structuralLimits: structuralLimits
+                    structuralLimits: structuralLimits,
+                    parameters: parameters
                 )
             )
         case .ask(let query):
@@ -208,7 +211,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext,
         workMeter: DatabaseWorkMeter,
-        structuralLimits: QueryStructuralLimits
+        structuralLimits: QueryStructuralLimits,
+        parameters: [QueryParameter]
     ) async throws -> QueryRowPage {
         #if DATABASE_SERVER_MULTI_BASE
         if case .composition = context.target {
@@ -296,7 +300,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                                 query,
                                 workMeter: workMeter,
                                 session: snapshot.session,
-                                structuralLimits: structuralLimits
+                                structuralLimits: structuralLimits,
+                                parameters: parameters
                             )
                         let response = try await prepared.execute(
                             in: snapshot.session,
@@ -361,7 +366,8 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     query,
                     workMeter: workMeter,
                     session: snapshot.session,
-                    structuralLimits: structuralLimits
+                    structuralLimits: structuralLimits,
+                    parameters: parameters
                 )
             let readPoint = DatabaseTransactionReadPoint.value(
                 domainID: lease.domainIdentifier,

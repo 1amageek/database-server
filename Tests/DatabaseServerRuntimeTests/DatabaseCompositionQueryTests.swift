@@ -32,6 +32,39 @@ struct DatabaseCompositionQueryTests {
         [try QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)]
     }
 
+    @Test("SQL and QueryIR Composition parameters survive binding and durable paging")
+    func parametersSurviveCompositionPaging() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        try await seed(fixture)
+        let query = SelectQuery(
+            projection: .items([ProjectionItem(.col("priority"), alias: "priority")]),
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
+            filter: .greaterThanOrEqual(.col("priority"), .parameter(.position(1))),
+            orderBy: [SortKey(.col("priority"))]
+        )
+        let inputs: [QueryExecuteOperation.Input] = [
+            .ir(.select(query)),
+            .text(language: .sql, statement: "SELECT priority FROM \"\(DatabaseEndpointEntity.persistableType)\" WHERE priority >= $1 ORDER BY priority"),
+        ]
+        let parameters = [QueryParameter(position: 1, value: .primitive(.int64(2)))]
+        for (index, input) in inputs.enumerated() {
+            let first = try await successfulPage(
+                QueryExecuteOperation.Request(input: input, parameters: parameters, page: .init(limit: 2)),
+                requestID: UInt64(910 + index * 2), fixture: fixture
+            )
+            #expect(try priorities(first) == [2, 3])
+            let continuation = try #require(first.continuation)
+            let second = try await successfulPage(
+                QueryExecuteOperation.Request(input: input, parameters: parameters, page: .init(limit: 2, continuation: continuation)),
+                requestID: UInt64(911 + index * 2), fixture: fixture
+            )
+            #expect(try priorities(second) == [4])
+            #expect(second.columns == first.columns)
+            #expect(second.continuation == nil)
+        }
+    }
+
     @Test("Composition preserves duplicate column labels across durable pages")
     func duplicateColumnsPreserveProvenance() async throws {
         let fixture = try await makeFixture()

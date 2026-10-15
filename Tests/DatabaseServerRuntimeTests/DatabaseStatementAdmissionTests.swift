@@ -7,6 +7,23 @@ import Testing
 
 @Suite("Database statement admission")
 struct DatabaseStatementAdmissionTests {
+    @Test("SQL admission preserves parameter references and declarations")
+    func sqlParametersRetainIdentity() throws {
+        let parameters = [
+            QueryParameter(position: 1, value: .primitive(.null), type: .sql(.integer))
+        ]
+        let admitted = try DatabaseStatementAdmission(
+            structuralLimits: .default
+        ).admit(.text(language: .sql, statement: "SELECT $1::integer AS value, $1::text AS label"), parameters: parameters)
+        #expect(admitted.parameters == parameters)
+        guard case .select(let query) = admitted.statement,
+              case .items(let items) = query.projection,
+              case .cast(.parameter(.position(1)), _) = items[0].expression else {
+            Issue.record("SQL admission erased the parameter occurrence")
+            return
+        }
+    }
+
     @Test("Statement mutation preparation uses configured structural limits")
     func mutationPreparationUsesConfiguredStructuralLimits() throws {
         let admission = DatabaseStatementAdmission(

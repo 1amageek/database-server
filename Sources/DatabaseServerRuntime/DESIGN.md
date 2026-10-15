@@ -110,6 +110,22 @@ follow Wire and are not renegotiated by this target.
 - Canonical SQLSTATE classification is an adaptation of typed failures, not a
   replacement for their original cause or cleanup outcome.
 
+### S03 SQL admission relay
+
+DatabaseStatementAdmission uses Kit's non-substituting validation for SQL text
+and relational SQL IR. Original parameter references, supplied values and
+explicit declarations reach Framework's
+[binding/prepared execution boundary](../../../database-framework/Sources/Database/DESIGN.md#s03-sql-binding-and-local-diagnostic-bridge).
+The validated carrier retains the SQL parse arena/root and optional source map
+for that request; existing SPARQL/GraphTerm replacement and language gates remain.
+Server owns structural admission and typed mapping, not SQL inference or a
+second binder. Query handling passes parameters to preflight, prepared execution
+and zero-row metadata consistently, including MultiBase member paths. Existing
+authority, work meter, publication, lazy page and cancellation contracts remain.
+S03-C02/C03/C10/C12 require actual SQL/IR invocation and no declaration erasure;
+final remote SQLSTATE/details and CLI display remain S16. Unrelated native host
+authentication work is outside this change.
+
 ## Runtime Flows
 
 For ordinary reads, Framework closes the data snapshot before Server admits
@@ -207,3 +223,15 @@ Changes to Wire values recheck Client/CLI preservation; Framework result or
 closure changes recheck this target's page owners and durable publication.
 The full PostgreSQL semantic corpus stays owned by Framework, rather than
 being repeated for every transport.
+
+### S03 continuation parameter identity
+
+A durable query continuation identifies the canonical admitted statement and
+its supplied parameter declarations and values. The fingerprint normalizes the
+statement into QueryIR and removes only continuation bytes; it preserves each
+parameter's position, optional name, optional type, and canonical value through
+DatabaseWire encoding. SQL admission retains parameter references, so clearing
+parameters would incorrectly equate distinct executions. An unchanged request
+can resume its saved result; a changed parameter value, declared type, or name
+rejects that continuation before returning rows. SPARQL substitution retains
+its admitted statement and the same supplied parameter identity.

@@ -5,12 +5,15 @@ import DatabaseKit
 public struct ValidatedDatabaseStatement: Sendable {
     public let statement: QueryStatement
     public let structuralLimits: QueryStructuralLimits
+    public let parameters: [QueryParameter]
 
     init(
         statement: QueryStatement,
-        structuralLimits: QueryStructuralLimits
+        structuralLimits: QueryStructuralLimits,
+        parameters: [QueryParameter]
     ) {
         self.statement = statement
         self.structuralLimits = structuralLimits
+        self.parameters = parameters
     }
 }

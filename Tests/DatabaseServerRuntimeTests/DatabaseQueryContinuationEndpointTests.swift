@@ -13,6 +13,59 @@ import Testing
 
 @Suite("Canonical query continuation endpoint", .serialized)
 struct DatabaseQueryContinuationEndpointTests {
+    @Test("SQL continuations retain the supplied parameter value")
+    func continuationRetainsSQLParameterValue() async throws {
+        let endpoint = try await makeEndpoint()
+        let sql = "SELECT id FROM \"\(DatabaseEndpointEntity.persistableType)\" WHERE priority >= $1 ORDER BY id"
+        let parameter = QueryParameter(position: 1, value: .primitive(.int64(0)), type: .sql(.bigint))
+        let first = try await successfulPage(
+            sqlRequest(sql, parameters: [parameter]), requestID: 110, endpoint: endpoint
+        )
+        let continuation = try #require(first.continuation)
+        #expect(try first.materializedRows(maximumCount: 1).map { try identifier(from: $0, columns: first.columns) } == ["entity-0"])
+        let changed = QueryParameter(position: 1, value: .primitive(.int64(1)), type: .sql(.bigint))
+        let error = try await remoteFailure(
+            sqlRequest(sql, parameters: [changed], continuation: continuation),
+            requestID: 111, endpoint: endpoint
+        )
+        expectInvalidContinuation(error)
+        let second = try await successfulPage(
+            sqlRequest(sql, parameters: [parameter], continuation: continuation),
+            requestID: 112, endpoint: endpoint
+        )
+        #expect(try second.materializedRows(maximumCount: 1).map { try identifier(from: $0, columns: second.columns) } == ["entity-1"])
+    }
+
+    @Test("SQL continuations retain typed NULL and optional parameter name identity")
+    func continuationRetainsSQLParameterDeclaration() async throws {
+        let endpoint = try await makeEndpoint()
+        let sql = "SELECT id, $1 AS value FROM \"\(DatabaseEndpointEntity.persistableType)\" ORDER BY id"
+        let parameter = QueryParameter(position: 1, name: "value", value: .primitive(.null), type: .sql(.integer))
+        let first = try await successfulPage(
+            sqlRequest(sql, parameters: [parameter]), requestID: 113, endpoint: endpoint
+        )
+        let continuation = try #require(first.continuation)
+        #expect(first.columns[1].type == .sql(.integer))
+        #expect(try first.materializedRows(maximumCount: 1).first?.values[1] == .primitive(.null))
+        let changedParameters = [
+            QueryParameter(position: 1, name: "value", value: .primitive(.null), type: .sql(.text)),
+            QueryParameter(position: 1, name: "other", value: .primitive(.null), type: .sql(.integer))
+        ]
+        for (index, changed) in changedParameters.enumerated() {
+            let error = try await remoteFailure(
+                sqlRequest(sql, parameters: [changed], continuation: continuation),
+                requestID: UInt64(114 + index), endpoint: endpoint
+            )
+            expectInvalidContinuation(error)
+        }
+        let second = try await successfulPage(
+            sqlRequest(sql, parameters: [parameter], continuation: continuation),
+            requestID: 116, endpoint: endpoint
+        )
+        #expect(second.columns == first.columns)
+        #expect(try second.materializedRows(maximumCount: 1).first?.values == [.primitive(.string("entity-1")), .primitive(.null)])
+    }
+
     @Test("positional duplicate labels survive first and durable continuation pages")
     func duplicateLabelsSurviveContinuation() async throws {
         let endpoint = try await makeEndpoint()
@@ -452,6 +505,18 @@ struct DatabaseQueryContinuationEndpointTests {
             predicate: try .iri(validating: "urn:calendar-entry"),
             object: try .iri(validating: "urn:event:\(id)"),
             graph: nil
+        )
+    }
+
+    private func sqlRequest(
+        _ sql: String,
+        parameters: [QueryParameter],
+        continuation: ByteString? = nil
+    ) -> QueryExecuteOperation.Request {
+        QueryExecuteOperation.Request(
+            input: .text(language: .sql, statement: sql),
+            parameters: parameters,
+            page: QueryExecuteOperation.Page(limit: 1, continuation: continuation)
         )
     }
 
