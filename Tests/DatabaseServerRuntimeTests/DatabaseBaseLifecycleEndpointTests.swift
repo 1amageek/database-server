@@ -210,7 +210,7 @@ struct DatabaseBaseLifecycleEndpointTests {
             request: QueryExecuteOperation.Request(
                 input: .text(
                     language: .sql,
-                    statement: "SELECT * FROM DatabaseEndpointEntity"
+                    statement: "SELECT * FROM \"DatabaseEndpointEntity\""
                 )
             ),
             authorization: TestBaseEnvironment.authorization,

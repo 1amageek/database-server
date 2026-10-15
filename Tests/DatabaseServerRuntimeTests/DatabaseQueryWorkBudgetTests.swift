@@ -109,7 +109,7 @@ struct DatabaseQueryWorkBudgetTests {
         let request = QueryExecuteOperation.Request(
             input: .text(
                 language: .sql,
-                statement: "SELECT id, title FROM DatabaseEndpointEntity"
+                statement: "SELECT id, title FROM \"DatabaseEndpointEntity\""
             ),
             page: QueryExecuteOperation.Page(limit: 1)
         )
