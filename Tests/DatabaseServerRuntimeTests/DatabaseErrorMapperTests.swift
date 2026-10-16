@@ -485,6 +485,80 @@ struct DatabaseErrorMapperTests {
             }
             #expect(mapper.remoteError(for: source, context: context).details["position"] == .uint64(7))
         }
+        let intrinsicFailures: [QueryValueError] = [
+            .invalidNumeric(offset: 0, reason: "invalid"), .invalidUUID(offset: 1, reason: "invalid"),
+            .invalidBinary(offset: 2, reason: "invalid"), .invalidNumericDisplayScale(-1),
+            .numericOutOfRange, .invalidJSON(offset: 3, reason: "invalid"), .invalidUTF8(offset: 4),
+            .nonCanonicalJSONB, .malformedArrayInput(offset: 5, reason: "invalid"),
+            .invalidArrayInputIndex(index: 2, count: 1), .invalidDimensionCount(7),
+            .invalidDimension(lowerBound: 0, length: -1), .dimensionProductOverflow,
+            .elementCountMismatch(expected: 2, actual: 1), .elementTypeMismatch(index: 1),
+            .incompatibleType, .invalidColumnNumber(0), .invalidPersistenceDescriptor,
+            .invalidPersistencePayload(reason: "invalid"), .intervalOutOfRange, .timeOutOfRange,
+            .unknownRetainedByteCount, .resourceLimit(resource: "retainedBytes", actual: 2, maximum: 1),
+            .arithmeticOverflow,
+        ]
+        for cause in intrinsicFailures {
+            let expression = DatabaseExpressionEvaluationError.queryValue(cause)
+            let read = CanonicalReadError.expressionEvaluation(expression, occurrence: occurrence)
+            let sources = [
+                SQLBindingSourceFailure(cause: .expression(expression), occurrence: occurrence, sourceMap: parsed.sourceMap),
+                SQLBindingSourceFailure(cause: .read(read), occurrence: occurrence, sourceMap: parsed.sourceMap),
+            ]
+            let failures: [any Error] = [cause, expression, read,
+                CanonicalSQLBindingFailure(cause: .expression(expression), occurrence: occurrence, root: parsed.root),
+                CanonicalSQLBindingFailure(cause: .read(read), occurrence: occurrence, root: parsed.root),
+                sources[0], sources[1]]
+            for failure in failures {
+                let mapped = mapper.remoteError(for: failure, context: context)
+                expect(mapped, category: .invalidRequest, code: "INVALID_QUERY_VALUE")
+                #expect(mapped.message == expression.description)
+                #expect(mapped.retryability == .never)
+            }
+            for source in sources {
+                #expect(mapper.remoteError(for: source, context: context).details["position"] == .uint64(7))
+            }
+        }
+        let collectionFailures: [SQLCollectionError] = [
+            .invalidArrayShape, .arraySubscriptOutOfRange,
+            .invalidArrayInput(offset: 0, reason: "missing dimension"),
+            .invalidArrayArgument(function: "array_position"),
+            .nullArraySubscript(function: "array_position"),
+            .jsonArrayRootRequired(function: "json_array_length"),
+            .jsonObjectRootRequired(function: "json_object_keys"),
+            .jsonContainerRootRequired(operation: "jsonb_set"),
+            .oddJSONObjectArgumentCount(actual: 3),
+            .nullJSONObjectKey(argument: 1), .invalidJSONObjectKey(argument: 3),
+            .multidimensionalJSONMutationPath(rank: 2),
+            .nullJSONMutationPathElement(position: 1),
+            .invalidJSONMutationPathIndex(position: 2, text: "invalid"),
+            .existingJSONInsertKey(key: "present"),
+        ]
+        for cause in collectionFailures {
+            let direct = mapper.remoteError(for: cause, context: context)
+            expect(direct, category: .invalidRequest, code: "INVALID_COLLECTION_ARGUMENT")
+            #expect(direct.message == cause.description)
+            #expect(direct.retryability == .never)
+            let expression = DatabaseExpressionEvaluationError.collection(cause)
+            let read = CanonicalReadError.expressionEvaluation(expression, occurrence: occurrence)
+            let sources = [
+                SQLBindingSourceFailure(cause: .expression(expression), occurrence: occurrence, sourceMap: parsed.sourceMap),
+                SQLBindingSourceFailure(cause: .read(read), occurrence: occurrence, sourceMap: parsed.sourceMap),
+            ]
+            let failures: [any Error] = [expression, read,
+                CanonicalSQLBindingFailure(cause: .expression(expression), occurrence: occurrence, root: parsed.root),
+                CanonicalSQLBindingFailure(cause: .read(read), occurrence: occurrence, root: parsed.root),
+                sources[0], sources[1]]
+            for failure in failures {
+                let mapped = mapper.remoteError(for: failure, context: context)
+                expect(mapped, category: .invalidRequest, code: "INVALID_COLLECTION_ARGUMENT")
+                #expect(mapped.message == expression.description)
+                #expect(mapped.retryability == .never)
+            }
+            for source in sources {
+                #expect(mapper.remoteError(for: source, context: context).details["position"] == .uint64(7))
+            }
+        }
         let zoneFailures: [(SQLTimeZoneError, OperationErrorCategory, String)] = [
             (.unknownZone, .invalidRequest, "INVALID_TIME_ZONE"),
             (.rulesUnavailable, .unavailable, "TIME_ZONE_RULES_UNAVAILABLE"),

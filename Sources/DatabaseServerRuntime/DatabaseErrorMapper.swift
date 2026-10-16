@@ -613,11 +613,21 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 return remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
             }
         }
+        if let valueError = error as? QueryValueError {
+            return remoteError(for: DatabaseExpressionEvaluationError.queryValue(valueError),
+                context: context, limits: limits, mappingDepth: mappingDepth + 1)
+        }
+        if let collectionError = error as? SQLCollectionError {
+            return RemoteOperationError(category: .invalidRequest, code: "INVALID_COLLECTION_ARGUMENT",
+                message: collectionError.description, retryability: .never)
+        }
         if let zoneError = error as? SQLTimeZoneError { return Self.map(zoneError) }
         if let expressionError = error as? DatabaseExpressionEvaluationError {
             if let temporal = Self.mapTemporal(expressionError) { return temporal }
             let code: String
             switch expressionError {
+            case .collection: code = "INVALID_COLLECTION_ARGUMENT"
+            case .queryValue: code = "INVALID_QUERY_VALUE"
             case .invalidFunctionArgument: code = "INVALID_FUNCTION_ARGUMENT"
             case .invalidPattern: code = "INVALID_PATTERN"
             case .unsupportedPattern: code = "UNSUPPORTED_PATTERN"
@@ -2365,6 +2375,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             if let temporal = mapTemporal(cause) { return temporal }
             let code: String
             switch cause {
+            case .collection: code = "INVALID_COLLECTION_ARGUMENT"
+            case .queryValue: code = "INVALID_QUERY_VALUE"
             case .invalidFunctionArgument: code = "INVALID_FUNCTION_ARGUMENT"
             case .invalidPattern: code = "INVALID_PATTERN"
             case .unsupportedPattern: code = "UNSUPPORTED_PATTERN"

@@ -273,3 +273,19 @@ source-position wrapper. No temporal malformed/unsupported/resource failure
 becomes empty rows, NULL or a retryable success. Numeric nonfinite output keeps
 its existing profile failure. Owning tests check direct and wrapped mappings;
 SchemaOperations separately owns durable opaque source-scope relay.
+
+### S07 collection failures
+
+Framework's [selected collection owner](../../../database-framework/Sources/DatabaseEngine/QueryExecution/DESIGN.md#typed-collection-failures)
+owns SQLCollectionError and its DatabaseExpressionEvaluationError.collection
+wrapper. Runtime maps that wrapper directly and through canonical source
+failure wrappers to invalidRequest, code INVALID_COLLECTION_ARGUMENT,
+retryability never, preserving the English cause description. Intrinsic
+malformed/limit, cancellation and work failures keep their existing mappings;
+no failure becomes NULL or a successful empty response. SQLSTATE remains S16.
+The queryValue(QueryValueError) expression wrapper maps to INVALID_QUERY_VALUE,
+invalidRequest and never retry, preserving the original cause through source
+wrappers without relying on runtime reflection for its description.
+DatabaseErrorMapperTests must exercise direct/wrapped array and JSON causes and
+retain existing temporal/pattern mappings. Server's unrelated user changes are
+not prerequisites for this mapping or its verification graph.
