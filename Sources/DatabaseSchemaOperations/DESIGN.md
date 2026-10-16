@@ -1,0 +1,90 @@
+# DatabaseSchemaOperations
+
+## Purpose and Scope
+
+This internal Server module owns schema-operation orchestration, schema-change
+analysis, runtime-factory invocation and durable schema-apply job plans/state.
+Parent: [Database Server](../../DESIGN.md). Children: none. It is an internal
+module, not a supported reusable package product. Framework owns schema
+execution, Directory resolution, physical index work and transactions.
+
+## Responsibilities and Boundaries
+
+The module records the admitted schema job inputs and delegates execution to the
+Framework runtime. It persists enough Framework-owned work metadata to resume
+builds and retirements after restart. It does not reinterpret temporal values,
+index ordering, source Directory identity or the schema authority that issued
+that work. Application runtime factories retain their existing ownership.
+
+## Related Designs
+
+| Design | Relationship | Contract Used | Summary | Cautions |
+|---|---|---|---|---|
+| [Server](../../DESIGN.md) | parent | Internal schema-operation and durable job boundary | Composes this module. | User host configuration is not changed by job metadata adaptation. |
+| [Server Runtime](../DatabaseServerRuntime/DESIGN.md) | coordinates with | Admitted operation and job dispatch | Invokes schema-operation orchestration. | Preserve control/data transaction separation. |
+| [Framework Index](../../../database-framework/Sources/DatabaseEngine/Index/DESIGN.md) | depends on | DatabaseIndexStorageScope and opaque scope codec | Owns physical work and source Directory descriptors. | The Server never reconstructs SQL descriptor meaning. |
+| [Framework Directory](../../../database-framework/Sources/DatabaseEngine/Directory/DESIGN.md) | depends on | Total canonical Directory resolution | Resolves retained source partition values. | The target/current schema cannot replace the captured source metadata. |
+
+## Architecture
+
+```text
+admitted schema operation
+  -> DatabaseSchemaApplyJobPlan + state in control storage
+      -> opaque Framework scope bytes + exact work identity
+          -> restart/resume
+              -> Framework build/retire execution in data transaction
+                  -> durable completion in control storage
+```
+
+## Contracts and Invariants
+
+`DatabaseSchemaApplyJobPlan` retains each Framework index scope as bounded opaque
+bytes produced by `DatabaseIndexStorageScopeCodec`. The Framework scope carries
+the source Directory components and only the dynamic-field descriptors needed
+to resolve them after source entity deletion. Server metadata does not become a
+second Directory/schema authority. The complete scope participates in plan
+identity and replay validation.
+
+S06 updates the single schema-apply durable format from11 to12 coherently with
+Framework scope encoding. There is no legacy alias or fallback to the currently
+published schema. A scope decode failure remains an explicit typed persistent
+job failure; it cannot become an empty scope, skipped retirement or successful
+completion. The Server neither derives temporal sentinels nor examines SQL
+extension object keys. Existing application-owned runtime factory and user host
+configuration files remain outside this change.
+
+## Runtime Flows
+
+A job captures the Framework work scope at its existing schema-generation
+boundary, persists the plan, executes bounded slices, and resumes from that
+exact plan after restart. A target schema may remove the source entity;
+retirement still resolves through the old source descriptors retained in the
+scope. `DatabaseDataOperationExecutor` relays the retirement-specific partition
+page API, and only the retiring branch of `DatabaseSchemaApplyResumableOperation`
+uses it. Build paging keeps its existing current-schema contract. Data execution completes before control-storage completion is recorded.
+
+## State, Ownership, and Lifecycle
+
+The durable plan owns its scope bytes. Framework decode reconstructs the
+immutable execution scope and validates all metadata before Directory/index
+work. Existing job-state ownership, cancellation, idempotency, process lifecycle
+and transaction boundaries are unchanged.
+
+## Failure, Concurrency, and Constraints
+
+Malformed, incomplete, mismatched or unsupported scope bytes fail through
+`PersistentJobPayloadError` with the Framework cause boundary preserved. The
+existing bounded codec and job payload limits apply. No new mutable shared state,
+service, credential or synchronization path is introduced.
+
+## Verification and Change Impact
+
+The existing `SchemaIndexJobRestartSQLiteTests.pendingBuildResumesAfterRestart()`
+scenario additionally proves a schema-apply plan round trip, then a separate
+Framework migration publication and SQLite restart with SQL infinity/TIME24
+partition scope, source-entity deletion, and authoritative retirement. The
+normal Server apply migration-required gate is preserved. Assertions retain exact original payloads and source descriptors;
+corrupt metadata must fail rather than bind a target/current schema. Framework
+codec tests own byte/metadata validation; Framework Directory/index tests own
+canonical components and temporal key order. Server host configuration and
+unrelated operation behavior remain separate proof subjects.

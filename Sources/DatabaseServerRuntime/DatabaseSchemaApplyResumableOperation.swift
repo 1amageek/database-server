@@ -389,7 +389,7 @@ public struct DatabaseSchemaApplyResumableOperation:
                 configuration: .batch
             ) { transaction in
                 switch target.scope {
-                case .entity(let entity, _):
+                case .entity(let entity, _, _):
                     guard let partitions = state.activePartitions else {
                         throw DatabaseJobRuntimeError.corruptedState
                     }
@@ -529,7 +529,7 @@ public struct DatabaseSchemaApplyResumableOperation:
                 transaction: transaction
             )
         }
-        guard case .entity(let entityName, _) = target.scope else {
+        guard case .entity(let entityName, _, _) = target.scope else {
             throw DatabaseJobRuntimeError.corruptedState
         }
         let usesDynamicDirectory = target.scope.usesDynamicDirectory
@@ -848,10 +848,10 @@ public struct DatabaseSchemaApplyResumableOperation:
                     )
                 }
                 switch target.scope {
-                case .entity(let entity, _):
+                case .entity(_, _, _):
                     if target.scope.usesDynamicDirectory {
-                        let page = try await executor.partitionCatalogPage(
-                            entity: entity,
+                        let page = try await executor.retirementPartitionCatalogPage(
+                            target,
                             continuation: state.nextPartitionContinuation,
                             limit: 1,
                             transaction: transaction.executionStorageAccess

@@ -314,3 +314,11 @@ Changes to framework retained-result or Composition contracts require a
 cross-level review of this document and the framework designs before server
 callers are migrated. Changes to active-slot or continuation persistence
 require both runtime state tests and the package integration matrix.
+
+
+## Schema Operations Module
+
+The direct child [DatabaseSchemaOperations](Sources/DatabaseSchemaOperations/DESIGN.md)
+owns schema job planning and durable publication coordination. Its S06 scope
+metadata uses the Framework-owned opaque codec, including source Directory
+types required after an entity is removed. SQL meaning remains in Framework.

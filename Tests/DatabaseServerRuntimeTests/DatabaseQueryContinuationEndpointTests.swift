@@ -128,7 +128,7 @@ struct DatabaseQueryContinuationEndpointTests {
         )
         let interval = try QueryIntervalValue(period: CalendarPeriod(months: 2, days: 3), time: TimeSpan(seconds: 4))
         let values: [QueryValue] = [.numeric(numeric), .json(json), .jsonb(try QueryJSONBValue(json: json, limits: limits)), .array(array), .interval(interval)]
-        let types: [QueryColumnType] = [.sql(.decimal(precision: nil, scale: nil)), .sql(.json), .sql(.jsonb), .sql(.array(.integer)), .sql(.interval)]
+        let types: [QueryColumnType] = [.sql(.decimal(precision: nil, scale: nil)), .sql(.json), .sql(.jsonb), .sql(.array(.integer)), .sql(.interval())]
         let query = SelectQuery(
             projection: .items(zip(values, types).enumerated().map { index, pair in
                 ProjectionItem(.literal(.queryValue(pair.0, type: pair.1)), alias: "rich-\(index)")

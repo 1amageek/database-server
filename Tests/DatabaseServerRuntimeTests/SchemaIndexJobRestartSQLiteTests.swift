@@ -149,6 +149,100 @@ struct SchemaIndexJobRestartSQLiteTests {
         let index = try await indexStatus(container: reopened)
         #expect(index.indexState == .readable)
         #expect(index.indexedEntityCount == 1)
+        try await capturedTemporalRetirementSurvivesSourceDeletion()
+    }
+
+    private func capturedTemporalRetirementSurvivesSourceDeletion() async throws {
+        let database = try SQLiteTestDatabase(prefix: "temporal-retirement-restart")
+        defer { database.remove() }
+        let fields = [
+            FieldSchema(name: "id", fieldNumber: 1, type: .string),
+            FieldSchema(name: "day", fieldNumber: 2, type: .date, queryType: .sql(.date)),
+            FieldSchema(name: "clock", fieldNumber: 3, type: .time, queryType: .sql(.time(withTimeZone: false)))
+        ]
+        let descriptor = try IndexDescriptor(entityName: "RetiredTemporal", declaration: .ordered(
+            name: "retired_temporal_clock", keys: [.ascending(FieldIdentity(name: "clock", number: 3))]), fieldSchemas: fields)
+        let temporal = try Schema.Entity(name: "RetiredTemporal", identifierType: .string, fields: fields,
+            directoryComponents: [.staticPath("retired-temporal"),
+                .dynamicField(fieldName: "day"), .dynamicField(fieldName: "clock")], directoryLayer: .partition,
+            indexes: [descriptor])
+        let account = try RestartSchemaBuildAccountV1.schemaEntity
+        let sourceSchema = try Schema(entities: [account, temporal], version: Schema.Version(1, 0, 0))
+        let targetSchema = try Schema(entities: [account], version: Schema.Version(2, 0, 0))
+        func stored(_ value: QueryValue, type: QueryColumnType) throws -> FieldValue {
+            try QueryFieldStorageAdapter.encode(value, type: type,
+                limits: QueryFieldStorageAdapter.inferredLimits(for: value, type: type))
+        }
+        let day = try stored(.dateInfinity(.negative), type: .sql(.date))
+        let clock = try stored(.time(QueryTimeValue(microsecondsSinceMidnight: 86_400_000_000)), type: .sql(.time(withTimeZone: false)))
+        let partitions = try FieldObject([("day", day), ("clock", clock)])
+        let source = try await DBContainer.open(for: sourceSchema,
+            configuration: .testing(storageEngine: SQLiteStorageEngine(configuration: .file(database.path))),
+            runtimeConfiguration: DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(identifier: "temporal-retirement", revision: 1), schema: sourceSchema),
+            security: .testingDisabled)
+        let generation: Subspace
+        let retirement: DatabasePendingIndexRetirement
+        do {
+            try await source.testBaseContext().withTransaction(configuration: .batch) { transaction in
+                try await transaction.savePersistedModel(PersistedModel(entity: temporal.name, fields: [
+                    PersistableField(number: 1, name: "id", value: .string("one")),
+                    PersistableField(number: 2, name: "day", value: day),
+                    PersistableField(number: 3, name: "clock", value: clock)
+                ]), precondition: .notExists)
+            }
+            let directory = try await source.testBaseDirectory(for: temporal,
+                path: AnyDirectoryPath(entity: temporal, partitions: partitions))
+            let identity = try DatabaseIndexStorageIdentity(name: descriptor.name,
+                definitionFingerprint: SchemaManifest.indexFingerprint(descriptor),
+                layoutFingerprint: IndexPhysicalLayout(name: "standard", revision: 1).fingerprint)
+            generation = directory.subspace(SubspaceKey.indexes).subspace(identity.name)
+                .subspace(identity.definitionFingerprint.bytes).subspace(identity.layoutFingerprint)
+            let planned = DatabasePendingIndexRetirement(try DatabaseIndexTransitionPlan.Target(scope: .entity(temporal), identity: identity))
+            try await source.testBaseContext().withTransaction(configuration: .batch) { transaction in
+                let range = generation.range()
+                #expect(try await transaction.executionStorageAccess.collectRange(begin: range.begin, end: range.end, snapshot: false).count == 1)
+                try await source.stageSchemaIndexRetirements([planned], validFor: targetSchema,
+                    indexPhysicalLayouts: [:], transaction: transaction.executionStorageAccess)
+            }
+            // Framework migration owns removal; Server schema apply still requires a migration for entity deletion.
+            _ = try await source.publishSchema(targetSchema, fingerprint: SchemaManifest(schema: targetSchema).fingerprint(),
+                expectedFingerprint: source.schemaFingerprint, idempotencyKey: "temporal-source-delete",
+                authorization: TestBaseEnvironment.authorization,
+                runtimeConfiguration: DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(identifier: "temporal-retirement", revision: 1), schema: targetSchema))
+            retirement = try await source.testBaseContext().withTransaction(configuration: .batch) { transaction in
+                try #require(try await source.pendingSchemaIndexRetirements(validFor: targetSchema,
+                    transaction: transaction.executionStorageAccess).first)
+            }
+            #expect(retirement.scope == planned.scope)
+            #expect(retirement.directoryLayers == [.default, .default, .partition])
+            await source.shutdown()
+        } catch { await source.shutdown(); throw error }
+        let reopened = try await DBContainer.openRestoringSchema(
+            configuration: .testing(storageEngine: SQLiteStorageEngine(configuration: .file(database.path))),
+            security: .testingDisabled) { schema in
+                try DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: DatabaseExecutionRuntimeIdentity(identifier: "temporal-retirement", revision: 1), schema: schema)
+            }
+        defer { await reopened.shutdown() }
+        #expect(reopened.schema.entity(named: temporal.name) == nil)
+        try await reopened.testBaseContext().withTransaction(configuration: .batch) { transaction in
+            let restored = try #require(try await reopened.pendingSchemaIndexRetirements(validFor: targetSchema,
+                transaction: transaction.executionStorageAccess).first)
+            #expect(restored == retirement)
+            let page = try await reopened.executionRetirementPartitionCatalogPage(restored, limit: 1,
+                transaction: transaction.executionStorageAccess)
+            #expect(page.entries.count == 1)
+            #expect(page.entries[0].partitions == partitions)
+            try await reopened.retireSchemaIndexStorage(restored, partitions: page.entries[0].partitions,
+                transaction: transaction.executionStorageAccess)
+            try reopened.completeSchemaIndexRetirement(restored, transaction: transaction.executionStorageAccess)
+            let range = generation.range()
+            #expect(try await transaction.executionStorageAccess.collectRange(begin: range.begin, end: range.end, snapshot: false).isEmpty)
+            #expect(try await reopened.pendingSchemaIndexRetirements(validFor: targetSchema,
+                transaction: transaction.executionStorageAccess).isEmpty)
+        }
     }
 
     private func makeRuntime(

@@ -294,6 +294,7 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseKit", package: "database-kit"),
             ],
+            exclude: ["DESIGN.md"],
             swiftSettings: [
                 .define(
                     "DATABASE_SERVER_MULTI_BASE",

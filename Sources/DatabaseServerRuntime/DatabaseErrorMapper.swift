@@ -1,3 +1,4 @@
+import Database
 import DatabaseCommandOperations
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseGraphOperations
@@ -591,7 +592,30 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             return Self.map(dataSourceError)
         }
         #endif
+        if let sourceFailure = error as? SQLBindingSourceFailure {
+            let cause: any Error
+            switch sourceFailure.cause {
+            case .expression(let error): cause = error
+            case .read(let error): cause = error
+            }
+            let mapped = remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
+            guard let position = sourceFailure.position, let offset = UInt64(exactly: position) else { return mapped }
+            var fields = mapped.details.fields.filter { $0.key != "position" }
+            fields.append((key: "position", value: .uint64(offset)))
+            return RemoteOperationError(category: mapped.category, code: mapped.code,
+                message: mapped.message, retryability: mapped.retryability, details: Self.errorDetails(fields))
+        }
+        if let bindingFailure = error as? CanonicalSQLBindingFailure {
+            switch bindingFailure.cause {
+            case .expression(let cause):
+                return remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
+            case .read(let cause):
+                return remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
+            }
+        }
+        if let zoneError = error as? SQLTimeZoneError { return Self.map(zoneError) }
         if let expressionError = error as? DatabaseExpressionEvaluationError {
+            if let temporal = Self.mapTemporal(expressionError) { return temporal }
             let code: String
             switch expressionError {
             case .invalidFunctionArgument: code = "INVALID_FUNCTION_ARGUMENT"
@@ -2308,9 +2332,37 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
     }
     #endif
 
+    private static func mapTemporal(_ error: DatabaseExpressionEvaluationError) -> RemoteOperationError? {
+        let category: OperationErrorCategory
+        let code: String
+        switch error {
+        case .invalidTemporalInput: category = .invalidRequest; code = "INVALID_TEMPORAL_INPUT"
+        case .temporalValueOutOfRange: category = .invalidRequest; code = "TEMPORAL_VALUE_OUT_OF_RANGE"
+        case .missingTemporalEnvironment: category = .unavailable; code = "TEMPORAL_ENVIRONMENT_UNAVAILABLE"
+        case .timeZone(let cause): return map(cause)
+        default: return nil
+        }
+        return RemoteOperationError(category: category, code: code, message: error.description, retryability: .never)
+    }
+
+    private static func map(_ error: SQLTimeZoneError) -> RemoteOperationError {
+        let category: OperationErrorCategory
+        let code: String
+        switch error {
+        case .unknownZone: category = .invalidRequest; code = "INVALID_TIME_ZONE"
+        case .rulesUnavailable: category = .unavailable; code = "TIME_ZONE_RULES_UNAVAILABLE"
+        case .unsupportedData: category = .invalidRequest; code = "UNSUPPORTED_TIME_ZONE_DATA"
+        case .malformedData: category = .invalidRequest; code = "INVALID_TIME_ZONE_DATA"
+        case .rangeUnavailable: category = .unavailable; code = "TIME_ZONE_RANGE_UNAVAILABLE"
+        case .admissionExceeded: category = .resourceLimit; code = "TIME_ZONE_RESOURCE_LIMIT"
+        }
+        return RemoteOperationError(category: category, code: code, message: error.description, retryability: .never)
+    }
+
     private static func map(_ error: CanonicalReadError) -> RemoteOperationError {
         switch error {
         case .expressionEvaluation(let cause, _):
+            if let temporal = mapTemporal(cause) { return temporal }
             let code: String
             switch cause {
             case .invalidFunctionArgument: code = "INVALID_FUNCTION_ARGUMENT"

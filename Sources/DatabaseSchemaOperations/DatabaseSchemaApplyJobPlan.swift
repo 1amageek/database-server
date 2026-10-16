@@ -27,7 +27,7 @@ public struct DatabaseSchemaApplyJobPlan:
         #endif
     }
 
-    private static let formatVersion: UInt8 = 11
+    private static let formatVersion: UInt8 = 12
 
     package let previousFingerprint: SchemaFingerprint
     package let targetFingerprint: SchemaFingerprint
@@ -75,7 +75,7 @@ public struct DatabaseSchemaApplyJobPlan:
             }
             #endif
             let encodedIndexBuilds = try indexBuilds.map { target in
-                let scope = Self.persistentScope(target.scope)
+                let scope = try Self.persistentScope(target.scope)
                 return FieldValue.object(try FieldObject([
                     (key: "scopeKind", value: .uint8(scope.kind)),
                         (
@@ -100,7 +100,7 @@ public struct DatabaseSchemaApplyJobPlan:
                     ]))
             }
             let encodedIndexRetirements = try indexRetirements.map { target in
-                let scope = Self.persistentScope(target.scope)
+                let scope = try Self.persistentScope(target.scope)
                 return FieldValue.object(try FieldObject([
                 (key: "scopeKind", value: .uint8(scope.kind)),
                         (
@@ -433,86 +433,30 @@ public struct DatabaseSchemaApplyJobPlan:
 
     private static func persistentScope(
         _ scope: DatabaseIndexStorageScope
-    ) -> (kind: UInt8, identifier: String, directory: FieldValue) {
+    ) throws -> (kind: UInt8, identifier: String, directory: FieldValue) {
+        let bytes = try DatabaseIndexStorageScopeCodec.encode(scope)
         switch scope {
-        case .entity(let name, let components):
-            return (
-                0,
-                name,
-                .array(
-                    components.map { component in
-                        switch component {
-                        case .staticPath(let value):
-                            return .array([.uint8(0), .string(value)])
-                        case .dynamicField(let name):
-                            return .array([.uint8(1), .string(name)])
-                        }
-                    })
-            )
-        case .polymorphicGroup(let identifier, let path):
-            return (
-                1,
-                identifier,
-                .array(
-                    path.map {
-                        .array([.uint8(0), .string($0)])
-                    })
-            )
+        case .entity(let name, _, _): return (0, name, .bytes(bytes))
+        case .polymorphicGroup(let identifier, _): return (1, identifier, .bytes(bytes))
         }
     }
 
     private static func indexScope(
-        kind: UInt8,
-        identifier: String,
-        directory: FieldValue
+        kind: UInt8, identifier: String, directory: FieldValue
     ) throws(PersistentJobPayloadError) -> DatabaseIndexStorageScope {
-        guard let values = directory.arrayValue else {
-            throw .invalidValue("Invalid schema apply index directory")
+        guard case .bytes(let bytes) = directory else {
+            throw .invalidValue("Invalid schema apply index scope bytes")
         }
-        var components: [DirectoryPathComponent] = []
-        components.reserveCapacity(values.count)
-        for value in values {
-            guard let pair = value.arrayValue,
-                pair.count == 2,
-                let componentKind = pair[0].uint8Value,
-                let componentValue = pair[1].stringValue,
-                !componentValue.isEmpty
-            else {
-                throw .invalidValue("Invalid schema apply index directory")
-            }
-            switch componentKind {
-            case 0:
-                components.append(.staticPath(componentValue))
-            case 1:
-                components.append(.dynamicField(fieldName: componentValue))
-            default:
-                throw .invalidValue("Invalid schema apply index directory")
-            }
+        let scope: DatabaseIndexStorageScope
+        do { scope = try DatabaseIndexStorageScopeCodec.decode(bytes) }
+        catch { throw .invalidValue("Invalid schema apply source Directory contract") }
+        switch scope {
+        case .entity(let name, _, _):
+            guard kind == 0, name == identifier else { throw .invalidValue("Mismatched schema apply index scope") }
+        case .polymorphicGroup(let name, _):
+            guard kind == 1, name == identifier else { throw .invalidValue("Mismatched schema apply index scope") }
         }
-        switch kind {
-        case 0:
-            return .entity(
-                name: identifier,
-                directoryComponents: components
-            )
-        case 1:
-            var path: [String] = []
-            path.reserveCapacity(components.count)
-            for component in components {
-                guard case .staticPath(let value) = component else {
-                    throw .invalidValue(
-                        "Invalid polymorphic schema apply directory"
-                    )
-                }
-                path.append(value)
-            }
-            return .polymorphicGroup(
-                identifier: identifier,
-                directoryPath: path
-            )
-        default:
-            throw .invalidValue("Invalid schema apply index scope")
-        }
+        return scope
     }
 
     private static func indexTarget(

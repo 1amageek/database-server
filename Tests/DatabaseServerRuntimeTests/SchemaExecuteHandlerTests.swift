@@ -352,10 +352,7 @@ struct SchemaExecuteHandlerTests {
             revision: 1
         )
         let target = try DatabaseIndexTransitionPlan.Target(
-            scope: .entity(
-                name: descriptor.entityName,
-                directoryComponents: entity.directoryComponents
-            ),
+            scope: .entity(entity),
             identity: try DatabaseIndexStorageIdentity(
                 name: descriptor.name,
                 definitionFingerprint: try SchemaManifest.indexFingerprint(

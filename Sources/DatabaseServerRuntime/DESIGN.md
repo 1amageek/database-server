@@ -263,3 +263,13 @@ Framework typed expression failure -> Runtime error mapper -> Wire error
 
 [DatabaseErrorMapperTests](../../Tests/DatabaseServerRuntimeTests/DatabaseErrorMapperTests.swift)
 checks the three distinct codes, messages, category, and retry policy.
+
+
+### S06 temporal failures
+
+DatabaseErrorMapper preserves Framework invalid-temporal-input, temporal-range,
+typed time-zone cause and missing-environment failures, including the existing
+source-position wrapper. No temporal malformed/unsupported/resource failure
+becomes empty rows, NULL or a retryable success. Numeric nonfinite output keeps
+its existing profile failure. Owning tests check direct and wrapped mappings;
+SchemaOperations separately owns durable opaque source-scope relay.

@@ -1,3 +1,5 @@
+@testable import Database
+import QueryAST
 @_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import DatabaseRuntime
@@ -463,6 +465,45 @@ struct DatabaseErrorMapperTests {
                 #expect(mapped.message == patternCause.description)
                 #expect(mapped.retryability == .never)
             }
+        }
+
+        let temporalFailures: [(DatabaseExpressionEvaluationError, OperationErrorCategory, String)] = [
+            (.invalidTemporalInput, .invalidRequest, "INVALID_TEMPORAL_INPUT"),
+            (.temporalValueOutOfRange, .invalidRequest, "TEMPORAL_VALUE_OUT_OF_RANGE"),
+            (.missingTemporalEnvironment, .unavailable, "TEMPORAL_ENVIRONMENT_UNAVAILABLE"),
+        ]
+        let parsed = try SQLParser().parseSelectWithSource("SELECT CURRENT_DATE")
+        let occurrence = try #require(parsed.occurrences.child(of: parsed.root, field: .projection, index: 0))
+        for (cause, category, code) in temporalFailures {
+            let source = SQLBindingSourceFailure(cause: .expression(cause), occurrence: occurrence, sourceMap: parsed.sourceMap)
+            let failures: [any Error] = [cause, CanonicalReadError.expressionEvaluation(cause),
+                CanonicalSQLBindingFailure(cause: .expression(cause), occurrence: occurrence, root: parsed.root), source]
+            for failure in failures {
+                let mapped = mapper.remoteError(for: failure, context: context)
+                expect(mapped, category: category, code: code)
+                #expect(mapped.message == cause.description)
+            }
+            #expect(mapper.remoteError(for: source, context: context).details["position"] == .uint64(7))
+        }
+        let zoneFailures: [(SQLTimeZoneError, OperationErrorCategory, String)] = [
+            (.unknownZone, .invalidRequest, "INVALID_TIME_ZONE"),
+            (.rulesUnavailable, .unavailable, "TIME_ZONE_RULES_UNAVAILABLE"),
+            (.unsupportedData, .invalidRequest, "UNSUPPORTED_TIME_ZONE_DATA"),
+            (.malformedData, .invalidRequest, "INVALID_TIME_ZONE_DATA"),
+            (.rangeUnavailable, .unavailable, "TIME_ZONE_RANGE_UNAVAILABLE"),
+            (.admissionExceeded, .resourceLimit, "TIME_ZONE_RESOURCE_LIMIT"),
+        ]
+        for (cause, category, code) in zoneFailures {
+            let expression = DatabaseExpressionEvaluationError.timeZone(cause)
+            let source = SQLBindingSourceFailure(cause: .read(.expressionEvaluation(expression)), occurrence: occurrence, sourceMap: parsed.sourceMap)
+            let failures: [any Error] = [cause, expression, CanonicalReadError.expressionEvaluation(expression),
+                CanonicalSQLBindingFailure(cause: .expression(expression), occurrence: occurrence, root: parsed.root), source]
+            for failure in failures {
+                let mapped = mapper.remoteError(for: failure, context: context)
+                expect(mapped, category: category, code: code)
+                #expect(mapped.message == cause.description)
+            }
+            #expect(mapper.remoteError(for: source, context: context).details["position"] == .uint64(7))
         }
 
         let resourceLimit = mapper.remoteError(

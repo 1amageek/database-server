@@ -184,6 +184,16 @@ package final class DatabaseDataOperationExecutor: Sendable {
         )
     }
 
+    package func retirementPartitionCatalogPage(
+        _ retirement: DatabasePendingIndexRetirement,
+        continuation: ByteString?,
+        limit: Int,
+        transaction: any TransactionAccess
+    ) async throws -> DatabasePartitionCatalogPage {
+        try await container.executionRetirementPartitionCatalogPage(retirement,
+            continuation: continuation, limit: limit, transaction: transaction)
+    }
+
     package func partitionCatalogPage(
         entity: String,
         continuation: ByteString?,
