@@ -289,3 +289,20 @@ wrappers without relying on runtime reflection for its description.
 DatabaseErrorMapperTests must exercise direct/wrapped array and JSON causes and
 retain existing temporal/pattern mappings. Server's unrelated user changes are
 not prerequisites for this mapping or its verification graph.
+
+### S08 canonical relational and composite carriage
+
+Runtime consumes [canonical QueryIR](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s08-frozen-relational-query-carriage)
+and [result-only composite values](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s08-frozen-composite-values-and-ownership)
+through DatabaseWire. Framework's [selected execution contract](../../../database-framework/Sources/DatabaseEngine/QueryExecution/DESIGN.md#s08-frozen-relational-execution)
+owns query meaning and authorization. Runtime preserves the admitted query and
+parameter values, including expression pagination; request page limits bound
+response paging through ReadExecutionOptions rather than rewriting query
+pagination. Existing complete-row staging and continuation ownership remain
+unchanged. Runtime does not flatten composite fields into model persistence or
+replace unsupported, denied or resource-limited execution with empty success.
+
+The migrated statement-admission, continuation, budget, Composition and SPARQL
+tests exercise the canonical declarations through the existing handlers. Kit's
+Wire tests own descriptor/value encoding, and Framework's SQL tests own the
+relational results; the complete Server package run checks their composition.

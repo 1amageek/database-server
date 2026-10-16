@@ -28,10 +28,8 @@ struct DatabaseQueryContinuationSQLiteTests {
         try context.insert(SQLiteContinuationEntity(id: "first"))
         try context.insert(SQLiteContinuationEntity(id: "second"))
         try await context.save()
-        let query = SelectQuery(
-            projection: .all,
-            source: .table(TableRef(SQLiteContinuationEntity.persistableType))
-        )
+        let query = SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(SQLiteContinuationEntity.persistableType)))
 
         let first = try await execute(
             request(query: query, continuation: nil),

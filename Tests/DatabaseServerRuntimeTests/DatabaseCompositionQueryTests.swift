@@ -37,12 +37,10 @@ struct DatabaseCompositionQueryTests {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
         try await seed(fixture)
-        let query = SelectQuery(
-            projection: .items([ProjectionItem(.col("priority"), alias: "priority")]),
+        let query = SelectQuery(projection: [ProjectionItem(.col("priority"), alias: "priority")],
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
             filter: .greaterThanOrEqual(.col("priority"), .parameter(.position(1))),
-            orderBy: [SortKey(.col("priority"))]
-        )
+            orderBy: [SortKey(.col("priority"))])
         let inputs: [QueryExecuteOperation.Input] = [
             .ir(.select(query)),
             .text(language: .sql, statement: "SELECT priority FROM \"\(DatabaseEndpointEntity.persistableType)\" WHERE priority >= $1 ORDER BY priority"),
@@ -70,13 +68,11 @@ struct DatabaseCompositionQueryTests {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
         try await seed(fixture)
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.col("id"), alias: "value"),
                 ProjectionItem(.col("priority"), alias: "value"),
-            ]),
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
-        )
+            ],
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let first = try await successfulPage(
             QueryExecuteOperation.Request(input: .ir(.select(query)), page: .init(limit: 2)),
             requestID: 900, fixture: fixture
@@ -121,13 +117,11 @@ struct DatabaseCompositionQueryTests {
     func emptyCompositionRetainsColumns() async throws {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.col("priority"), alias: "z"),
                 ProjectionItem(.col("id"), alias: "a"),
-            ]),
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
-        )
+            ],
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let page = try await successfulPage(
             QueryExecuteOperation.Request(input: .ir(.select(query)), page: .init(limit: 2)),
             requestID: 902, fixture: fixture
@@ -729,22 +723,9 @@ struct DatabaseCompositionQueryTests {
             into: fixture.secondaryBaseID,
             container: fixture.container
         )
-        let leftAliased: DataSource = .table(
-            TableRef(
-                schema: nil,
-                table: DatabaseEndpointEntity.persistableType,
-                alias: "lhs"
-            )
-        )
-        let rightAliased: DataSource = .table(
-            TableRef(
-                schema: nil,
-                table: DatabaseEndpointEntity.persistableType,
-                alias: "rhs"
-            )
-        )
-        let query = SelectQuery(
-            projection: .items([
+        let leftAliased: DataSource = .aliased(.table(TableRef(schema: nil, table: DatabaseEndpointEntity.persistableType)), name: "lhs")
+        let rightAliased: DataSource = .aliased(.table(TableRef(schema: nil, table: DatabaseEndpointEntity.persistableType)), name: "rhs")
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .column(ColumnRef(table: "lhs", column: "id")),
                     alias: "id"
@@ -753,7 +734,7 @@ struct DatabaseCompositionQueryTests {
                     .column(ColumnRef(table: "lhs", column: "priority")),
                     alias: "priority"
                 ),
-            ]),
+            ],
             source: .join(
                 JoinClause(
                     type: .inner,
@@ -773,8 +754,7 @@ struct DatabaseCompositionQueryTests {
                         ColumnRef(table: "lhs", column: "priority")
                     )
                 )
-            ]
-        )
+            ])
 
         let page = try await successfulPage(
             QueryExecuteOperation.Request(
@@ -806,8 +786,7 @@ struct DatabaseCompositionQueryTests {
             into: fixture.secondaryBaseID,
             container: fixture.container
         )
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .column(ColumnRef(table: "lhs", column: "priority")),
                     alias: "leftPriority"
@@ -816,27 +795,17 @@ struct DatabaseCompositionQueryTests {
                     .column(ColumnRef(table: "rhs", column: "priority")),
                     alias: "rightPriority"
                 ),
-            ]),
+            ],
             source: .join(
                 JoinClause(
                     type: .inner,
                     left: .base(
                         fixture.primaryBaseID,
-                        .table(
-                            TableRef(
-                                table: DatabaseEndpointEntity.persistableType,
-                                alias: "lhs"
-                            )
-                        )
+                        .aliased(.table(TableRef(table: DatabaseEndpointEntity.persistableType)), name: "lhs")
                     ),
                     right: .base(
                         fixture.secondaryBaseID,
-                        .table(
-                            TableRef(
-                                table: DatabaseEndpointEntity.persistableType,
-                                alias: "rhs"
-                            )
-                        )
+                        .aliased(.table(TableRef(table: DatabaseEndpointEntity.persistableType)), name: "rhs")
                     ),
                     condition: .on(
                         .equal(
@@ -845,8 +814,7 @@ struct DatabaseCompositionQueryTests {
                         )
                     )
                 )
-            )
-        )
+            ))
 
         let page = try await successfulPage(
             QueryExecuteOperation.Request(
@@ -970,8 +938,7 @@ struct DatabaseCompositionQueryTests {
         defer { await fixture.container.shutdown() }
         try await seed(fixture)
         let priority: Expression = .column(ColumnRef(column: "priority"))
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .aggregate(.count(nil, distinct: false)),
                     alias: "count"
@@ -986,11 +953,10 @@ struct DatabaseCompositionQueryTests {
                 ),
                 ProjectionItem(.aggregate(.min(priority)), alias: "minimum"),
                 ProjectionItem(.aggregate(.max(priority)), alias: "maximum"),
-            ]),
+            ],
             source: .table(
                 TableRef(DatabaseEndpointEntity.persistableType)
-            )
-        )
+            ))
         let page = try await successfulPage(
             QueryExecuteOperation.Request(
                 input: .ir(.select(query)),
@@ -1037,17 +1003,15 @@ struct DatabaseCompositionQueryTests {
         defer { await fixture.container.shutdown() }
         try await seed(fixture)
         let title: Expression = .column(ColumnRef(column: "title"))
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .aggregate(.sum(title, distinct: false)),
                     alias: "sum"
                 )
-            ]),
+            ],
             source: .table(
                 TableRef(DatabaseEndpointEntity.persistableType)
-            )
-        )
+            ))
 
         let error = try await remoteFailure(
             QueryExecuteOperation.Request(
@@ -1086,10 +1050,8 @@ struct DatabaseCompositionQueryTests {
             into: fixture.secondaryBaseID,
             container: fixture.container
         )
-        let query = SelectQuery(
-            projection: .all,
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
-        )
+        let query = SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let insufficientBudget = ExecutionBudget(
             maximumRows: 100,
             maximumWorkUnits: 1_000_000,
@@ -1110,10 +1072,12 @@ struct DatabaseCompositionQueryTests {
         #expect(rejected.code == "QUERY_RESOURCE_LIMIT")
         #expect(rejected.message.contains("exceeding 8"))
 
-        // Framework retains Ready rows and source/projected page owners with
-        // at most one lookahead row each. Server adds two destination pages.
-        let sourcePageCount = (rowCount + pageSize - 1) / pageSize
-        let readyRowBound = rowCount + 2 * sourcePageCount * (pageSize + 1)
+        // Base's selected relational merge retains canonical source, pulled,
+        // drained, and lineage owners, then two projected owners and QueryRows.
+        // These seven complete-input owners follow Base/DESIGN.md's frozen
+        // retained-input contract. Server adds first/current destination pages;
+        // continuation requests load stored pages without rerunning the query.
+        let readyRowBound = 7 * rowCount
         let budget = ExecutionBudget(
             maximumRows: 100,
             maximumWorkUnits: 1_000_000,
@@ -1333,11 +1297,10 @@ struct DatabaseCompositionQueryTests {
                 container: fixture.container
             )
         }
-        let query = SelectQuery(
-            projection: .distinctItems([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("subject"))),
                 ProjectionItem(.variable(Variable("object"))),
-            ]),
+            ],
             source: .graphPattern(
                 .bgp(
                     TriplePattern(
@@ -1349,8 +1312,8 @@ struct DatabaseCompositionQueryTests {
             ),
             orderBy: [
                 SortKey(.variable(Variable("subject")))
-            ]
-        )
+            ],
+            quantifier: .distinct)
 
         let page = try await successfulPage(
             QueryExecuteOperation.Request(
@@ -1399,14 +1362,12 @@ struct DatabaseCompositionQueryTests {
     func sparqlServiceIsUnsupported() async throws {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .service(
                 endpoint: "https://example.invalid/sparql",
                 pattern: .basic([]),
                 silent: false
-            )
-        )
+            ))
 
         let error = try await remoteFailure(
             QueryExecuteOperation.Request(
@@ -1424,11 +1385,9 @@ struct DatabaseCompositionQueryTests {
     func sparqlReducedIsUnsupported() async throws {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(.basic([])),
-            reduced: true
-        )
+            reduced: true)
 
         let error = try await remoteFailure(
             QueryExecuteOperation.Request(
@@ -2170,13 +2129,11 @@ struct DatabaseCompositionQueryTests {
         QueryExecuteOperation.Request(
             input: .ir(
                 .select(
-                    SelectQuery(
-                        projection: .all,
-                        source: .table(
+                    SelectQuery(projection: [.wildcard()],
+            source: .table(
                             TableRef(DatabaseEndpointEntity.persistableType)
                         ),
-                        orderBy: [SortKey(.col("priority"))]
-                    )
+            orderBy: [SortKey(.col("priority"))])
                 )
             ),
             page: QueryExecuteOperation.Page(
@@ -2194,15 +2151,14 @@ struct DatabaseCompositionQueryTests {
         QueryExecuteOperation.Request(
             input: .ir(
                 .select(
-                    SelectQuery(
-                        projection: .distinctItems([
+                    SelectQuery(projection: [
                             .column("priority")
-                        ]),
-                        source: .table(
+                        ],
+            source: .table(
                             TableRef(DatabaseEndpointEntity.persistableType)
                         ),
-                        orderBy: [SortKey(.col("priority"))]
-                    )
+            orderBy: [SortKey(.col("priority"))],
+            quantifier: .distinct)
                 )
             ),
             page: QueryExecuteOperation.Page(
@@ -2220,14 +2176,13 @@ struct DatabaseCompositionQueryTests {
         QueryExecuteOperation.Request(
             input: .ir(
                 .select(
-                    SelectQuery(
-                        projection: .all,
-                        source: .table(
+                    SelectQuery(projection: [.wildcard()],
+            source: .table(
                             TableRef(
                                 DatabaseCompositionVectorEntity.persistableType
                             )
                         ),
-                        accessPath: .index(
+            accessPath: .index(
                             IndexScanSource(
                                 indexName:
                                     "DatabaseCompositionVectorEntity_embedding",
@@ -2243,8 +2198,7 @@ struct DatabaseCompositionQueryTests {
                                 ]
                             )
                         ),
-                        limit: 3
-                    )
+            pagination: QueryPagination(limit: .count(.fixed(3), withTies: false)))
                 )
             ),
             page: QueryExecuteOperation.Page(

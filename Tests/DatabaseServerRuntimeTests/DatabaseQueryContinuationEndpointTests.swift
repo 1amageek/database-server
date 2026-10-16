@@ -69,14 +69,12 @@ struct DatabaseQueryContinuationEndpointTests {
     @Test("positional duplicate labels survive first and durable continuation pages")
     func duplicateLabelsSurviveContinuation() async throws {
         let endpoint = try await makeEndpoint()
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.col("id"), alias: "duplicate"),
                 ProjectionItem(.col("title"), alias: "duplicate"),
-            ]),
+            ],
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
-            orderBy: [SortKey(.col("id"))]
-        )
+            orderBy: [SortKey(.col("id"))])
         let first = try await successfulPage(request(query: query, pageLimit: 2), requestID: 100, endpoint: endpoint)
         let continuation = try #require(first.continuation)
         let second = try await successfulPage(
@@ -97,14 +95,12 @@ struct DatabaseQueryContinuationEndpointTests {
     @Test("an empty result retains ordered typed columns")
     func emptyResultRetainsTypedColumns() async throws {
         let endpoint = try await makeEndpoint()
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.col("priority"), alias: "z"),
                 ProjectionItem(.col("id"), alias: "a"),
-            ]),
+            ],
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
-            filter: .equal(.col("id"), .string("missing"))
-        )
+            filter: .equal(.col("id"), .string("missing")))
         let page = try await successfulPage(request(query: query, pageLimit: 2), requestID: 102, endpoint: endpoint)
         #expect(page.rowCount == 0)
         #expect(page.columns.map(\.name) == ["z", "a"])
@@ -129,12 +125,10 @@ struct DatabaseQueryContinuationEndpointTests {
         let interval = try QueryIntervalValue(period: CalendarPeriod(months: 2, days: 3), time: TimeSpan(seconds: 4))
         let values: [QueryValue] = [.numeric(numeric), .json(json), .jsonb(try QueryJSONBValue(json: json, limits: limits)), .array(array), .interval(interval)]
         let types: [QueryColumnType] = [.sql(.decimal(precision: nil, scale: nil)), .sql(.json), .sql(.jsonb), .sql(.array(.integer)), .sql(.interval())]
-        let query = SelectQuery(
-            projection: .items(zip(values, types).enumerated().map { index, pair in
+        let query = SelectQuery(projection: zip(values, types).enumerated().map { index, pair in
                 ProjectionItem(.literal(.queryValue(pair.0, type: pair.1)), alias: "rich-\(index)")
-            }),
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
-        )
+            },
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let first = try await successfulPage(request(query: query, pageLimit: 2), requestID: 103, endpoint: endpoint)
         let continuation = try #require(first.continuation)
         let second = try await successfulPage(
@@ -468,18 +462,15 @@ struct DatabaseQueryContinuationEndpointTests {
     }
 
     private func tableQuery(distinct: Bool = false) -> SelectQuery {
-        SelectQuery(
-            projection: .all,
+        SelectQuery(projection: [.wildcard()],
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
-            distinct: distinct
-        )
+            quantifier: (distinct ? .distinct : .all))
     }
 
     private func partitionedGraphQuery() -> SelectQuery {
-        SelectQuery(
-            projection: .items([
+        SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("subject")))
-            ]),
+            ],
             source: .graphPattern(
                 .basic([
                     TriplePattern(
@@ -489,8 +480,7 @@ struct DatabaseQueryContinuationEndpointTests {
                     )
                 ])
             ),
-            orderBy: [SortKey(.variable(Variable("subject")))]
-        )
+            orderBy: [SortKey(.variable(Variable("subject")))])
     }
 
     private func partitionedGraphStatement(

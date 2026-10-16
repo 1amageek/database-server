@@ -401,12 +401,10 @@ struct DatabaseGraphQueryPagingTests {
     @Test("DESCRIBE all exposes only variables visible from a subquery")
     func describeAllUsesVisibleVariables() async throws {
         let container = try await makeContainer()
-        let subquery = SelectQuery(
-            projection: .items([
+        let subquery = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("subject")))
-            ]),
-            source: .graphPattern(sourcePattern)
-        )
+            ],
+            source: .graphPattern(sourcePattern))
         let query = DescribeQuery(
             selection: .all,
             pattern: .subquery(subquery)
@@ -702,14 +700,12 @@ struct DatabaseGraphQueryPagingTests {
             try await execute(
                 request(
                     .select(
-                        SelectQuery(
-                            projection: .items([
+                        SelectQuery(projection: [
                                 ProjectionItem(.variable(Variable("subject"))),
                                 ProjectionItem(.variable(Variable("object"))),
-                            ]),
-                            source: .graphPattern(sourcePattern),
-                            dataset: dataset
-                        )
+                            ],
+            source: .graphPattern(sourcePattern),
+            dataset: dataset)
                     ),
                     limit: 10
                 ),
@@ -773,11 +769,10 @@ struct DatabaseGraphQueryPagingTests {
             )
         ) == true)
 
-        let graphVariableQuery = SelectQuery(
-            projection: .items([
+        let graphVariableQuery = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("graph"))),
                 ProjectionItem(.variable(Variable("subject"))),
-            ]),
+            ],
             source: .graphPattern(
                 .graph(
                     name: .variable("graph"),
@@ -787,8 +782,7 @@ struct DatabaseGraphQueryPagingTests {
             dataset: .explicit(
                 defaultGraphs: [],
                 namedGraphs: [Self.namedGraphOne]
-            )
-        )
+            ))
         let graphRows = try rowPage(
             try await execute(
                 request(.select(graphVariableQuery), limit: 10),
@@ -1026,17 +1020,15 @@ struct DatabaseGraphQueryPagingTests {
                 ),
             ]
         )
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.column(ColumnRef("id")), alias: "id")
-            ]),
+            ],
             source: .table(TableRef(entity)),
             filter: .inList(
                 .column(ColumnRef("subject")),
                 values: [.function(sparqlFunction)]
             ),
-            orderBy: [SortKey(.column(ColumnRef("id")))]
-        )
+            orderBy: [SortKey(.column(ColumnRef("id")))])
         let firstPage = try rowPage(
             try await execute(
                 request(.select(query), limit: 1),

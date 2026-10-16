@@ -188,15 +188,13 @@ struct SPARQLStatementMutationExecutorTests {
             budget: ExecutionBudget(),
             monotonicClock: TestProcessMonotonicClock()
         )
-        let selectQuery = SelectQuery(
-            projection: .all,
+        let selectQuery = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(
                 .graph(
                     name: .variable("graph"),
                     pattern: .basic([])
                 )
-            )
-        )
+            ))
         let response = try await container.withTestBaseOperation {
             try await container.testBaseContext().withReadSnapshot(
                 workMeter: workMeter

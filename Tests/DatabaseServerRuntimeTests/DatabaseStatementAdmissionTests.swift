@@ -17,8 +17,8 @@ struct DatabaseStatementAdmissionTests {
         ).admit(.text(language: .sql, statement: "SELECT $1::integer AS value, $1::text AS label"), parameters: parameters)
         #expect(admitted.parameters == parameters)
         guard case .select(let query) = admitted.statement,
-              case .items(let items) = query.projection,
-              case .cast(.parameter(.position(1)), _) = items[0].expression else {
+              let item = query.projection.first,
+              case .expression(.cast(.parameter(.position(1)), _), _) = item else {
             Issue.record("SQL admission erased the parameter occurrence")
             return
         }

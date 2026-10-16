@@ -14,13 +14,11 @@ struct DatabaseQueryWorkBudgetTests {
     @Test("Direct QueryIR uses the configured structural limits")
     func directQueryIRUsesConfiguredStructuralLimits() async throws {
         let container = try await makeContainer()
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.column(ColumnRef("id"))),
                 ProjectionItem(.column(ColumnRef("title"))),
-            ]),
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
-        )
+            ],
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let request = QueryExecuteOperation.Request(
             input: .ir(.select(query)),
             page: QueryExecuteOperation.Page(limit: 1)
@@ -59,12 +57,10 @@ struct DatabaseQueryWorkBudgetTests {
         for _ in 0..<7 {
             value = .array([value])
         }
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.parameter(.position(1)), alias: "value")
-            ]),
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
-        )
+            ],
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let request = QueryExecuteOperation.Request(
             input: .ir(.select(query)),
             parameters: [
@@ -147,12 +143,10 @@ struct DatabaseQueryWorkBudgetTests {
         for _ in 0..<62 {
             expression = .not(expression)
         }
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(expression, alias: "value")
-            ]),
-            source: .graphPattern(.basic([]))
-        )
+            ],
+            source: .graphPattern(.basic([])))
         #expect(
             throws: QueryStructuralValidationError.resourceLimitExceeded(
                 resource: .nestingDepth,
@@ -195,8 +189,7 @@ struct DatabaseQueryWorkBudgetTests {
     @Test("Direct QueryIR cannot hide an RDF blank node inside Literal")
     func directQueryIRRejectsNonCanonicalBlankNode() async throws {
         let container = try await makeContainer()
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(
                 .basic([
                     TriplePattern(
@@ -209,8 +202,7 @@ struct DatabaseQueryWorkBudgetTests {
                         )
                     )
                 ])
-            )
-        )
+            ))
         let request = QueryExecuteOperation.Request(
             input: .ir(.select(query)),
             page: QueryExecuteOperation.Page(limit: 1)
@@ -346,10 +338,8 @@ struct DatabaseQueryWorkBudgetTests {
     private func stableTablePagingWorkUnits(seedCount: Int) async throws -> UInt64 {
         let container = try await makeContainer(seedCount: seedCount)
         let context = container.testBaseContext()
-        let query = SelectQuery(
-            projection: .all,
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
-        )
+        let query = SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         // Generous enough for two pages of any table size, but far below the
         // cost of re-scanning a 1000 row table once per page.
         let budget = ExecutionBudget(
@@ -474,13 +464,12 @@ struct DatabaseQueryWorkBudgetTests {
     /// key, which produces exactly one output row per stored row.
     private static var selfEqualityJoin: SelectQuery {
         let entity = DatabaseEndpointEntity.persistableType
-        return SelectQuery(
-            projection: .all,
+        return SelectQuery(projection: [.wildcard()],
             source: .join(
                 JoinClause(
                     type: .inner,
-                    left: .table(TableRef(table: entity, alias: "left_entity")),
-                    right: .table(TableRef(table: entity, alias: "right_entity")),
+                    left: .aliased(.table(TableRef(table: entity)), name: "left_entity"),
+                    right: .aliased(.table(TableRef(table: entity)), name: "right_entity"),
                     condition: .on(
                         .equal(
                             .column(ColumnRef(table: "left_entity", column: "id")),
@@ -488,23 +477,18 @@ struct DatabaseQueryWorkBudgetTests {
                         )
                     )
                 )
-            )
-        )
+            ))
     }
 
     @Test("Outer page size does not truncate a nested relational source")
     func outerPageSizeDoesNotTruncateNestedSource() async throws {
         let container = try await makeContainer(seedCount: 100)
-        let nested = SelectQuery(
-            projection: .all,
-            source: .table(TableRef(DatabaseEndpointEntity.persistableType))
-        )
-        let query = SelectQuery(
-            projection: .items([
+        let nested = SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
+        let query = SelectQuery(projection: [
                 ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "count")
-            ]),
-            source: .subquery(nested, alias: "entities")
-        )
+            ],
+            source: .aliased(.subquery(nested), name: "entities"))
 
         let response = try await container.testBaseContext().query(
             query,
@@ -566,14 +550,12 @@ struct DatabaseQueryWorkBudgetTests {
         let request = QueryExecuteOperation.Request(
             input: .ir(
                 .select(
-                    SelectQuery(
-                        projection: .all,
-                        source: .table(
+                    SelectQuery(projection: [.wildcard()],
+            source: .table(
                             TableRef(
                                 DatabaseEndpointEntity.persistableType
                             )
-                        )
-                    )
+                        ))
                 )
             ),
             page: QueryExecuteOperation.Page(limit: pageLimit),
