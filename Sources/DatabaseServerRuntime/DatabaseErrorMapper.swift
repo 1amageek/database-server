@@ -592,9 +592,16 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         }
         #endif
         if let expressionError = error as? DatabaseExpressionEvaluationError {
+            let code: String
+            switch expressionError {
+            case .invalidFunctionArgument: code = "INVALID_FUNCTION_ARGUMENT"
+            case .invalidPattern: code = "INVALID_PATTERN"
+            case .unsupportedPattern: code = "UNSUPPORTED_PATTERN"
+            default: code = "INVALID_MUTATION_EXPRESSION"
+            }
             return RemoteOperationError(
                 category: .invalidRequest,
-                code: "INVALID_MUTATION_EXPRESSION",
+                code: code,
                 message: expressionError.description,
                 retryability: .never
             )
@@ -2306,6 +2313,9 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         case .expressionEvaluation(let cause, _):
             let code: String
             switch cause {
+            case .invalidFunctionArgument: code = "INVALID_FUNCTION_ARGUMENT"
+            case .invalidPattern: code = "INVALID_PATTERN"
+            case .unsupportedPattern: code = "UNSUPPORTED_PATTERN"
             case .divisionByZero: code = "DIVISION_BY_ZERO"
             case .numericOverflow: code = "NUMERIC_OVERFLOW"
             case .numericUnderflow: code = "NUMERIC_UNDERFLOW"

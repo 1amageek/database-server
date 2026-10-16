@@ -450,6 +450,21 @@ struct DatabaseErrorMapperTests {
             #expect(mapped.retryability == .never)
         }
 
+        let patternFailures: [(DatabaseExpressionEvaluationError, String)] = [
+            (.invalidFunctionArgument(function: "regexp_like", reason: "invalid flags"), "INVALID_FUNCTION_ARGUMENT"),
+            (.invalidPattern(offset: 2, reason: "unclosed group"), "INVALID_PATTERN"),
+            (.unsupportedPattern(offset: 3, reason: "backreference"), "UNSUPPORTED_PATTERN"),
+        ]
+        for (patternCause, expectedCode) in patternFailures {
+            let failures: [any Error] = [patternCause, CanonicalReadError.expressionEvaluation(patternCause)]
+            for failure in failures {
+                let mapped = mapper.remoteError(for: failure, context: context)
+                expect(mapped, category: .invalidRequest, code: expectedCode)
+                #expect(mapped.message == patternCause.description)
+                #expect(mapped.retryability == .never)
+            }
+        }
+
         let resourceLimit = mapper.remoteError(
             for: DatabaseQueryExecutionError.rdfLiteralTooLarge(
                 requiredUTF8Count: 4_096,

@@ -245,3 +245,21 @@ remote occurrence details. Runtime maps zero division,
 numeric overflow/underflow, nonfinite input and numeric-domain rejection to
 distinct invalid-request codes without converting resource/cancellation errors
 into arithmetic errors. SQLSTATE and remote occurrence details remain S16.
+
+### S05 pattern failure mapping
+
+Framework owns `invalidPattern(offset:reason:)`,
+`unsupportedPattern(offset:reason:)`, and
+`invalidFunctionArgument(function:reason:)`. Runtime maps these to
+`INVALID_PATTERN`, `UNSUPPORTED_PATTERN`, and `INVALID_FUNCTION_ARGUMENT`
+invalid-request codes with no retry, for both raw mutation expressions and
+canonical read expression failures. Pattern offsets remain pattern-local;
+SQLSTATE and remote SQL occurrence details remain S16-owned. Work limits and
+cancellation keep their existing mapping.
+
+```text
+Framework typed expression failure -> Runtime error mapper -> Wire error
+```
+
+[DatabaseErrorMapperTests](../../Tests/DatabaseServerRuntimeTests/DatabaseErrorMapperTests.swift)
+checks the three distinct codes, messages, category, and retry policy.
