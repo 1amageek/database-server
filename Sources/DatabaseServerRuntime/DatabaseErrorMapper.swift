@@ -597,6 +597,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             switch sourceFailure.cause {
             case .expression(let error): cause = error
             case .read(let error): cause = error
+            case .catalog(let error): cause = error
+            case .resolution(let error): cause = error
             }
             let mapped = remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
             guard let position = sourceFailure.position, let offset = UInt64(exactly: position) else { return mapped }
@@ -611,7 +613,17 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 return remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
             case .read(let cause):
                 return remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
+            case .catalog(let cause):
+                return remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
+            case .resolution(let cause):
+                return remoteError(for: cause, context: context, limits: limits, mappingDepth: mappingDepth + 1)
             }
+        }
+        if let catalogError = error as? SQLCatalogBindingError {
+            return Self.map(catalogError)
+        }
+        if let resolutionError = error as? SQLReadResolutionError {
+            return Self.map(resolutionError)
         }
         if let valueError = error as? QueryValueError {
             return remoteError(for: DatabaseExpressionEvaluationError.queryValue(valueError),
@@ -720,6 +732,49 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             message: "Database operation runtime failed",
             retryability: .never
         )
+    }
+
+    private static func map(_ error: SQLCatalogBindingError) -> RemoteOperationError {
+        let category: OperationErrorCategory
+        let code: String
+        let message: String
+        switch error {
+        case .missingNamespace:
+            category = .notFound
+            code = "SQL_NAMESPACE_NOT_FOUND"
+            message = "The requested SQL namespace was not found"
+        case .missingRelation:
+            category = .notFound
+            code = "SQL_RELATION_NOT_FOUND"
+            message = "The requested SQL relation was not found"
+        case .missingEntity, .missingRuntime, .runtimeContractMismatch, .missingField:
+            category = .internalFailure
+            code = "SQL_CATALOG_MAPPING_INVALID"
+            message = "The SQL catalog does not match its physical runtime"
+        case .physicalFingerprintMismatch, .digestMismatch, .invalidProtection, .missingCatalog:
+            category = .internalFailure
+            code = "SQL_CATALOG_INVALID"
+            message = "The SQL catalog is invalid"
+        case .protectedRelationRemoved, .relationRetargeted, .columnRetargeted,
+             .protectedColumnRemoved, .protectedPrimaryKeyChanged, .primaryKeyColumnRemoved:
+            category = .conflict
+            code = "SQL_CATALOG_INCOMPATIBLE"
+            message = "The SQL catalog change violates an existing contract"
+        }
+        return RemoteOperationError(category: category, code: code,
+            message: message, retryability: .never)
+    }
+
+    private static func map(_ error: SQLReadResolutionError) -> RemoteOperationError {
+        switch error {
+        case .generationMismatch:
+            return RemoteOperationError(category: .conflict, code: "SQL_READ_GENERATION_STALE",
+                message: "The SQL read resolution belongs to a different schema generation",
+                retryability: .never)
+        case .missingPhysicalColumn:
+            return RemoteOperationError(category: .internalFailure, code: "SQL_CATALOG_MAPPING_INVALID",
+                message: "The SQL catalog does not match its physical runtime", retryability: .never)
+        }
     }
 
     private func makeRemoteError(

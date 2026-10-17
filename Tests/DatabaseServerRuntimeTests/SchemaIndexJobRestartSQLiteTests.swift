@@ -68,11 +68,7 @@ struct SchemaIndexJobRestartSQLiteTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        RestartSchemaBuildAccountV1.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )

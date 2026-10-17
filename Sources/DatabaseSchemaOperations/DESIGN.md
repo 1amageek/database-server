@@ -24,6 +24,7 @@ that work. Application runtime factories retain their existing ownership.
 | [Server Runtime](../DatabaseServerRuntime/DESIGN.md) | coordinates with | Admitted operation and job dispatch | Invokes schema-operation orchestration. | Preserve control/data transaction separation. |
 | [Framework Index](../../../database-framework/Sources/DatabaseEngine/Index/DESIGN.md) | depends on | DatabaseIndexStorageScope and opaque scope codec | Owns physical work and source Directory descriptors. | The Server never reconstructs SQL descriptor meaning. |
 | [Framework Directory](../../../database-framework/Sources/DatabaseEngine/Directory/DESIGN.md) | depends on | Total canonical Directory resolution | Resolves retained source partition values. | The target/current schema cannot replace the captured source metadata. |
+| [Framework schema protection](../../../database-framework/Sources/DatabaseEngine/Schema/DESIGN.md#compiled-model-protection-and-application-evolution) | depends on | Compiled-model protection and application evolution authority | Preserves the S11-C07 static contract across schema-driven restoration. | Remote schema jobs cannot regenerate an application's compiled witness. |
 
 ## Architecture
 
@@ -88,3 +89,14 @@ corrupt metadata must fail rather than bind a target/current schema. Framework
 codec tests own byte/metadata validation; Framework Directory/index tests own
 canonical components and temporal key order. Server host configuration and
 unrelated operation behavior remain separate proof subjects.
+
+Schema/index-administration fixtures start with schema-driven runtime
+registration and retain that ownership through target publication and restart.
+Their `Persistable` declarations supply schema and encoded fixture data; they
+do not register a compiled runtime witness. This lets the tests exercise index
+backfill, physical-layout rejection, cancellation, retirement, reversal, and
+restart under the authority they actually invoke. Dynamic runtime registration
+is distinct from a dynamic Directory component: partition backfill still
+uses the declared `.partition` Directory and every original partition/data
+assertion. Framework's S11 compiled-protection tests separately prove that a
+schema-driven target cannot weaken a persisted compiled contract.

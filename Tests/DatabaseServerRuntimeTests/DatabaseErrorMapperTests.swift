@@ -474,6 +474,70 @@ struct DatabaseErrorMapperTests {
         ]
         let parsed = try SQLParser().parseSelectWithSource("SELECT CURRENT_DATE")
         let occurrence = try #require(parsed.occurrences.child(of: parsed.root, field: .projection, index: 0))
+        let privateIdentifier = "private-catalog-backing"
+        let mappingMessage = "The SQL catalog does not match its physical runtime"
+        let catalogMessage = "The SQL catalog is invalid"
+        let compatibilityMessage = "The SQL catalog change violates an existing contract"
+        let catalogFailures: [(SQLCatalogBindingError, OperationErrorCategory, String, String)] = [
+            (.missingEntity(privateIdentifier), .internalFailure, "SQL_CATALOG_MAPPING_INVALID", mappingMessage),
+            (.missingRuntime(privateIdentifier), .internalFailure, "SQL_CATALOG_MAPPING_INVALID", mappingMessage),
+            (.runtimeContractMismatch(privateIdentifier), .internalFailure, "SQL_CATALOG_MAPPING_INVALID", mappingMessage),
+            (.missingField(entity: privateIdentifier, number: 42), .internalFailure, "SQL_CATALOG_MAPPING_INVALID", mappingMessage),
+            (.missingNamespace(privateIdentifier), .notFound, "SQL_NAMESPACE_NOT_FOUND", "The requested SQL namespace was not found"),
+            (.missingRelation(namespace: privateIdentifier, name: privateIdentifier), .notFound, "SQL_RELATION_NOT_FOUND", "The requested SQL relation was not found"),
+            (.missingRelation(namespace: nil, name: privateIdentifier), .notFound, "SQL_RELATION_NOT_FOUND", "The requested SQL relation was not found"),
+            (.physicalFingerprintMismatch, .internalFailure, "SQL_CATALOG_INVALID", catalogMessage),
+            (.digestMismatch, .internalFailure, "SQL_CATALOG_INVALID", catalogMessage),
+            (.invalidProtection(privateIdentifier), .internalFailure, "SQL_CATALOG_INVALID", catalogMessage),
+            (.protectedRelationRemoved(privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),
+            (.relationRetargeted(privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),
+            (.columnRetargeted(relation: privateIdentifier, column: privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),
+            (.protectedColumnRemoved(relation: privateIdentifier, column: privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),
+            (.protectedPrimaryKeyChanged(privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),
+            (.primaryKeyColumnRemoved(relation: privateIdentifier, column: privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),
+            (.missingCatalog, .internalFailure, "SQL_CATALOG_INVALID", catalogMessage),
+        ]
+        let bindingFailures: [(CanonicalSQLBindingCause, any Error, OperationErrorCategory, String, String)] =
+            catalogFailures.map { (.catalog($0.0), $0.0, $0.1, $0.2, $0.3) } + [
+                (.resolution(.generationMismatch), SQLReadResolutionError.generationMismatch,
+                 .conflict, "SQL_READ_GENERATION_STALE",
+                 "The SQL read resolution belongs to a different schema generation"),
+                (.resolution(.missingPhysicalColumn(entity: privateIdentifier, field: privateIdentifier)),
+                 SQLReadResolutionError.missingPhysicalColumn(entity: privateIdentifier, field: privateIdentifier),
+                 .internalFailure, "SQL_CATALOG_MAPPING_INVALID", mappingMessage),
+            ]
+        let depthLimits = try DatabaseWireLimits(maximumFrameBytes: 4_096,
+            maximumStringBytes: 128, maximumByteStringBytes: 4_096,
+            maximumCollectionCount: 16, maximumNestingDepth: 0, maximumObjectCount: 16)
+        for (cause, direct, category, code, message) in bindingFailures {
+            let canonical = CanonicalSQLBindingFailure(cause: cause, occurrence: occurrence, root: parsed.root)
+            let unlocated = SQLBindingSourceFailure(cause: cause, occurrence: nil, sourceMap: parsed.sourceMap)
+            let source = SQLBindingSourceFailure(cause: cause, occurrence: occurrence, sourceMap: parsed.sourceMap)
+            for failure in [direct, canonical, unlocated] as [any Error] {
+                let mapped = mapper.remoteError(for: failure, context: context)
+                expect(mapped, category: category, code: code, retryability: .never)
+                #expect(mapped.message == message)
+                #expect(!mapped.message.contains(privateIdentifier))
+                #expect(mapped.details.count == 0)
+            }
+            let mapped = mapper.remoteError(for: source, context: context)
+            expect(mapped, category: category, code: code, retryability: .never)
+            #expect(mapped.message == message)
+            #expect(!mapped.message.contains(privateIdentifier))
+            #expect(mapped.details.count == 1)
+            #expect(mapped.details["position"] == .uint64(7))
+
+            let boundedDirect = mapper.remoteError(for: direct, context: context, limits: depthLimits)
+            expect(boundedDirect, category: category, code: code, retryability: .never)
+            #expect(boundedDirect.message == message)
+            for failure in [canonical, unlocated, source] as [any Error] {
+                let bounded = mapper.remoteError(for: failure, context: context, limits: depthLimits)
+                expect(bounded, category: .internalFailure, code: "ERROR_MAPPING_DEPTH_EXCEEDED", retryability: .never)
+                #expect(bounded.message == "Nested error mapping exceeded the configured depth")
+            }
+            let boundedSource = mapper.remoteError(for: source, context: context, limits: depthLimits)
+            #expect(boundedSource.details["position"] == .uint64(7))
+        }
         for (cause, category, code) in temporalFailures {
             let source = SQLBindingSourceFailure(cause: .expression(cause), occurrence: occurrence, sourceMap: parsed.sourceMap)
             let failures: [any Error] = [cause, CanonicalReadError.expressionEvaluation(cause),

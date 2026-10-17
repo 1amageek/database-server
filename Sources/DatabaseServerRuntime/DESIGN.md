@@ -306,3 +306,31 @@ The migrated statement-admission, continuation, budget, Composition and SPARQL
 tests exercise the canonical declarations through the existing handlers. Kit's
 Wire tests own descriptor/value encoding, and Framework's SQL tests own the
 relational results; the complete Server package run checks their composition.
+
+### S11 SQL catalog failure mapping
+
+Framework's [SQLCatalog](../../../database-framework/Sources/DatabaseEngine/SQLCatalog/DESIGN.md)
+owns name resolution, backing validation, and compatibility. Runtime maps its
+typed failures directly and through `CanonicalSQLBindingFailure` and
+`SQLBindingSourceFailure` using the existing bounded mapping recursion.
+
+| Framework failure | Remote category / code |
+|---|---|
+| Missing requested namespace / relation | `notFound` / `SQL_NAMESPACE_NOT_FOUND`, `SQL_RELATION_NOT_FOUND` |
+| Missing entity, runtime, or field; runtime contract mismatch; missing physical projection column | `internalFailure` / `SQL_CATALOG_MAPPING_INVALID` |
+| Fingerprint or digest mismatch, invalid protection, missing catalog | `internalFailure` / `SQL_CATALOG_INVALID` |
+| Protected relation/column/key removal or change; relation/column retargeting; removed primary-key column | `conflict` / `SQL_CATALOG_INCOMPATIBLE` |
+| Read resolution generation mismatch | `conflict` / `SQL_READ_GENERATION_STALE` |
+
+All mappings use `never` retryability: replaying the same admitted generation
+cannot repair its contract. Messages are fixed English descriptions and never
+include associated entity, runtime, namespace, relation, field, column, or
+protection identifiers. Canonical wrappers preserve category, code, message,
+and retryability; source wrappers additionally preserve a valid exact byte
+`position`, including a mapping-depth failure. Unannotated wrappers do not
+invent a position. No failure becomes empty success. This adaptation does not
+add catalog administration dispatch; SQLSTATE remains S16-owned.
+
+[DatabaseErrorMapperTests/databaseQueryExecutionFailures](../../Tests/DatabaseServerRuntimeTests/DatabaseErrorMapperTests.swift)
+checks every catalog/resolution case directly and through both wrappers,
+sanitized messages, retry policy, source position, and the recursion bound.

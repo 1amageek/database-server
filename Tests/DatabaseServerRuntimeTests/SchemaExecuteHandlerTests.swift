@@ -756,11 +756,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV1.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -862,11 +858,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV1.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -944,11 +936,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV1.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -1005,11 +993,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV2.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -1132,11 +1116,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV2.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -1254,11 +1234,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV2.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -1336,11 +1312,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV2.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -1461,11 +1433,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV2.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -1615,11 +1583,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildTenantAccountV1.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -1722,11 +1686,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV1.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
@@ -1881,11 +1841,7 @@ struct SchemaExecuteHandlerTests {
                     identifier: "database-tests",
                     revision: 1
                 ),
-                entityRuntimes: [
-                    try DatabaseFrameworkRuntime.entity(
-                        SchemaBuildAccountV1.self
-                    )
-                ]
+                schema: initialSchema
             ),
             security: .testingDisabled
         )
