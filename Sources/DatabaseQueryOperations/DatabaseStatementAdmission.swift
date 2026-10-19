@@ -51,7 +51,10 @@ package struct DatabaseStatementAdmission: Sendable {
         case .text(let language, let statement):
             switch language {
             case .sql:
-                return try SQLParser(structuralLimits: structuralLimits)
+                return try SQLParser(
+                    structuralLimits: structuralLimits,
+                    preservesCastOutputNames: true
+                )
                     .parse(statement)
             case .sparql:
                 #if DATABASE_QUERY_OPERATIONS_GRAPH_INDEXES

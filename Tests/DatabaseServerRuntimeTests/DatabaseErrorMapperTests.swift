@@ -666,6 +666,17 @@ struct DatabaseErrorMapperTests {
             category: .invalidRequest,
             code: "INVALID_QUERY"
         )
+
+        let invalidStructure = mapper.remoteError(
+            for: CanonicalReadError.invalidQueryStructure(.columnCount, "Set operation input arity differs"),
+            context: context
+        )
+        expect(
+            invalidStructure,
+            category: .invalidRequest,
+            code: "INVALID_QUERY"
+        )
+        #expect(invalidStructure.message == "Set operation input arity differs")
     }
 
     @Test("Uncompiled statement features are reported as unavailable")

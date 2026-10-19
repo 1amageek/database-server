@@ -118,6 +118,9 @@ explicit declarations reach Framework's
 [binding/prepared execution boundary](../../../database-framework/Sources/Database/DESIGN.md#s03-sql-binding-and-local-diagnostic-bridge).
 The validated carrier retains the SQL parse arena/root and optional source map
 for that request; existing SPARQL/GraphTerm replacement and language gates remain.
+SQL text is parsed with QueryAST's `preservesCastOutputNames`, as the Database
+facade does, so a folded constant cast keeps its PostgreSQL output name; IR
+input carries no cast syntax and is named from its expressions.
 Server owns structural admission and typed mapping, not SQL inference or a
 second binder. Query handling passes parameters to preflight, prepared execution
 and zero-row metadata consistently, including MultiBase member paths. Existing

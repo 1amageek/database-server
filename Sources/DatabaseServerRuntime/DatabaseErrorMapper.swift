@@ -2547,6 +2547,13 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 message: reason,
                 retryability: .never
             )
+        case .invalidQueryStructure(_, let reason):
+            return RemoteOperationError(
+                category: .invalidRequest,
+                code: "INVALID_QUERY",
+                message: reason,
+                retryability: .never
+            )
         case .unsupportedSource(let reason):
             return RemoteOperationError(
                 category: .invalidRequest,
