@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCHEME="database-server"
 DESTINATION="platform=macOS,arch=arm64"
 TEST_TRAITS="${DATABASE_SERVER_TEST_TRAITS:-}"
-TOOLCHAIN_IDENTIFIER="org.swift.64202608141a"
+TOOLCHAIN_IDENTIFIER="org.swift.64202609041a"
 XCODE_TOOLCHAIN_IDENTIFIER="com.apple.dt.toolchain.XcodeDefault"
 BUILD_TIMEOUT_SECONDS="${XCODE_TEST_BUILD_TIMEOUT_SECONDS:-1200}"
 BUILD_JOB_COUNT="${XCODE_TEST_BUILD_JOBS:-6}"
@@ -203,10 +203,10 @@ summary_number() {
 
 case "$TEST_TRAITS" in
   "")
-    default_expected_test_count=314
+    default_expected_test_count=331
     ;;
   "MultiBase")
-    default_expected_test_count=350
+    default_expected_test_count=364
     ;;
   *)
     echo "error: DATABASE_SERVER_TEST_TRAITS must be empty or MultiBase" >&2

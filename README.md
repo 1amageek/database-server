@@ -156,6 +156,26 @@ ignoring them.
 }
 ```
 
+Native SQL table access is denied unless the optional `sqlTablePolicies` field
+explicitly allows the authenticated principal's role for that operation:
+
+```json
+"sqlTablePolicies": [
+  {"schema": "public", "table": "items", "roles": {
+    "list": ["reader", "writer"], "get": ["reader", "writer"],
+    "create": ["writer"], "update": ["writer"], "delete": ["writer"]
+  }}
+]
+```
+
+Schema and table names match their separate exact UTF-8 spellings, including
+case and Unicode; whitespace is preserved. Empty/NUL names, duplicate exact
+pairs, unknown operations, and empty/duplicate roles are invalid. An absent
+field, target, operation or principal denies access, including for `admin`.
+Renaming a table or schema requires an explicit rule for its new name. Rules
+cover SQL-owned entities only; [Framework owns relation binding and lifecycle](../database-framework/Sources/DatabaseEngine/DESIGN.md).
+This optional field keeps standard format 3 and MultiBase format 4 compatible.
+
 With `MultiBase`, add the placement fields:
 
 ```json
@@ -249,9 +269,9 @@ After an attributed package build, set `XCODE_TEST_DERIVED_DATA_PATH` to that
 exact DerivedData directory so the harness builds only the missing test
 products before its isolated `test-without-building` run.
 
-The strict harness requires 305 logical tests for the standard graph. Set
-`DATABASE_SERVER_TEST_TRAITS=MultiBase` to select that trait in an isolated
-source copy and require 337 tests. Both graphs require zero failures, zero
+The strict harness owns the exact logical test counts in
+`scripts/xcode-test-harness`. Set `DATABASE_SERVER_TEST_TRAITS=MultiBase` to
+select that trait in an isolated source copy. Both graphs require zero failures, zero
 skips, zero expected failures, zero runtime warnings, and no internal tool
 errors. Coverage
 includes real HTTP, HTTPS/TLS, WebSocket, and stdio traffic, bootstrap

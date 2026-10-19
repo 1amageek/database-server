@@ -287,6 +287,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     public let tokenRegistryPath: String
     public let tls: TLS?
     public let maximumFrameBytes: Int?
+    public let sqlTablePolicies: [SQLTablePolicy]?
 
     #if DATABASE_SERVER_HOST_MULTI_BASE
     public init(
@@ -300,7 +301,8 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         routing: Routing,
         tokenRegistryPath: String,
         tls: TLS? = nil,
-        maximumFrameBytes: Int? = nil
+        maximumFrameBytes: Int? = nil,
+        sqlTablePolicies: [SQLTablePolicy]? = nil
     ) {
         self.formatVersion = formatVersion
         self.controlDomain = controlDomain
@@ -313,6 +315,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         self.tokenRegistryPath = tokenRegistryPath
         self.tls = tls
         self.maximumFrameBytes = maximumFrameBytes
+        self.sqlTablePolicies = sqlTablePolicies
     }
     #else
     public init(
@@ -324,7 +327,8 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         routing: Routing,
         tokenRegistryPath: String,
         tls: TLS? = nil,
-        maximumFrameBytes: Int? = nil
+        maximumFrameBytes: Int? = nil,
+        sqlTablePolicies: [SQLTablePolicy]? = nil
     ) {
         self.formatVersion = formatVersion
         self.storage = storage
@@ -335,6 +339,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         self.tokenRegistryPath = tokenRegistryPath
         self.tls = tls
         self.maximumFrameBytes = maximumFrameBytes
+        self.sqlTablePolicies = sqlTablePolicies
     }
     #endif
 
@@ -458,6 +463,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     }
 
     private func validate() throws {
+        try SQLTablePolicy.validate(sqlTablePolicies ?? [])
         #if DATABASE_SERVER_HOST_MULTI_BASE
         // Version 4 drops the per-placement path a Base Partition no longer
         // addresses. An earlier document is rejected rather than loaded with
@@ -529,6 +535,7 @@ public enum DatabaseServerLaunchConfigurationError:
     Equatable
 {
     case invalidDocument
+    case invalidSQLTablePolicy
     case unsupportedFormatVersion(Int)
     case storageConfigurationMismatch
     case sqliteMemoryHasPath

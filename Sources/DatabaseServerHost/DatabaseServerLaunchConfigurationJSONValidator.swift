@@ -25,6 +25,7 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
                 "tokenRegistryPath",
                 "tls",
                 "maximumFrameBytes",
+                "sqlTablePolicies",
         ]
         #else
         let rootKeys: Set<String> = [
@@ -37,6 +38,7 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
             "tokenRegistryPath",
             "tls",
             "maximumFrameBytes",
+            "sqlTablePolicies",
         ]
         #endif
         try requireOnly(root, keys: rootKeys)
@@ -76,6 +78,18 @@ enum DatabaseServerLaunchConfigurationJSONValidator {
             )
         }
         #endif
+        if let policies = root["sqlTablePolicies"], !(policies is NSNull) {
+            guard let policies = policies as? [Any] else {
+                throw DatabaseServerLaunchConfigurationError.invalidDocument
+            }
+            for value in policies {
+                let policy = try object(value)
+                try requireOnly(policy, keys: ["schema", "table", "roles"])
+                if let roles = policy["roles"] {
+                    try requireOnly(object(roles), keys: ["list", "get", "create", "update", "delete"])
+                }
+            }
+        }
         if let routing = root["routing"] {
             try requireOnly(
                 object(routing),

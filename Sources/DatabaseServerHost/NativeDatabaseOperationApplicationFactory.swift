@@ -1,4 +1,5 @@
 @_spi(DatabaseExecution) import DatabaseEngine
+import DatabaseKit
 import DatabaseRuntime
 import DatabaseServerFoundation
 import DatabaseServerRuntime
@@ -6,14 +7,30 @@ import StorageKitSystemClock
 
 public enum NativeDatabaseOperationApplicationFactory {
     public static func schemaDriven(
-        version: String
+        version: String,
+        sqlTablePolicies: [SQLTablePolicy] = []
     ) throws -> AnyDatabaseOperationApplication {
+        try SQLTablePolicy.validate(sqlTablePolicies)
+        let policies = Dictionary(uniqueKeysWithValues: sqlTablePolicies.map {
+            (SQLTablePolicy.Target(schema: $0.schema, table: $0.table),
+             $0.roles.mapValues { Set($0) })
+        })
         let schemaRuntimeFactory = AnyDatabaseSchemaRuntimeFactory(
             SchemaDrivenDatabaseRuntimeFactory(
                 executionIdentity: DatabaseExecutionRuntimeIdentity(
                     identifier: "database-server.schema-driven@\(version)",
                     revision: 1
-                )
+                ),
+                sqlAuthorizationPolicyFactory: { entity, namespace, relation in
+                    guard let roles = policies[SQLTablePolicy.Target(
+                        schema: namespace.name, table: relation
+                    )] else { return nil }
+                    return AuthorizationPolicyHandler(schemaDriven: entity) { operation, authorization in
+                        guard let principal = authorization.principal,
+                              let allowed = roles[operation.rawValue] else { return false }
+                        return !principal.roles.isDisjoint(with: allowed)
+                    }
+                }
             )
         )
         let runtimeLimits = DatabaseOperationLimits.default

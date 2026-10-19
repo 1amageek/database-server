@@ -197,6 +197,12 @@ public final class DatabaseOperationInstance: Sendable {
                     runtimeLimits: configuration.runtimeLimits
                 )
             ),
+            AnyDatabaseOperationHandler(
+                SQLExecuteHandler(
+                    runtimeLimits: configuration.runtimeLimits,
+                    checkpointLimits: configuration.sqlCheckpointLimits
+                )
+            ),
         ]
         #if DATABASE_SERVER_MULTI_BASE
         handlers.append(contentsOf: [

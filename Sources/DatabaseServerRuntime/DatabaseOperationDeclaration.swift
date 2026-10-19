@@ -64,6 +64,12 @@ extension QueryExecuteOperation: DatabaseOperationDeclaration {
     }
 }
 
+extension SQLExecuteOperation: DatabaseOperationDeclaration {
+    public static var operation: DatabaseOperation<Request, Response> {
+        DatabaseOperationCatalog.sqlExecute
+    }
+}
+
 extension MutationExecuteOperation: DatabaseOperationDeclaration {
     public static var operation: DatabaseOperation<Request, Response> {
         DatabaseOperationCatalog.mutationExecute

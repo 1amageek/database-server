@@ -17,6 +17,7 @@ enum DatabaseOperationCapabilityCatalog {
             .capabilitiesDescribe,
             .schemaDescribe,
             .queryExecute,
+            .sqlExecute,
             .mutationExecute,
             .commandExecute,
             .maintenanceExecute,
@@ -167,6 +168,8 @@ enum DatabaseOperationCapabilityCatalog {
         #endif
         case .queryExecute:
             "query.execute"
+        case .sqlExecute:
+            "sql.execute"
         case .mutationExecute:
             "mutation.execute"
         case .graphAlgorithm:

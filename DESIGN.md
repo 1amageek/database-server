@@ -322,3 +322,34 @@ The direct child [DatabaseSchemaOperations](Sources/DatabaseSchemaOperations/DES
 owns schema job planning and durable publication coordination. Its S06 scope
 metadata uses the Framework-owned opaque codec, including source Directory
 types required after an entity is removed. SQL meaning remains in Framework.
+
+
+### Native logical SQL authorization
+
+The optional `sqlTablePolicies` launch field names exact logical SQL schema and
+table components and operation roles (`list`, `get`, `create`, `update`,
+`delete`). Standard version 3 and MultiBase version 4 remain unchanged. Native
+configuration validates empty/NUL names, exact-byte duplicate component pairs,
+unknown operation names, and duplicate/empty roles. Identifiers retain case,
+whitespace and Unicode spelling. Each declared operation grants one through 256
+distinct roles of one through 256 UTF-8 bytes, matching native token role bounds;
+omitting an operation denies it. The native application builds one immutable
+component-pair lookup and always injects its SQL policy factory, including when
+configuration is absent. Missing target, operation or principal denies access;
+there is no administrator fallback.
+
+```text
+launch sqlTablePolicies -> native runtime -> native application factory
+    -> schema runtime factory -> Framework SQL-owned relation binding
+        -> operation-role authorization
+```
+
+[Framework runtime](../database-framework/Sources/DatabaseEngine/DESIGN.md)
+owns SQL relation ownership, generation publication/rebinding, rollback and
+restart restoration. Server rules apply only to Framework-proven SQL-owned
+entities. A schema/table rename requires policy for the new exact name. Existing
+fixed physical-entity policies remain a separate unchanged constructor input.
+Materialized views use their visible SQL name; internal backing identifiers are
+not configuration targets. Ordinary views retain underlying-table invoker policy.
+Host configuration tests own closed input validation; native production-factory
+SQL tests own configured allow, default deny and exact logical-target behavior.

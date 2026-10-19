@@ -7,9 +7,9 @@ orchestration, durable publication, jobs, and remote diagnostics. Its parent is
 the [server package](../../DESIGN.md); it exposes no reusable package product.
 It currently has no independently designed child component.
 
-The accepted SQL work adds statement and single-request block dispatch in S17.
-Those operations are planned contracts until their execution and transport
-tests pass. The complete feature inventory belongs to the
+The accepted SQL work adds one complete-response SQL operation in S17.
+The S17 contract below governs implementation; completion still requires its
+execution and transport evidence. The complete feature inventory belongs to the
 [SQL semantic profile](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md).
 
 ## Responsibilities and Boundaries
@@ -224,6 +224,121 @@ closure changes recheck this target's page owners and durable publication.
 The full PostgreSQL semantic corpus stays owned by Framework, rather than
 being repeated for every transport.
 
+## S17 Complete SQL Execution
+
+### Responsibility and Accepted Contract
+
+`SQLExecuteHandler` dispatches the Kit-owned `SQLExecuteOperation` (`0x0202`).
+Its input is original SQL text, one semantic statement, or one immutable block,
+with canonical parameters and one caller execution budget. The handler invokes
+the Framework block kernel once. It preserves complete outcomes in step order:
+typed positional rows with optional affected-row count, request-contained COPY
+bytes with affected-row count, and typed command outcomes. The SQL rows carrier
+does not promise a read point, provenance, or continuation that Framework's
+block result does not provide. Wire owns its encoding and shares the existing
+column, row, and value codecs.
+
+The standard graph addresses its ordinary database. The `MultiBase` graph
+accepts only the existing data target, Base; Composition is rejected. A read
+requirement admits the operation without asserting that its contents are
+read-only. Framework derives actual read, write, and administration access from
+the complete block and enforces the selected root's Grants and entity/field
+policies inside the data operation. Server does not reparse SQL to infer access
+or bypass a Framework authorization failure.
+For a Base, persisted Grant admission precedes entity and field policies:
+an anonymous principal retains the native `authentication` failure with
+`AUTHENTICATION_REQUIRED` and `never` retryability. The standard graph has no
+persisted Grant boundary and retains its entity-policy `authorization` failure.
+
+The operation has one complete bounded response. Existing query continuation
+and durable paging contracts remain owned by `queryExecute`. No transaction,
+setting, or prepared statement survives a SQL request. Server supplies neither
+automatic network replay nor an exactly-once promise. Framework retains its
+existing conflict-retry and sequence-demand replay semantics; another request
+can repeat committed effects.
+
+### Provisional Projection and Closure
+
+```text
+authenticated Wire request -> runtime budget and target admission
+  -> Framework block kernel -> collecting outcomes and exact claims
+  -> synchronous borrowed provisional projection
+       -> Wire measures the complete success frame
+       -> same request meter admits frame bytes before allocation
+       -> Wire encodes one frame into a Framework-owned payload/claim token
+  -> authoritative data commit or rollback -> schema publication
+  -> sequence/resource closure -> cancellation gate -> ready frame
+  -> prepared DatabaseOperationResult -> endpoint returns the same frame
+```
+
+The projection receives a Framework-created noncopyable provisional view,
+not a public `SQLBlockResult`, a Ready owner, raw row arrays, or a transaction.
+Its synchronous borrows permit only measurement and encoding. It performs no
+transport, control-storage, or publication I/O. The Framework owns the encoded
+frame and its exact intermediate reservation together until complete closure.
+The callback cannot manufacture readiness or detach the reservation. Framework
+imports no Wire implementation and continues to own all data execution.
+
+The encoded response is prepared before the checkpoint transaction callback
+returns, so frame or structural overflow aborts transactional data, catalog,
+and index effects. Deferred validation, commit-unknown, or mandatory cleanup
+failure discards the prepared success. Independently committed sequence
+consumption retains the existing nonrollback sequence contract. A failure
+after commit is never described as proof of rollback. Explicit terminal
+ROLLBACK returns the block's admitted observations only after rollback/close.
+Cancellation during an already dispatched commit awaits its authoritative
+outcome. If that commit succeeds, its data and catalog changes remain committed;
+the final cancellation check still discards the prepared response before Ready.
+
+Rows are charged once by the Framework execution owner. Server adds the exact
+encoded-frame reservation on the same meter; it does not charge output rows
+again or materialize a second full result. The prepared frame reuses
+`DatabaseOperationResult`'s existing frame case, so the endpoint performs no
+second success encoding after commit.
+
+### Checkpoint Policy and Failure Relay
+
+`DatabaseOperationConfiguration` owns an optional validated
+`TransactionCheckpointLimits` ceiling. With no explicit ceiling, each request
+derives its checkpoint limits from its validated work, intermediate-byte,
+intermediate-row, and structural collection bounds. An explicit ceiling can
+only reduce those derived bounds. Checked integer conversion precedes kernel
+invocation. The caller cannot raise a runtime or checkpoint ceiling, and no
+independent unvalidated tuning constant is introduced.
+
+`SQLExecutionFailure` retains its original native cause. Error adaptation
+preserves the underlying remote category, code, retryability, and mandatory
+cleanup distinctions, and attaches the Kit-owned diagnostic through Wire's
+typed diagnostic namespace. Original text retains one-based Unicode-scalar
+positions; semantic input receives no fabricated source position. Only a
+direct underlying `CancellationError` is rethrown as transport cancellation.
+A cleanup composite containing cancellation remains a typed failure rather
+than losing its cleanup cause. Existing bounded failure-envelope fallback
+continues to apply when diagnostics themselves exceed response limits.
+
+The operation remains inside `DatabaseOperationInstance` admission from
+projection through authoritative closure. Timeout and disconnect cancellation
+await cleanup; shutdown rejects new work and drains this same boundary before
+container shutdown. The synchronous projection holds no mutex over callbacks
+and introduces no shared mutable request or session state.
+
+### Falsifiable Server Evidence
+
+| Case | Required behavior through the real handler |
+|---|---|
+| S17-SRV01 | Original text, semantic statement, and block reach the one kernel; ordered DDL, DML RETURNING, COPY, and command outcomes survive Wire decoding and backend readback. |
+| S17-SRV02 | Exact-fit complete frame succeeds; one-byte oversize fails before commit and transactional backend/catalog readback proves rollback. |
+| S17-SRV03 | First-error blocks publish no earlier result; explicit ROLLBACK preserves observations while backend effects are absent. |
+| S17-SRV04 | Principal and field-policy denial, read-only execution failure, and Base access rejection retain typed failures; a read admission requirement cannot grant write or administration authority. |
+| S17-SRV05 | Text Unicode/CRLF diagnostic positions and semantic no-position outcomes preserve typed SQLSTATE and underlying failure classification. |
+| S17-SRV06 | A gate selects the checkpoint-enabled mutating SQL transaction's commit, after its callback has prepared the response. Cancellation there returns no success response after authoritative close, while independent readback confirms the committed row; shutdown waits for this same commit before draining. Framework owns frame-claim release evidence. |
+| S17-SRV07 | Capabilities and handler inventory agree in standard and MultiBase graphs; Composition rejects SQL execution and existing query paging remains unchanged. |
+
+Framework owns evaluator, checkpoint, deferred-constraint, sequence, and
+projection-lifetime behavior. Kit owns deterministic malformed/limit codecs.
+Server tests prove their dispatch, authority, output-admission, diagnostic, and
+lifecycle composition; native transport tests prove authenticated delivery.
+
 ### S03 continuation parameter identity
 
 A durable query continuation identifies the canonical admitted statement and
@@ -318,8 +433,8 @@ typed failures directly and through `CanonicalSQLBindingFailure` and
 |---|---|
 | Missing requested namespace / relation | `notFound` / `SQL_NAMESPACE_NOT_FOUND`, `SQL_RELATION_NOT_FOUND` |
 | Missing entity, runtime, or field; runtime contract mismatch; missing physical projection column | `internalFailure` / `SQL_CATALOG_MAPPING_INVALID` |
-| Fingerprint or digest mismatch, invalid protection, missing catalog | `internalFailure` / `SQL_CATALOG_INVALID` |
-| Protected relation/column/key removal or change; relation/column retargeting; removed primary-key column | `conflict` / `SQL_CATALOG_INCOMPATIBLE` |
+| Fingerprint or digest mismatch, invalid protection or SQL ownership, missing catalog | `internalFailure` / `SQL_CATALOG_INVALID` |
+| Protected relation/column/key/constraint/policy/sequence removal or change; protected physical column addition; relation/column retargeting; removed primary-key column | `conflict` / `SQL_CATALOG_INCOMPATIBLE` |
 | Read resolution generation mismatch | `conflict` / `SQL_READ_GENERATION_STALE` |
 
 All mappings use `never` retryability: replaying the same admitted generation
@@ -332,5 +447,10 @@ invent a position. No failure becomes empty success. This adaptation does not
 add catalog administration dispatch; SQLSTATE remains S16-owned.
 
 [DatabaseErrorMapperTests/databaseQueryExecutionFailures](../../Tests/DatabaseServerRuntimeTests/DatabaseErrorMapperTests.swift)
-checks every catalog/resolution case directly and through both wrappers,
+checks the original catalog/resolution cases directly and through both wrappers,
 sanitized messages, retry policy, source position, and the recursion bound.
+`SQLExecuteHandlerTests.diagnosticPreservesUnderlyingMapping` additionally checks
+invalid SQL ownership and protected constraint, column policy, physical column
+addition, and sequence changes directly and through `SQLExecutionFailure`.
+The native category and code remain authoritative while the wrapper retains
+Framework's diagnostic classification without inventing a source position.

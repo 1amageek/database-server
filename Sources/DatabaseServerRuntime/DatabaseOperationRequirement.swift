@@ -118,6 +118,12 @@ public struct DatabaseOperationRequirement: Sendable, Hashable {
                 access: .read,
                 transaction: .read
             )
+        case .sqlExecute:
+            return Self(
+                acceptedTargets: dataTargets,
+                access: .read,
+                transaction: .none
+            )
         case .mutationExecute:
             return Self(
                 acceptedTargets: dataTargets,
@@ -170,6 +176,8 @@ public struct DatabaseOperationRequirement: Sendable, Hashable {
             return Self(access: .administer, transaction: .write)
         case .queryExecute, .graphAlgorithm:
             return Self(access: .read, transaction: .read)
+        case .sqlExecute:
+            return Self(access: .read, transaction: .none)
         case .mutationExecute:
             return Self(access: .write, transaction: .write)
         case .ontologyExecute, .shaclExecute, .commandExecute,

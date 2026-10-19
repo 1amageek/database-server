@@ -512,7 +512,8 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 storageTopology: launchConfiguration.runtimeStorageTopology(),
                 authenticator: registry,
                 version: DatabaseServerBuild.version,
-                wireLimits: hostConfiguration.wireLimits
+                wireLimits: hostConfiguration.wireLimits,
+                sqlTablePolicies: launchConfiguration.sqlTablePolicies ?? []
             )
             #else
             let environment = try await NativeDatabaseRuntimeEnvironment.open(
@@ -520,7 +521,8 @@ struct DatabaseServerCommand: AsyncParsableCommand {
                 databaseRoot: launchConfiguration.runtimeDatabaseRoot(),
                 authenticator: registry,
                 version: DatabaseServerBuild.version,
-                wireLimits: hostConfiguration.wireLimits
+                wireLimits: hostConfiguration.wireLimits,
+                sqlTablePolicies: launchConfiguration.sqlTablePolicies ?? []
             )
             #endif
             do {

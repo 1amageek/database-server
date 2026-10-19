@@ -7,12 +7,14 @@ import DatabaseQueryOperations
 import DatabaseCommandOperations
 import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseEngine
+import StorageKit
 
 public final class DatabaseOperationConfiguration: Sendable {
     public let identity: DatabaseOperationIdentity
     public let admissionPolicy: AnyDatabaseOperationAdmissionPolicy
     public let middlewares: [AnyDatabaseRequestMiddleware]
     public let runtimeLimits: DatabaseOperationLimits
+    public let sqlCheckpointLimits: TransactionCheckpointLimits?
     public let schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory?
     #if DATABASE_OPERATIONS_GRAPH_INDEXES
     public let graphOperationLimits: GraphOperationLimits
@@ -25,7 +27,8 @@ public final class DatabaseOperationConfiguration: Sendable {
         admissionPolicy: AnyDatabaseOperationAdmissionPolicy,
         schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory? = nil,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
-        runtimeLimits: DatabaseOperationLimits = .default
+        runtimeLimits: DatabaseOperationLimits = .default,
+        sqlCheckpointLimits: TransactionCheckpointLimits? = nil
     ) throws(DatabaseOperationConfigurationError) {
         try runtimeLimits.validateConfiguration()
         self.identity = identity
@@ -33,6 +36,7 @@ public final class DatabaseOperationConfiguration: Sendable {
         self.admissionPolicy = admissionPolicy
         self.middlewares = middlewares
         self.runtimeLimits = runtimeLimits
+        self.sqlCheckpointLimits = sqlCheckpointLimits
         self.schemaRuntimeFactory = schemaRuntimeFactory
         #if DATABASE_OPERATIONS_GRAPH_INDEXES
         self.graphOperationLimits = .default
@@ -47,7 +51,8 @@ public final class DatabaseOperationConfiguration: Sendable {
         graphOperationLimits: GraphOperationLimits,
         schemaRuntimeFactory: AnyDatabaseSchemaRuntimeFactory? = nil,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
-        runtimeLimits: DatabaseOperationLimits = .default
+        runtimeLimits: DatabaseOperationLimits = .default,
+        sqlCheckpointLimits: TransactionCheckpointLimits? = nil
     ) throws(DatabaseOperationConfigurationError) {
         try runtimeLimits.validateConfiguration()
         self.identity = identity
@@ -55,6 +60,7 @@ public final class DatabaseOperationConfiguration: Sendable {
         self.admissionPolicy = admissionPolicy
         self.middlewares = middlewares
         self.runtimeLimits = runtimeLimits
+        self.sqlCheckpointLimits = sqlCheckpointLimits
         self.schemaRuntimeFactory = schemaRuntimeFactory
         self.graphOperationLimits = graphOperationLimits
     }

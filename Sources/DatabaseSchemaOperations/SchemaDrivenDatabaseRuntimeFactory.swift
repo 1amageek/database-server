@@ -9,13 +9,20 @@ public struct SchemaDrivenDatabaseRuntimeFactory: DatabaseSchemaRuntimeFactory,
     Sendable {
     private let executionIdentity: DatabaseExecutionRuntimeIdentity
     private let authorizationPolicies: [AuthorizationPolicyHandler]
+    private let sqlAuthorizationPolicyFactory: (@Sendable (
+        Schema.Entity, SQLNamespace, String
+    ) -> AuthorizationPolicyHandler?)?
 
     public init(
         executionIdentity: DatabaseExecutionRuntimeIdentity,
-        authorizationPolicies: [AuthorizationPolicyHandler] = []
+        authorizationPolicies: [AuthorizationPolicyHandler] = [],
+        sqlAuthorizationPolicyFactory: (@Sendable (
+            Schema.Entity, SQLNamespace, String
+        ) -> AuthorizationPolicyHandler?)? = nil
     ) {
         self.executionIdentity = executionIdentity
         self.authorizationPolicies = authorizationPolicies
+        self.sqlAuthorizationPolicyFactory = sqlAuthorizationPolicyFactory
     }
 
     public func makeOperationConfiguration(
@@ -24,7 +31,8 @@ public struct SchemaDrivenDatabaseRuntimeFactory: DatabaseSchemaRuntimeFactory,
         try DatabaseFrameworkRuntime.configuration(
             executionIdentity: executionIdentity,
             schema: schema,
-            authorizationPolicies: authorizationPolicies
+            authorizationPolicies: authorizationPolicies,
+            sqlAuthorizationPolicyFactory: sqlAuthorizationPolicyFactory
         )
     }
 }

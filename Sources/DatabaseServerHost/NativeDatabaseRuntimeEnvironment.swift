@@ -39,14 +39,17 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             NativeDatabaseStorageTopologyConfiguration,
         authenticator: any DatabaseServerAuthenticator,
         version: String,
-        wireLimits: DatabaseWireLimits = .default
+        wireLimits: DatabaseWireLimits = .default,
+        sqlTablePolicies: [SQLTablePolicy] = []
     ) async throws -> NativeDatabaseRuntimeEnvironment {
+        try SQLTablePolicy.validate(sqlTablePolicies)
         let openedStorage = try await openStorageTopology(configuration)
         return try await open(
             openedStorage: openedStorage,
             authenticator: authenticator,
             version: version,
-            wireLimits: wireLimits
+            wireLimits: wireLimits,
+            sqlTablePolicies: sqlTablePolicies
         )
     }
     #else
@@ -55,8 +58,10 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
         databaseRoot: NativeDatabaseRootConfiguration,
         authenticator: any DatabaseServerAuthenticator,
         version: String,
-        wireLimits: DatabaseWireLimits = .default
+        wireLimits: DatabaseWireLimits = .default,
+        sqlTablePolicies: [SQLTablePolicy] = []
     ) async throws -> NativeDatabaseRuntimeEnvironment {
+        try SQLTablePolicy.validate(sqlTablePolicies)
         let openedStorage = try await openSingleStorage(
             storage,
             databaseRoot: databaseRoot
@@ -65,7 +70,8 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             openedStorage: openedStorage,
             authenticator: authenticator,
             version: version,
-            wireLimits: wireLimits
+            wireLimits: wireLimits,
+            sqlTablePolicies: sqlTablePolicies
         )
     }
     #endif
@@ -74,10 +80,11 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
         openedStorage: OpenedStorage,
         authenticator: any DatabaseServerAuthenticator,
         version: String,
-        wireLimits: DatabaseWireLimits
+        wireLimits: DatabaseWireLimits,
+        sqlTablePolicies: [SQLTablePolicy]
     ) async throws -> NativeDatabaseRuntimeEnvironment {
         let application = try NativeDatabaseOperationApplicationFactory
-            .schemaDriven(version: version)
+            .schemaDriven(version: version, sqlTablePolicies: sqlTablePolicies)
         let scheduler = NativeDatabaseJobScheduler()
         do {
             let hostServices = DatabaseOperationHostServices(

@@ -70,8 +70,55 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 retryability: .never
             )
         }
+        if let failure = error as? SQLExecutionFailure {
+            let underlying = remoteError(for: failure.underlyingError, context: context,
+                limits: limits, mappingDepth: mappingDepth + 1)
+            let mapped: RemoteOperationError
+            if underlying.code == "SERVER_FAILURE" {
+                mapped = Self.map(failure.diagnostic)
+            } else {
+                mapped = underlying
+            }
+            do {
+                return try RemoteOperationError(category: mapped.category, code: mapped.code,
+                    message: mapped.message, retryability: mapped.retryability,
+                    details: Self.errorDetails(mapped.details.fields.filter { $0.key != "sqlDiagnostic" }),
+                    sqlDiagnostic: failure.diagnostic)
+            } catch {
+                return RemoteOperationError(category: .internalFailure,
+                    code: "SQL_DIAGNOSTIC_ENCODING_FAILED",
+                    message: "SQL failure diagnostic is invalid", retryability: .never)
+            }
+        }
         if let remote = error as? RemoteOperationError {
             return remote
+        }
+        if error is CancellationError {
+            return RemoteOperationError(category: .invalidRequest, code: "OPERATION_CANCELLED",
+                message: "Database operation was cancelled", retryability: .never)
+        }
+        if let failure = error as? DatabaseReadSessionCleanupError {
+            return mapSQLCleanup(operationError: failure.operationError, cleanupError: failure.cleanupError,
+                context: context, limits: limits, mappingDepth: mappingDepth)
+        }
+        if let failure = error as? SQLRelationCleanupError {
+            return mapSQLCleanup(operationError: failure.operationError, cleanupError: failure.cleanupError,
+                context: context, limits: limits, mappingDepth: mappingDepth)
+        }
+        if let failure = error as? SQLSequenceRequestCleanupError {
+            return mapSQLCleanup(operationError: failure.operationError, cleanupError: failure.cleanupError,
+                context: context, limits: limits, mappingDepth: mappingDepth)
+        }
+        if let failure = error as? StorageRangeCleanupError {
+            return mapSQLCleanup(operationError: failure.iterationError, cleanupError: failure.cleanupError,
+                context: context, limits: limits, mappingDepth: mappingDepth)
+        }
+        if let failure = error as? StorageRangeTerminalCleanupError {
+            let cleanup = remoteError(for: failure.cleanupError, context: context,
+                limits: limits, mappingDepth: mappingDepth + 1)
+            return RemoteOperationError(category: .internalFailure, code: "SQL_EXECUTION_CLEANUP_FAILURE",
+                message: "SQL resource cleanup failed", retryability: .never,
+                details: Self.errorDetails([(key: "cleanupError", value: .object(Self.fields(for: cleanup)))]))
         }
         if let cleanupError = error as? StorageTransactionCleanupError {
             return makeRemoteError(
@@ -734,6 +781,41 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
         )
     }
 
+    private func mapSQLCleanup(
+        operationError: any Error,
+        cleanupError: any Error,
+        context: DatabaseOperationContext,
+        limits: DatabaseWireLimits,
+        mappingDepth: Int
+    ) -> RemoteOperationError {
+        let operation = remoteError(for: operationError, context: context, limits: limits,
+            mappingDepth: mappingDepth + 1)
+        let cleanup = remoteError(for: cleanupError, context: context, limits: limits,
+            mappingDepth: mappingDepth + 1)
+        return RemoteOperationError(category: .internalFailure, code: "SQL_EXECUTION_CLEANUP_FAILURE",
+            message: "SQL execution and mandatory cleanup both failed", retryability: .never,
+            details: Self.errorDetails([
+                (key: "operationError", value: .object(Self.fields(for: operation))),
+                (key: "cleanupError", value: .object(Self.fields(for: cleanup))),
+            ]))
+    }
+
+    private static func map(_ diagnostic: SQLDiagnostic) -> RemoteOperationError {
+        let category: OperationErrorCategory
+        switch diagnostic.category {
+        case .syntax, .name, .type, .cardinality, .numeric, .data, .transaction, .cancellation:
+            category = .invalidRequest
+        case .constraint: category = .constraint
+        case .serialization: category = .conflict
+        case .unsupported: category = .unavailable
+        case .resource: category = .resourceLimit
+        case .authorization: category = .authorization
+        case .internalError: category = .internalFailure
+        }
+        return RemoteOperationError(category: category, code: "SQL_EXECUTION_FAILURE",
+            message: diagnostic.message, retryability: .never)
+    }
+
     private static func map(_ error: SQLCatalogBindingError) -> RemoteOperationError {
         let category: OperationErrorCategory
         let code: String
@@ -751,12 +833,15 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "SQL_CATALOG_MAPPING_INVALID"
             message = "The SQL catalog does not match its physical runtime"
-        case .physicalFingerprintMismatch, .digestMismatch, .invalidProtection, .missingCatalog:
+        case .physicalFingerprintMismatch, .digestMismatch, .invalidProtection,
+             .invalidSQLOwnership, .missingCatalog:
             category = .internalFailure
             code = "SQL_CATALOG_INVALID"
             message = "The SQL catalog is invalid"
         case .protectedRelationRemoved, .relationRetargeted, .columnRetargeted,
-             .protectedColumnRemoved, .protectedPrimaryKeyChanged, .primaryKeyColumnRemoved:
+             .protectedColumnRemoved, .protectedPrimaryKeyChanged, .primaryKeyColumnRemoved,
+             .protectedConstraintsChanged, .protectedColumnPolicyChanged, .protectedColumnAdded,
+             .protectedSequenceChanged:
             category = .conflict
             code = "SQL_CATALOG_INCOMPATIBLE"
             message = "The SQL catalog change violates an existing contract"

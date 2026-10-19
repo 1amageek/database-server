@@ -100,3 +100,17 @@ is distinct from a dynamic Directory component: partition backfill still
 uses the declared `.partition` Directory and every original partition/data
 assertion. Framework's S11 compiled-protection tests separately prove that a
 schema-driven target cannot weaken a persisted compiled contract.
+
+
+### Logical SQL policy factory forwarding
+
+`SchemaDrivenDatabaseRuntimeFactory` forwards the optional
+`sqlAuthorizationPolicyFactory` to
+[Framework runtime composition](../../../database-framework/Sources/DatabaseEngine/DESIGN.md).
+Framework alone resolves SQL-owned entities and supplies the current namespace
+and public relation name (including visible materialized-view names). The Server factory neither derives physical names nor binds policy
+to non-SQL entities. Existing `authorizationPolicies` forwarding remains intact.
+The native host always supplies a logical factory, even for absent configuration,
+so missing logical rules deny. Framework owns policy rebinding during schema
+publication, rollback and reopen; native host integration tests prove this
+factory is used by production application composition.
