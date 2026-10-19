@@ -176,6 +176,23 @@ Renaming a table or schema requires an explicit rule for its new name. Rules
 cover SQL-owned entities only; [Framework owns relation binding and lifecycle](../database-framework/Sources/DatabaseEngine/DESIGN.md).
 This optional field keeps standard format 3 and MultiBase format 4 compatible.
 
+Entity data outside SQL tables follows the optional `entityPolicies` field.
+Authentication does not grant entity data access, including for the `admin`
+role. Each entity names role lists for `list`, `get`, `create`, `update`, and
+`delete`; omitted operations and entities are denied. For example:
+
+```json
+"entityPolicies": [
+  {"entity": "Asset", "roles": {"list": ["reader"], "get": ["reader"], "create": ["editor"]}}
+]
+```
+
+These policies also apply to entities published after startup. Changes to the
+launch document take effect on restart. Field restrictions and MultiBase grants
+remain additional checks; no wildcard or implicit administrator bypass exists.
+SQL tables are governed only by `sqlTablePolicies`; an entity rule does not
+grant access to a SQL-owned table. Both fields may appear in one document.
+
 With `MultiBase`, add the placement fields:
 
 ```json

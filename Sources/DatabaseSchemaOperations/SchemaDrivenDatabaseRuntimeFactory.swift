@@ -9,6 +9,9 @@ public struct SchemaDrivenDatabaseRuntimeFactory: DatabaseSchemaRuntimeFactory,
     Sendable {
     private let executionIdentity: DatabaseExecutionRuntimeIdentity
     private let authorizationPolicies: [AuthorizationPolicyHandler]
+    private let schemaDrivenAuthorizationPolicyFactory: (@Sendable (
+        Schema.Entity
+    ) -> AuthorizationPolicyHandler?)?
     private let sqlAuthorizationPolicyFactory: (@Sendable (
         Schema.Entity, SQLNamespace, String
     ) -> AuthorizationPolicyHandler?)?
@@ -16,12 +19,16 @@ public struct SchemaDrivenDatabaseRuntimeFactory: DatabaseSchemaRuntimeFactory,
     public init(
         executionIdentity: DatabaseExecutionRuntimeIdentity,
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (
+            Schema.Entity
+        ) -> AuthorizationPolicyHandler?)? = nil,
         sqlAuthorizationPolicyFactory: (@Sendable (
             Schema.Entity, SQLNamespace, String
         ) -> AuthorizationPolicyHandler?)? = nil
     ) {
         self.executionIdentity = executionIdentity
         self.authorizationPolicies = authorizationPolicies
+        self.schemaDrivenAuthorizationPolicyFactory = schemaDrivenAuthorizationPolicyFactory
         self.sqlAuthorizationPolicyFactory = sqlAuthorizationPolicyFactory
     }
 
@@ -32,6 +39,7 @@ public struct SchemaDrivenDatabaseRuntimeFactory: DatabaseSchemaRuntimeFactory,
             executionIdentity: executionIdentity,
             schema: schema,
             authorizationPolicies: authorizationPolicies,
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory,
             sqlAuthorizationPolicyFactory: sqlAuthorizationPolicyFactory
         )
     }

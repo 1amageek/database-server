@@ -110,6 +110,9 @@ schema-driven target cannot weaken a persisted compiled contract.
 Framework alone resolves SQL-owned entities and supplies the current namespace
 and public relation name (including visible materialized-view names). The Server factory neither derives physical names nor binds policy
 to non-SQL entities. Existing `authorizationPolicies` forwarding remains intact.
+The optional `schemaDrivenAuthorizationPolicyFactory` is forwarded unchanged;
+Framework applies it to each schema-driven entity, including later publications,
+and replaces its result for SQL-owned entities with the logical SQL decision.
 The native host always supplies a logical factory, even for absent configuration,
 so missing logical rules deny. Framework owns policy rebinding during schema
 publication, rollback and reopen; native host integration tests prove this

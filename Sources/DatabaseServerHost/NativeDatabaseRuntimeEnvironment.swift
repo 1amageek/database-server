@@ -40,16 +40,19 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
         authenticator: any DatabaseServerAuthenticator,
         version: String,
         wireLimits: DatabaseWireLimits = .default,
-        sqlTablePolicies: [SQLTablePolicy] = []
+        sqlTablePolicies: [SQLTablePolicy] = [],
+        entityPolicies: [DatabaseServerLaunchConfiguration.EntityPolicy] = []
     ) async throws -> NativeDatabaseRuntimeEnvironment {
         try SQLTablePolicy.validate(sqlTablePolicies)
+        try DatabaseServerLaunchConfiguration.validateEntityPolicies(entityPolicies)
         let openedStorage = try await openStorageTopology(configuration)
         return try await open(
             openedStorage: openedStorage,
             authenticator: authenticator,
             version: version,
             wireLimits: wireLimits,
-            sqlTablePolicies: sqlTablePolicies
+            sqlTablePolicies: sqlTablePolicies,
+            entityPolicies: entityPolicies
         )
     }
     #else
@@ -59,9 +62,11 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
         authenticator: any DatabaseServerAuthenticator,
         version: String,
         wireLimits: DatabaseWireLimits = .default,
-        sqlTablePolicies: [SQLTablePolicy] = []
+        sqlTablePolicies: [SQLTablePolicy] = [],
+        entityPolicies: [DatabaseServerLaunchConfiguration.EntityPolicy] = []
     ) async throws -> NativeDatabaseRuntimeEnvironment {
         try SQLTablePolicy.validate(sqlTablePolicies)
+        try DatabaseServerLaunchConfiguration.validateEntityPolicies(entityPolicies)
         let openedStorage = try await openSingleStorage(
             storage,
             databaseRoot: databaseRoot
@@ -71,7 +76,8 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
             authenticator: authenticator,
             version: version,
             wireLimits: wireLimits,
-            sqlTablePolicies: sqlTablePolicies
+            sqlTablePolicies: sqlTablePolicies,
+            entityPolicies: entityPolicies
         )
     }
     #endif
@@ -81,10 +87,15 @@ public final class NativeDatabaseRuntimeEnvironment: Sendable {
         authenticator: any DatabaseServerAuthenticator,
         version: String,
         wireLimits: DatabaseWireLimits,
-        sqlTablePolicies: [SQLTablePolicy]
+        sqlTablePolicies: [SQLTablePolicy],
+        entityPolicies: [DatabaseServerLaunchConfiguration.EntityPolicy]
     ) async throws -> NativeDatabaseRuntimeEnvironment {
         let application = try NativeDatabaseOperationApplicationFactory
-            .schemaDriven(version: version, sqlTablePolicies: sqlTablePolicies)
+            .schemaDriven(
+                version: version,
+                sqlTablePolicies: sqlTablePolicies,
+                entityPolicies: entityPolicies
+            )
         let scheduler = NativeDatabaseJobScheduler()
         do {
             let hostServices = DatabaseOperationHostServices(

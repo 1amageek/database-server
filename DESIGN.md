@@ -316,6 +316,37 @@ callers are migrated. Changes to active-slot or continuation persistence
 require both runtime state tests and the package integration matrix.
 
 
+## Configured Entity Authorization
+
+The native launch document may declare `entityPolicies`, each with an exact
+`entity` and a `roles` object containing operation role lists (`list`, `get`, `create`, `update`, `delete`).
+Missing entities, operations, and anonymous principals are denied. A listed role
+permits only its declared operation; there is no implicit admin bypass. Empty or
+duplicate entity/role names and unknown keys are configuration errors. Policies
+are immutable host configuration and rebound to each active schema generation,
+so schema publication does not discard authorization. Field policy and MultiBase
+Partition grants remain additional framework checks.
+
+`entityPolicies` and `sqlTablePolicies` coexist in one document. The native
+application passes entity rules as Framework's schema-driven entity policy
+factory, which also binds entities published after startup. Framework replaces
+the binding of every SQL-owned entity with its `sqlTablePolicies` decision, so an
+entity rule never grants access to a SQL-owned table.
+
+```text
+Launch configuration -> schema runtime factory -> schema-bound entity policy
+Authenticated Principal -----------------------> framework authorization
+```
+
+The framework handler contract is owned by
+[DatabaseEngine](../database-framework/Sources/DatabaseEngine/DESIGN.md#schema-driven-authorization).
+Host configuration tests own closed input validation. `EntityPolicyTests`
+proves through production native composition and bearer authentication that a
+published entity admits only its configured roles, denies anonymous and
+unlisted principals, keeps SQL table rules separate, and restores the same
+decision after reopening the storage. The CLI process harness exercises the
+standalone process with the 1000-record sample readback.
+
 ## Schema Operations Module
 
 The direct child [DatabaseSchemaOperations](Sources/DatabaseSchemaOperations/DESIGN.md)

@@ -271,6 +271,16 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         }
     }
 
+    public struct EntityPolicy: Codable, Sendable {
+        public let entity: String
+        public let roles: [String: [String]]
+
+        public init(entity: String, roles: [String: [String]]) {
+            self.entity = entity
+            self.roles = roles
+        }
+    }
+
     public let formatVersion: Int
     #if DATABASE_SERVER_HOST_MULTI_BASE
     public let controlDomain: String
@@ -288,6 +298,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
     public let tls: TLS?
     public let maximumFrameBytes: Int?
     public let sqlTablePolicies: [SQLTablePolicy]?
+    public let entityPolicies: [EntityPolicy]?
 
     #if DATABASE_SERVER_HOST_MULTI_BASE
     public init(
@@ -302,7 +313,8 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         tokenRegistryPath: String,
         tls: TLS? = nil,
         maximumFrameBytes: Int? = nil,
-        sqlTablePolicies: [SQLTablePolicy]? = nil
+        sqlTablePolicies: [SQLTablePolicy]? = nil,
+        entityPolicies: [EntityPolicy]? = nil
     ) {
         self.formatVersion = formatVersion
         self.controlDomain = controlDomain
@@ -316,6 +328,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         self.tls = tls
         self.maximumFrameBytes = maximumFrameBytes
         self.sqlTablePolicies = sqlTablePolicies
+        self.entityPolicies = entityPolicies
     }
     #else
     public init(
@@ -328,7 +341,8 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         tokenRegistryPath: String,
         tls: TLS? = nil,
         maximumFrameBytes: Int? = nil,
-        sqlTablePolicies: [SQLTablePolicy]? = nil
+        sqlTablePolicies: [SQLTablePolicy]? = nil,
+        entityPolicies: [EntityPolicy]? = nil
     ) {
         self.formatVersion = formatVersion
         self.storage = storage
@@ -340,6 +354,7 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         self.tls = tls
         self.maximumFrameBytes = maximumFrameBytes
         self.sqlTablePolicies = sqlTablePolicies
+        self.entityPolicies = entityPolicies
     }
     #endif
 
@@ -462,8 +477,26 @@ public struct DatabaseServerLaunchConfiguration: Codable, Sendable {
         URL(fileURLWithPath: tokenRegistryPath)
     }
 
+    static func validateEntityPolicies(_ policies: [EntityPolicy]) throws {
+        var names: Set<String> = []
+        let operations: Set<String> = ["list", "get", "create", "update", "delete"]
+        for policy in policies {
+            guard !policy.entity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  names.insert(policy.entity).inserted,
+                  Set(policy.roles.keys).isSubset(of: operations),
+                  policy.roles.values.allSatisfy({ roles in
+                      Set(roles).count == roles.count && roles.allSatisfy {
+                          !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      }
+                  }) else {
+                throw DatabaseServerLaunchConfigurationError.invalidEntityPolicy
+            }
+        }
+    }
+
     private func validate() throws {
         try SQLTablePolicy.validate(sqlTablePolicies ?? [])
+        try Self.validateEntityPolicies(entityPolicies ?? [])
         #if DATABASE_SERVER_HOST_MULTI_BASE
         // Version 4 drops the per-placement path a Base Partition no longer
         // addresses. An earlier document is rejected rather than loaded with
@@ -536,6 +569,7 @@ public enum DatabaseServerLaunchConfigurationError:
 {
     case invalidDocument
     case invalidSQLTablePolicy
+    case invalidEntityPolicy
     case unsupportedFormatVersion(Int)
     case storageConfigurationMismatch
     case sqliteMemoryHasPath

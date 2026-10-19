@@ -203,10 +203,10 @@ summary_number() {
 
 case "$TEST_TRAITS" in
   "")
-    default_expected_test_count=331
+    default_expected_test_count=333
     ;;
   "MultiBase")
-    default_expected_test_count=364
+    default_expected_test_count=365
     ;;
   *)
     echo "error: DATABASE_SERVER_TEST_TRAITS must be empty or MultiBase" >&2
@@ -240,6 +240,16 @@ for timeout_value in "$BUILD_TIMEOUT_SECONDS" "$TEST_TIMEOUT_SECONDS"; do
 done
 
 PINNED_SWIFTC="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
+resolved_toolchain_root="$(cd "$(dirname "$PINNED_SWIFTC")/../.." && pwd -P)"
+if ! resolved_toolchain_identifier="$(plutil -extract CFBundleIdentifier raw -o - "$resolved_toolchain_root/Info.plist" 2>/dev/null)"; then
+  echo "error: selected compiler has no verifiable toolchain identity ($PINNED_SWIFTC)" >&2
+  exit 1
+fi
+if [[ "$resolved_toolchain_identifier" != "$TOOLCHAIN_IDENTIFIER" ]]; then
+  echo "error: requested $TOOLCHAIN_IDENTIFIER but xcrun selected $resolved_toolchain_identifier ($PINNED_SWIFTC)" >&2
+  exit 1
+fi
+printf 'verified-toolchain=%s compiler=%s\n' "$resolved_toolchain_identifier" "$PINNED_SWIFTC"
 xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swift --version
 xcodebuild -version
 

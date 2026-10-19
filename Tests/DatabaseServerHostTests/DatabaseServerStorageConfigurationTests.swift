@@ -6,6 +6,30 @@ import Testing
 struct DatabaseServerStorageConfigurationTests {
     @Test("Launch configuration selects each native storage backend exactly")
     func selectsNativeBackends() throws {
+        let policy = DatabaseServerLaunchConfiguration.EntityPolicy(
+            entity: "Asset", roles: ["get": ["reader"], "create": ["editor"]]
+        )
+        try DatabaseServerLaunchConfiguration.validateEntityPolicies([policy])
+        for policies in [
+            [policy, policy],
+            [.init(entity: "", roles: [:])],
+            [.init(entity: "Asset", roles: ["admin": ["editor"]])],
+            [.init(entity: "Asset", roles: ["get": [""]])],
+            [.init(entity: "Asset", roles: ["get": ["reader", "reader"]])]
+        ] {
+            #expect(throws: DatabaseServerLaunchConfigurationError.invalidEntityPolicy) {
+                try DatabaseServerLaunchConfiguration.validateEntityPolicies(policies)
+            }
+        }
+        for document in [
+            #"{"entityPolicies":[{"entity":"Asset","roles":{"read":["reader"]}}]}"#,
+            #"{"entityPolicies":[{"entity":"Asset","roles":{},"allowAll":true}]}"#,
+            #"{"entityPolicies":{}}"#
+        ] {
+            #expect(throws: (any Error).self) {
+                try DatabaseServerLaunchConfigurationJSONValidator.validate(Data(document.utf8))
+            }
+        }
         let sqlite = DatabaseServerLaunchConfiguration.Storage(
             sqlite: .init(mode: .memory)
         )
