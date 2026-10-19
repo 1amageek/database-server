@@ -380,6 +380,7 @@ let package = Package(
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
+            exclude: ["DESIGN.md"],
             swiftSettings: [
                 .define(
                     "DATABASE_SERVER_MULTI_BASE",
