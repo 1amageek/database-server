@@ -489,6 +489,8 @@ struct DatabaseErrorMapperTests {
             (.physicalFingerprintMismatch, .internalFailure, "SQL_CATALOG_INVALID", catalogMessage),
             (.digestMismatch, .internalFailure, "SQL_CATALOG_INVALID", catalogMessage),
             (.invalidProtection(privateIdentifier), .internalFailure, "SQL_CATALOG_INVALID", catalogMessage),
+            (.sqlOwnedEntityRedeclared(privateIdentifier), .conflict, "SCHEMA_SQL_OWNED_ENTITY_CONFLICT",
+             "The schema manifest redefines an entity created by SQL"),
             (.protectedRelationRemoved(privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),
             (.relationRetargeted(privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),
             (.columnRetargeted(relation: privateIdentifier, column: privateIdentifier), .conflict, "SQL_CATALOG_INCOMPATIBLE", compatibilityMessage),

@@ -678,6 +678,120 @@ struct SchemaExecuteHandlerTests {
         #expect(second.generation > first.generation)
     }
 
+    @Test("Publication retains tables created by SQL and rejects their redefinition")
+    func publicationRetainsSQLOwnedTables() async throws {
+        let initialSchema = try Schema(
+            entities: [try SchemaExecuteAccount.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let container = try await makeContainer(schema: initialSchema)
+        defer { await container.shutdown() }
+        let runtime = try await makeRuntime(container: container)
+        _ = try await invoke(
+            DatabaseOperationCatalog.sqlExecute,
+            request: SQLExecuteOperation.Request(input: .text(
+                "CREATE TABLE sql_items(value INTEGER); INSERT INTO sql_items VALUES (7);")),
+            requestID: 1,
+            runtime: runtime,
+            targetsData: true
+        )
+        let lease = container.acquirePublishedSchemaLease()
+        let sqlEntity = try #require(lease.schema.entities.first {
+            $0.name != SchemaExecuteAccount.persistableType
+        })
+        let targetManifest = SchemaManifest(schema: try Schema(
+            entities: [try SchemaExecuteAccount.schemaEntity, try SchemaBuildAccountV1.schemaEntity],
+            version: Schema.Version(1, 1, 0)
+        ))
+        let effectiveFingerprint = try SchemaManifest(
+            schema: try lease.applicationSchema(declaring: targetManifest.schema)
+        ).fingerprint()
+        #expect(effectiveFingerprint != (try targetManifest.fingerprint()))
+
+        let planResponse = try await invoke(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(invocation: .plan(
+                manifest: targetManifest, expectedFingerprint: lease.fingerprint)),
+            requestID: 2,
+            runtime: runtime
+        )
+        guard case .plan(let plan) = planResponse else {
+            Issue.record("Expected a schema plan response")
+            return
+        }
+        #expect(plan.currentFingerprint == lease.fingerprint)
+        #expect(plan.targetFingerprint == effectiveFingerprint)
+
+        let apply = SchemaExecuteOperation.Request(invocation: .apply(
+            manifest: targetManifest, expectedFingerprint: lease.fingerprint,
+            idempotencyKey: "sql-owned-apply"))
+        let accepted = try await invoke(
+            DatabaseOperationCatalog.schemaExecute, request: apply, requestID: 3, runtime: runtime)
+        guard case .accepted(let job) = accepted else {
+            Issue.record("Expected an accepted schema transition job")
+            return
+        }
+        let status = try await runUntilTerminal(job, runtime: runtime, firstRequestID: 4)
+        #expect(status.state == .succeeded)
+        let publication = try await schemaApplyResult(job, runtime: runtime, requestID: 60)
+        #expect(publication.fingerprint == effectiveFingerprint)
+        #expect(container.schema.entity(named: sqlEntity.name) == sqlEntity)
+        #expect(container.schema.entity(named: SchemaBuildAccountV1.persistableType) != nil)
+        let readback = try await invoke(
+            DatabaseOperationCatalog.sqlExecute,
+            request: SQLExecuteOperation.Request(input: .text("SELECT value FROM sql_items")),
+            requestID: 61,
+            runtime: runtime,
+            targetsData: true
+        )
+        guard case .rows(let rows) = readback.results[0] else {
+            Issue.record("Expected SQL rows")
+            return
+        }
+        var iterator = rows.makeRowIterator()
+        var values: [[QueryValue]] = []
+        while let row = try iterator.next() { values.append(row.values) }
+        #expect(values == [[.primitive(.int32(7))]])
+
+        // A same-key retry keeps the caller's identity after SQL changes the effective schema.
+        _ = try await invoke(
+            DatabaseOperationCatalog.sqlExecute,
+            request: SQLExecuteOperation.Request(input: .text("CREATE TABLE sql_later(value INTEGER)")),
+            requestID: 62,
+            runtime: runtime,
+            targetsData: true
+        )
+        let replay = try await invoke(
+            DatabaseOperationCatalog.schemaExecute, request: apply, requestID: 63, runtime: runtime)
+        #expect(replay == accepted)
+
+        let conflicting = try Schema.Entity(
+            name: sqlEntity.name,
+            identifierType: sqlEntity.identifierType == .bytes ? .uuid : .bytes,
+            fields: sqlEntity.fields,
+            directoryComponents: sqlEntity.directoryComponents,
+            directoryLayer: sqlEntity.directoryLayer
+        )
+        let conflictBytes = try await execute(
+            DatabaseOperationCatalog.schemaExecute,
+            request: SchemaExecuteOperation.Request(invocation: .plan(
+                manifest: SchemaManifest(schema: try Schema(
+                    entities: [try SchemaExecuteAccount.schemaEntity, conflicting],
+                    version: Schema.Version(1, 2, 0))),
+                expectedFingerprint: container.schemaFingerprint)),
+            requestID: 64,
+            runtime: runtime
+        )
+        let conflict = try DatabaseWireDecoder().decodeResponse(
+            DatabaseOperationCatalog.schemaExecute, from: conflictBytes, matching: 64)
+        guard case .failure(let error) = conflict else {
+            Issue.record("Expected a SQL-owned entity conflict")
+            return
+        }
+        #expect(error.category == .conflict)
+        #expect(error.code == "SCHEMA_SQL_OWNED_ENTITY_CONFLICT")
+    }
+
     @Test("fingerprint conflict and migration requirement remain typed failures")
     func failuresAreTyped() async throws {
         let initialSchema = try Schema(
@@ -2161,13 +2275,14 @@ struct SchemaExecuteHandlerTests {
         request: Request,
         requestID: UInt64,
         runtime: DatabaseOperationInstance,
-        metadata: OperationRequestMetadata = OperationRequestMetadata()
+        metadata: OperationRequestMetadata = OperationRequestMetadata(),
+        targetsData: Bool = false
     ) async throws -> ByteString {
         #if MultiBase
         let bytes = try DatabaseWireEncoder().encodeRequest(
             operation,
             requestID: requestID,
-            target: .database,
+            target: targetsData ? .base(try TestBaseEnvironment.id()) : .database,
             metadata: metadata,
             request: request
         )
@@ -2194,7 +2309,8 @@ struct SchemaExecuteHandlerTests {
         request: Request,
         requestID: UInt64,
         runtime: DatabaseOperationInstance,
-        metadata: OperationRequestMetadata = OperationRequestMetadata()
+        metadata: OperationRequestMetadata = OperationRequestMetadata(),
+        targetsData: Bool = false
     ) async throws -> Response {
         let response = try DatabaseWireDecoder().decodeResponse(
             operation,
@@ -2203,7 +2319,8 @@ struct SchemaExecuteHandlerTests {
                 request: request,
                 requestID: requestID,
                 runtime: runtime,
-                metadata: metadata
+                metadata: metadata,
+                targetsData: targetsData
             ),
             matching: requestID
         )

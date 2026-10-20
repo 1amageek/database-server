@@ -43,6 +43,8 @@ public actor DatabaseSchemaCoordinator {
         context: DatabaseOperationContext
     ) async throws -> JobIdentity {
         let executor = try context.requireControlExecutor()
+        // The record keeps the caller's manifest identity, so a same-key
+        // retry matches even after SQL DDL changes the effective schema.
         let targetFingerprint = try manifest.fingerprint()
         if let existing = try await executor.withTransaction(
             requiredAccess: .administer,
@@ -80,7 +82,7 @@ public actor DatabaseSchemaCoordinator {
             .makeStartRequest(
                 SchemaExecuteOperation.Request(
                     invocation: .apply(
-                        manifest: manifest,
+                        manifest: prepared.manifest,
                         expectedFingerprint: expectedFingerprint,
                         idempotencyKey: idempotencyKey
                     )
@@ -94,7 +96,7 @@ public actor DatabaseSchemaCoordinator {
             .makeStartRequest(
                 SchemaExecuteOperation.Request(
                     invocation: .apply(
-                        manifest: manifest,
+                        manifest: prepared.manifest,
                         expectedFingerprint: expectedFingerprint,
                         idempotencyKey: idempotencyKey
                     )
@@ -165,20 +167,27 @@ public actor DatabaseSchemaCoordinator {
                 actual: currentFingerprint
             )
         }
-        let targetFingerprint = try manifest.fingerprint()
+        // Tables created by SQL belong to the published lease, not to the
+        // caller's declaration; the effective schema retains them.
+        let effective = SchemaManifest(
+            schema: try publishedLease.applicationSchema(declaring: manifest.schema)
+        )
+        let targetFingerprint = try effective.fingerprint()
         let analysis = DatabaseSchemaChangeAnalysis.analyze(
             current: currentSchema,
-            target: manifest.schema
+            target: effective.schema
         )
         let runtimeConfiguration: DatabaseRuntimeConfiguration
         do {
             runtimeConfiguration = try await runtimeFactory
-                .makeOperationConfiguration(for: manifest.schema)
+                .makeOperationConfiguration(for: effective.schema)
             _ = try container.prepareSchemaGeneration(
-                manifest.schema,
+                effective.schema,
                 runtimeConfiguration: runtimeConfiguration
             )
         } catch let error as DatabaseSchemaPublicationError {
+            throw error
+        } catch let error as SQLCatalogBindingError {
             throw error
         } catch let error as DatabaseEngine.DatabaseRuntimeConfigurationError {
             if case .unsupportedStorageCapability(
@@ -204,6 +213,7 @@ public actor DatabaseSchemaCoordinator {
             throw DatabaseSchemaExecutionError.runtimeUnavailable
         }
         return PreparedSchemaChange(
+            manifest: effective,
             plan: SchemaExecuteOperation.Plan(
                 currentFingerprint: currentFingerprint,
                 targetFingerprint: targetFingerprint,
@@ -216,6 +226,7 @@ public actor DatabaseSchemaCoordinator {
 }
 
 private struct PreparedSchemaChange: Sendable {
+    let manifest: SchemaManifest
     let plan: SchemaExecuteOperation.Plan
     let runtimeConfiguration: DatabaseRuntimeConfiguration
 }

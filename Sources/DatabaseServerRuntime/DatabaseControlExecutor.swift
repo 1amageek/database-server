@@ -53,6 +53,9 @@ package final class DatabaseControlExecutor: Sendable {
         container.schemaFingerprint
     }
     package var schemaGeneration: UInt64 { container.schemaGeneration }
+    package func acquirePublishedSchemaLease() -> DatabaseSchemaLease {
+        container.acquirePublishedSchemaLease()
+    }
     package var runtimeConfiguration: DatabaseRuntimeConfiguration {
         container.runtimeConfiguration
     }

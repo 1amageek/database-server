@@ -838,6 +838,10 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .internalFailure
             code = "SQL_CATALOG_INVALID"
             message = "The SQL catalog is invalid"
+        case .sqlOwnedEntityRedeclared:
+            category = .conflict
+            code = "SCHEMA_SQL_OWNED_ENTITY_CONFLICT"
+            message = "The schema manifest redefines an entity created by SQL"
         case .protectedRelationRemoved, .relationRetargeted, .columnRetargeted,
              .protectedColumnRemoved, .protectedPrimaryKeyChanged, .primaryKeyColumnRemoved,
              .protectedConstraintsChanged, .protectedColumnPolicyChanged, .protectedColumnAdded,

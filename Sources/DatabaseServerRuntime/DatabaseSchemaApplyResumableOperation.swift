@@ -52,7 +52,7 @@ public struct DatabaseSchemaApplyResumableOperation:
         guard
             case .apply(
                 let
-                    manifest,
+                    requestedManifest,
                 let
                     expectedFingerprint,
                 let
@@ -61,14 +61,21 @@ public struct DatabaseSchemaApplyResumableOperation:
             throw DatabaseSchemaApplyJobError.invalidInvocation
         }
         let executor = try context.operationContext.requireControlExecutor()
-        let currentSchema = executor.schema
-        let currentFingerprint = executor.schemaFingerprint.detached()
-        guard expectedFingerprint == currentFingerprint else {
+        let lease = executor.acquirePublishedSchemaLease()
+        let currentSchema = lease.schema
+        let currentFingerprint = lease.fingerprint.detached()
+        guard expectedFingerprint == currentFingerprint,
+              executor.schemaFingerprint == currentFingerprint else {
             throw DatabaseSchemaPublicationError.fingerprintConflict(
                 expected: expectedFingerprint,
                 actual: currentFingerprint
             )
         }
+        // The job retains the effective schema, which keeps every table SQL
+        // created in the generation the caller expected.
+        let manifest = SchemaManifest(
+            schema: try lease.applicationSchema(declaring: requestedManifest.schema)
+        )
         let analysis = DatabaseSchemaChangeAnalysis.analyze(
             current: currentSchema,
             target: manifest.schema

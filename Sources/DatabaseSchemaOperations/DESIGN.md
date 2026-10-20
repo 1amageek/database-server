@@ -117,3 +117,31 @@ The native host always supplies a logical factory, even for absent configuration
 so missing logical rules deny. Framework owns policy rebinding during schema
 publication, rollback and reopen; native host integration tests prove this
 factory is used by production application composition.
+
+### Effective schema with durable SQL entities
+
+A `schema.execute` manifest declares application entities; tables created by
+SQL are owned by Framework's durable SQL witness. Plan, apply and job
+compilation each acquire one published lease, compare the caller's
+`expectedFingerprint` with that lease, and compose the manifest through
+[Framework's remote publication contract](../../../database-framework/Sources/DatabaseEngine/Schema/DESIGN.md#remote-publication-with-durable-sql-entities)
+before change analysis, runtime preparation and index planning.
+
+| Identity | Value |
+|---|---|
+| Plan `currentFingerprint`, job `previousFingerprint` | Fingerprint of the lease used for composition |
+| Plan `targetFingerprint`, job `targetFingerprint`, job manifest | Effective composed schema |
+| Schema-application record `targetFingerprint` | Fingerprint of the caller's manifest, so a same-key retry keeps the caller's identity even when SQL DDL changed the effective schema |
+
+The job plan retains the effective manifest, so restart resumes the composed
+schema rather than recomposing against a later generation. A manifest that
+redeclares a SQL-owned entity differently fails as
+`SCHEMA_SQL_OWNED_ENTITY_CONFLICT`; SQL catalog contract violations keep their
+`SQL_CATALOG_*` mapping instead of `SCHEMA_RUNTIME_UNAVAILABLE`.
+
+`SchemaExecuteHandlerTests` prove publication after SQL `CREATE TABLE` with the
+table and its rows retained, the plan and publication reporting the effective
+fingerprint, same-key replay after SQL changed the effective schema, and the
+redeclaration conflict. Restore of a retained job manifest keeps the existing
+`DatabaseSchemaApplyJobPlan` check that the manifest matches its target
+fingerprint.
