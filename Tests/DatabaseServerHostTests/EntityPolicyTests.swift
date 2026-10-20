@@ -16,6 +16,14 @@ private struct EntityPolicyAsset {
     var title: String = ""
 }
 
+@Persistable
+private struct EntityPolicyNote {
+    #Directory<EntityPolicyNote>("entity-policy", "notes")
+
+    var id: String = ""
+    var body: String = ""
+}
+
 @Suite("Native entity policies", .serialized, .timeLimit(.minutes(2)))
 struct EntityPolicyTests {
     @Test("Closed JSON carries entity and SQL table policies together")
@@ -47,7 +55,7 @@ struct EntityPolicyTests {
     }
 
     #if !DATABASE_SERVER_HOST_MULTI_BASE
-    @Test("Entity roles bind an entity published after startup, deny others and survive reopen")
+    @Test("Entity roles bind entities across schema generations, deny others and survive reopen")
     func publishedEntityRoles() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("entity-policy-\(UUID().uuidString)", isDirectory: true)
@@ -57,19 +65,38 @@ struct EntityPolicyTests {
             path: directory.appendingPathComponent("database.sqlite").path)
         let assetRoles = [DatabaseServerLaunchConfiguration.EntityPolicy(
             entity: EntityPolicyAsset.persistableType,
-            roles: ["list": ["reader"], "get": ["reader"], "create": ["editor"]])]
+            roles: ["list": ["reader", "curator"], "get": ["reader", "curator"], "create": ["editor"],
+                "update": ["curator"], "delete": ["curator"]])]
         let tableRoles = [SQLTablePolicy(schema: "public", table: "items",
             roles: ["list": ["admin"], "get": ["admin"], "create": ["admin"]])]
 
         let first = try await PolicyRuntime(storage: storage, entityPolicies: assetRoles,
             sqlTablePolicies: tableRoles)
         do {
-            try await first.publish(EntityPolicyAsset.self)
+            try await first.publish([EntityPolicyAsset.self], version: Schema.Version(1, 0, 0))
             _ = try await first.sql(#"INSERT INTO "EntityPolicyAsset"(id, title) VALUES ('a1', 'first')"#,
                 token: "editor").get()
             try expectDenied(await first.sql(#"INSERT INTO "EntityPolicyAsset"(id, title) VALUES ('a2', 'second')"#,
                 token: "reader"))
             #expect(try await first.titles(token: "reader") == ["first"])
+            // Update and delete follow their own role lists.
+            for token in ["reader", "editor"] {
+                try expectDenied(await first.sql(#"UPDATE "EntityPolicyAsset" SET title = 'denied' WHERE id = 'a1'"#,
+                    token: token))
+                try expectDenied(await first.sql(#"DELETE FROM "EntityPolicyAsset" WHERE id = 'a1'"#, token: token))
+            }
+            _ = try await first.sql(#"UPDATE "EntityPolicyAsset" SET title = 'renamed' WHERE id = 'a1'"#,
+                token: "curator").get()
+            _ = try await first.sql(#"INSERT INTO "EntityPolicyAsset"(id, title) VALUES ('a2', 'second')"#,
+                token: "editor").get()
+            _ = try await first.sql(#"DELETE FROM "EntityPolicyAsset" WHERE id = 'a2'"#, token: "curator").get()
+            #expect(try await first.titles(token: "reader") == ["renamed"])
+            // A later schema generation keeps the configured rules and denies the unconfigured entity.
+            try await first.publish([EntityPolicyAsset.self, EntityPolicyNote.self], version: Schema.Version(1, 1, 0))
+            #expect(try await first.titles(token: "reader") == ["renamed"])
+            try expectDenied(await first.sql(#"INSERT INTO "EntityPolicyNote"(id, body) VALUES ('n1', 'note')"#,
+                token: "admin"))
+            try expectDenied(await first.sql(#"SELECT body FROM "EntityPolicyNote""#, token: "reader"))
             try expectDenied(await first.sql(#"SELECT title FROM "EntityPolicyAsset""#, token: "editor"))
             try expectDenied(await first.sql(#"SELECT title FROM "EntityPolicyAsset""#, token: "admin"))
             try expectDenied(await first.anonymousSQL(#"SELECT title FROM "EntityPolicyAsset""#))
@@ -87,7 +114,7 @@ struct EntityPolicyTests {
         let reopened = try await PolicyRuntime(storage: storage, entityPolicies: assetRoles,
             sqlTablePolicies: tableRoles)
         do {
-            #expect(try await reopened.titles(token: "reader") == ["first"])
+            #expect(try await reopened.titles(token: "reader") == ["renamed"])
         } catch {
             await reopened.shutdown()
             throw error
@@ -141,9 +168,9 @@ private struct PolicyRuntime {
             routingIdentity: try DatabaseServerRoutingIdentity(databaseID: "main"))
     }
 
-    func publish<Model: Persistable>(_ model: Model.Type) async throws {
+    func publish(_ models: [any Persistable.Type], version: Schema.Version) async throws {
         let manifest = SchemaManifest(schema: try Schema(
-            entities: [try Model.schemaEntity], version: Schema.Version(1, 0, 0)))
+            entities: try models.map { try $0.schemaEntity }, version: version))
         let plan = try await call(DatabaseOperationCatalog.schemaExecute, SchemaExecuteOperation.Request(
             invocation: .plan(manifest: manifest, expectedFingerprint: nil)), token: "admin").get()
         guard case .plan(let planned) = plan, let fingerprint = planned.currentFingerprint else {
@@ -151,7 +178,7 @@ private struct PolicyRuntime {
         }
         let applied = try await call(DatabaseOperationCatalog.schemaExecute, SchemaExecuteOperation.Request(
             invocation: .apply(manifest: manifest, expectedFingerprint: fingerprint,
-                idempotencyKey: "entity-policy-publish")), token: "admin").get()
+                idempotencyKey: "entity-policy-publish-\(models.count)")), token: "admin").get()
         switch applied {
         case .applied:
             return

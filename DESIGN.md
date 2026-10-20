@@ -341,11 +341,14 @@ Authenticated Principal -----------------------> framework authorization
 The framework handler contract is owned by
 [DatabaseEngine](../database-framework/Sources/DatabaseEngine/DESIGN.md#schema-driven-authorization).
 Host configuration tests own closed input validation. `EntityPolicyTests`
-proves through production native composition and bearer authentication that a
-published entity admits only its configured roles, denies anonymous and
-unlisted principals, keeps SQL table rules separate, and restores the same
-decision after reopening the storage. The CLI process harness exercises the
-standalone process with the 1000-record sample readback.
+proves through production native composition and bearer authentication that
+create, list, update and delete each admit only their configured roles, that
+anonymous and unlisted principals are denied, that a later schema generation
+keeps the rules and denies an unconfigured entity, that SQL table rules stay
+separate, and that the same decision returns after reopening the storage. The
+CLI process harness (`entity-policy-process-test`) applies a 1000-record sample
+through the standalone process, requires the unconfigured update and delete
+operations to be denied, and reads the sample back.
 
 ## Schema Operations Module
 

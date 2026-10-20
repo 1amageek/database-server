@@ -192,6 +192,9 @@ launch document take effect on restart. Field restrictions and MultiBase grants
 remain additional checks; no wildcard or implicit administrator bypass exists.
 SQL tables are governed only by `sqlTablePolicies`; an entity rule does not
 grant access to a SQL-owned table. Both fields may appear in one document.
+The standalone bootstrap registers only the initial `admin` token, and no
+command issues tokens for other roles. Role lists other than `admin` apply only
+to principals that an embedding host registers through `DatabaseTokenRegistry`.
 
 With `MultiBase`, add the placement fields:
 
