@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-framework.git",
       "state" : {
-        "revision" : "744ec7b7b3561dce3146577e2f537cc59bd49119",
-        "version" : "26.1022.0"
+        "revision" : "5ed3795ae7213fb06b5a37f32bc53335fb1240e5",
+        "version" : "26.1022.1"
       }
     },
     {

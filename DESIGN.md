@@ -128,6 +128,13 @@ The four supported result modes have the same lifecycle vocabulary:
   execution. Typed operation failures remain typed wire failures.
 - The server uses URL dependencies and one coherent resolved graph for release
   evidence. A local path dependency is diagnostic-only.
+- The 26.1022.1 native distribution consumes Framework 26.1022.1 through
+  its pinned URL graph; DatabaseKit and StorageKit retain their 26.1021.0
+  contracts. Graph-enabled SQL preparation follows the Framework
+  [expression admission contract](../database-framework/Sources/DatabaseEngine/QueryExecution/DESIGN.md#sql-expression-admission-and-optional-graph-producers).
+  Runtime capabilities report the same patch version as the executable; CLI
+  companion admission requires that exact distribution version.
+
 
 ### Native inbound byte ownership
 
