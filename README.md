@@ -263,7 +263,7 @@ content-type, and body-limit failures remain transport-layer failures.
 ## Build and verification
 
 ```bash
-export TOOLCHAINS=org.swift.64202607231a
+export TOOLCHAINS=org.swift.64202609041a
 swift build --product database-server
 scripts/xcode-test-harness
 DATABASE_CLI_EXECUTABLE=/path/to/database \
@@ -277,7 +277,7 @@ The distributed release executable must advertise every selectable standalone
 backend and is built through the package-owned release gate:
 
 ```bash
-export TOOLCHAINS=org.swift.64202607231a
+export TOOLCHAINS=org.swift.64202609041a
 scripts/release-build
 ```
 
