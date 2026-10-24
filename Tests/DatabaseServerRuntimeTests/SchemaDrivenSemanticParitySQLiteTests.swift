@@ -297,7 +297,7 @@ struct SchemaDrivenSemanticParitySQLiteTests {
         let response = try await invoke(
             DatabaseOperationCatalog.queryExecute,
             request: QueryExecuteOperation.Request(
-                input: .ir(
+                input: .statement(
                     .ask(
                         AskQuery(
                             pattern: .basic([

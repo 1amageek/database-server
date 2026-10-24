@@ -32,6 +32,24 @@ struct DatabaseCompositionQueryTests {
         [try QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)]
     }
 
+    @Test("Complete Composition results have no continuation and match explicit pages")
+    func completeCompositionRows() async throws {
+        let fixture = try await makeFixture()
+        defer { await fixture.container.shutdown() }
+        try await seed(fixture)
+        let text = "SELECT priority FROM \"\(DatabaseEndpointEntity.persistableType)\" ORDER BY priority"
+        let complete = try await successfulPage(.init(input: .sql(text)), requestID: 990, fixture: fixture)
+        #expect(try priorities(complete) == [1, 2, 3, 4])
+        #expect(complete.continuation == nil)
+        let first = try await successfulPage(.init(input: .sql(text), page: .init(limit: 2)),
+            requestID: 991, fixture: fixture)
+        let token = try #require(first.continuation)
+        let second = try await successfulPage(.init(input: .sql(text), page: .init(limit: 2, continuation: token)),
+            requestID: 992, fixture: fixture)
+        #expect(try priorities(first) + priorities(second) == priorities(complete))
+        #expect(first.columns == complete.columns && second.columns == complete.columns)
+    }
+
     @Test("SQL and QueryIR Composition parameters survive binding and durable paging")
     func parametersSurviveCompositionPaging() async throws {
         let fixture = try await makeFixture()
@@ -41,8 +59,8 @@ struct DatabaseCompositionQueryTests {
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)),
             filter: .greaterThanOrEqual(.col("priority"), .parameter(.position(1))),
             orderBy: [SortKey(.col("priority"))])
-        let inputs: [QueryExecuteOperation.Input] = [
-            .ir(.select(query)),
+        let inputs: [QueryInput] = [
+            .statement(.select(query)),
             .text(language: .sql, statement: "SELECT priority FROM \"\(DatabaseEndpointEntity.persistableType)\" WHERE priority >= $1 ORDER BY priority"),
         ]
         let parameters = [QueryParameter(position: 1, value: .primitive(.int64(2)))]
@@ -74,12 +92,12 @@ struct DatabaseCompositionQueryTests {
             ],
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let first = try await successfulPage(
-            QueryExecuteOperation.Request(input: .ir(.select(query)), page: .init(limit: 2)),
+            QueryExecuteOperation.Request(input: .statement(.select(query)), page: .init(limit: 2)),
             requestID: 900, fixture: fixture
         )
         let continuation = try #require(first.continuation)
         let second = try await successfulPage(
-            QueryExecuteOperation.Request(input: .ir(.select(query)), page: .init(limit: 2, continuation: continuation)),
+            QueryExecuteOperation.Request(input: .statement(.select(query)), page: .init(limit: 2, continuation: continuation)),
             requestID: 901, fixture: fixture
         )
         #expect(first.columns.map(\.name) == ["value", "value"])
@@ -123,7 +141,7 @@ struct DatabaseCompositionQueryTests {
             ],
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let page = try await successfulPage(
-            QueryExecuteOperation.Request(input: .ir(.select(query)), page: .init(limit: 2)),
+            QueryExecuteOperation.Request(input: .statement(.select(query)), page: .init(limit: 2)),
             requestID: 902, fixture: fixture
         )
         #expect(page.rowCount == 0)
@@ -238,11 +256,11 @@ struct DatabaseCompositionQueryTests {
         )
 
         try await builder.append(CompositionQueryRow(
-            row: try DatabaseEngine.QueryRow(values: [.primitive(.string("first"))], columns: valueColumns()),
+            row: try DatabaseEngine.ExecutionQueryRow(values: [.primitive(.string("first"))], columns: valueColumns()),
             origin: .source(fixture.primaryBaseID)
         ))
         try await builder.append(CompositionQueryRow(
-            row: try DatabaseEngine.QueryRow(values: [.primitive(.string("second"))], columns: valueColumns()),
+            row: try DatabaseEngine.ExecutionQueryRow(values: [.primitive(.string("second"))], columns: valueColumns()),
             origin: .source(fixture.secondaryBaseID)
         ))
 
@@ -284,7 +302,7 @@ struct DatabaseCompositionQueryTests {
             )
             for (value, origin) in [("first", fixture.primaryBaseID), ("second", fixture.secondaryBaseID)] {
                 try await builder.append(CompositionQueryRow(
-                    row: DatabaseEngine.QueryRow(values: [.primitive(.string(value))], columns: valueColumns()),
+                    row: DatabaseEngine.ExecutionQueryRow(values: [.primitive(.string(value))], columns: valueColumns()),
                     origin: .source(origin)
                 ))
             }
@@ -371,10 +389,10 @@ struct DatabaseCompositionQueryTests {
             snapshotStore: nil,
             workMeter: workMeter
         )
-        let row = try DatabaseEngine.QueryRow(
+        let row = try DatabaseEngine.ExecutionQueryRow(
             values: [.primitive(.string("staged"))], columns: valueColumns()
         )
-        let incompatibleRow = try DatabaseEngine.QueryRow(
+        let incompatibleRow = try DatabaseEngine.ExecutionQueryRow(
             values: [.primitive(.int64(1))],
             columns: [QueryColumn(number: 1, name: "value", type: .primitive(.int64), isNullable: false)]
         )
@@ -436,7 +454,7 @@ struct DatabaseCompositionQueryTests {
             snapshotStore: fixture.snapshotStore,
             workMeter: workMeter
         )
-        let row = try DatabaseEngine.QueryRow(
+        let row = try DatabaseEngine.ExecutionQueryRow(
             values: [.primitive(.string("staged"))], columns: valueColumns()
         )
         try await builder.append(CompositionQueryRow(
@@ -504,7 +522,7 @@ struct DatabaseCompositionQueryTests {
             snapshotStore: fixture.snapshotStore,
             workMeter: workMeter
         )
-        let row = try DatabaseEngine.QueryRow(
+        let row = try DatabaseEngine.ExecutionQueryRow(
             values: [.primitive(.string("staged"))], columns: valueColumns()
         )
         try await builder.append(CompositionQueryRow(
@@ -758,7 +776,7 @@ struct DatabaseCompositionQueryTests {
 
         let page = try await successfulPage(
             QueryExecuteOperation.Request(
-                input: .ir(.select(query)),
+                input: .statement(.select(query)),
                 page: QueryExecuteOperation.Page(limit: 10)
             ),
             requestID: 10,
@@ -818,7 +836,7 @@ struct DatabaseCompositionQueryTests {
 
         let page = try await successfulPage(
             QueryExecuteOperation.Request(
-                input: .ir(.select(query)),
+                input: .statement(.select(query)),
                 page: QueryExecuteOperation.Page(limit: 10)
             ),
             requestID: 15,
@@ -897,7 +915,7 @@ struct DatabaseCompositionQueryTests {
             selection: selection
         )
         let continuation = try #require(first.continuation)
-        guard case .ir(.select(let query)) = firstRequest.input else {
+        guard case .statement(.select(let query)) = firstRequest.input else {
             throw TestFailure.unexpectedResponse
         }
         let readMetadata = try await fixture.container.session(
@@ -959,7 +977,7 @@ struct DatabaseCompositionQueryTests {
             ))
         let page = try await successfulPage(
             QueryExecuteOperation.Request(
-                input: .ir(.select(query)),
+                input: .statement(.select(query)),
                 page: QueryExecuteOperation.Page(limit: 10)
             ),
             requestID: 25,
@@ -1015,7 +1033,7 @@ struct DatabaseCompositionQueryTests {
 
         let error = try await remoteFailure(
             QueryExecuteOperation.Request(
-                input: .ir(.select(query)),
+                input: .statement(.select(query)),
                 page: QueryExecuteOperation.Page(limit: 10)
             ),
             requestID: 26,
@@ -1061,7 +1079,7 @@ struct DatabaseCompositionQueryTests {
         )
         let rejected = try await remoteFailure(
             QueryExecuteOperation.Request(
-                input: .ir(.select(query)),
+                input: .statement(.select(query)),
                 page: .init(limit: UInt32(pageSize)),
                 budget: insufficientBudget
             ),
@@ -1091,7 +1109,7 @@ struct DatabaseCompositionQueryTests {
         repeat {
             let page = try await successfulPage(
                 QueryExecuteOperation.Request(
-                    input: .ir(.select(query)),
+                    input: .statement(.select(query)),
                     page: QueryExecuteOperation.Page(
                         limit: UInt32(pageSize),
                         continuation: continuation
@@ -1317,7 +1335,7 @@ struct DatabaseCompositionQueryTests {
 
         let page = try await successfulPage(
             QueryExecuteOperation.Request(
-                input: .ir(.select(query)),
+                input: .statement(.select(query)),
                 page: QueryExecuteOperation.Page(limit: 10)
             ),
             requestID: 112,
@@ -1371,7 +1389,7 @@ struct DatabaseCompositionQueryTests {
 
         let error = try await remoteFailure(
             QueryExecuteOperation.Request(
-                input: .ir(.select(query)),
+                input: .statement(.select(query)),
                 page: QueryExecuteOperation.Page(limit: 10)
             ),
             requestID: 113,
@@ -1391,7 +1409,7 @@ struct DatabaseCompositionQueryTests {
 
         let error = try await remoteFailure(
             QueryExecuteOperation.Request(
-                input: .ir(.select(query)),
+                input: .statement(.select(query)),
                 page: QueryExecuteOperation.Page(limit: 10)
             ),
             requestID: 114,
@@ -1441,7 +1459,7 @@ struct DatabaseCompositionQueryTests {
         )
         let matchingResponse = try await invoke(
             QueryExecuteOperation.Request(
-                input: .ir(.ask(matching)),
+                input: .statement(.ask(matching)),
                 page: QueryExecuteOperation.Page(limit: 1)
             ),
             requestID: 115,
@@ -1480,7 +1498,7 @@ struct DatabaseCompositionQueryTests {
         )
         let missingResponse = try await invoke(
             QueryExecuteOperation.Request(
-                input: .ir(.ask(missing)),
+                input: .statement(.ask(missing)),
                 page: QueryExecuteOperation.Page(limit: 1)
             ),
             requestID: 116,
@@ -1523,7 +1541,7 @@ struct DatabaseCompositionQueryTests {
 
         let error = try await remoteFailure(
             QueryExecuteOperation.Request(
-                input: .ir(.ask(query)),
+                input: .statement(.ask(query)),
                 page: QueryExecuteOperation.Page(limit: 1)
             ),
             requestID: 117,
@@ -1591,7 +1609,7 @@ struct DatabaseCompositionQueryTests {
         repeat {
             let page = try await successfulGraphPage(
                 QueryExecuteOperation.Request(
-                    input: .ir(.construct(query)),
+                    input: .statement(.construct(query)),
                     page: QueryExecuteOperation.Page(
                         limit: 1,
                         continuation: continuation
@@ -1705,7 +1723,7 @@ struct DatabaseCompositionQueryTests {
         )
         let page = try await successfulGraphPage(
             QueryExecuteOperation.Request(
-                input: .ir(
+                input: .statement(
                     .describe(
                         DescribeQuery(
                             selection: .resources(
@@ -2127,7 +2145,7 @@ struct DatabaseCompositionQueryTests {
         budget: ExecutionBudget = ExecutionBudget()
     ) -> QueryExecuteOperation.Request {
         QueryExecuteOperation.Request(
-            input: .ir(
+            input: .statement(
                 .select(
                     SelectQuery(projection: [.wildcard()],
             source: .table(
@@ -2149,7 +2167,7 @@ struct DatabaseCompositionQueryTests {
         continuation: ByteString? = nil
     ) -> QueryExecuteOperation.Request {
         QueryExecuteOperation.Request(
-            input: .ir(
+            input: .statement(
                 .select(
                     SelectQuery(projection: [
                             .column("priority")
@@ -2174,7 +2192,7 @@ struct DatabaseCompositionQueryTests {
         continuation: ByteString? = nil
     ) throws -> QueryExecuteOperation.Request {
         QueryExecuteOperation.Request(
-            input: .ir(
+            input: .statement(
                 .select(
                     SelectQuery(projection: [.wildcard()],
             source: .table(
@@ -2319,7 +2337,7 @@ struct DatabaseCompositionQueryTests {
 
     private func value(
         _ name: String,
-        row: DatabaseWire.QueryRow,
+        row: DatabaseKit.QueryRow,
         page: QueryRowPage
     ) throws -> FieldValue {
         let index = try #require(page.columns.firstIndex { $0.name == name })

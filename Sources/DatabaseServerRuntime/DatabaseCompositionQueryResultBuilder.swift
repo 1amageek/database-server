@@ -31,7 +31,7 @@ actor DatabaseCompositionQueryResultBuilder {
         }
 
         private static let rowContainerByteCount = UInt64(
-            MemoryLayout<[DatabaseWire.QueryRow]>.stride
+            MemoryLayout<[DatabaseKit.QueryRow]>.stride
         )
         private static let originContainerByteCount = UInt64(
             MemoryLayout<[CompositionOrigin]>.stride
@@ -40,7 +40,7 @@ actor DatabaseCompositionQueryResultBuilder {
             MemoryLayout<[Base.ID]>.stride
         )
         private static let rowSlotByteCount = UInt64(
-            max(1, MemoryLayout<DatabaseWire.QueryRow>.stride)
+            max(1, MemoryLayout<DatabaseKit.QueryRow>.stride)
         )
         private static let originSlotByteCount = UInt64(
             max(1, MemoryLayout<CompositionOrigin>.stride)
@@ -50,7 +50,7 @@ actor DatabaseCompositionQueryResultBuilder {
         )
         private static let appendAdmissionByteCount: UInt64 = 16
 
-        var rows: [DatabaseWire.QueryRow] = []
+        var rows: [DatabaseKit.QueryRow] = []
         var origins: [CompositionOrigin] = []
         var sourceEvents: [CompositionQueryRow] = []
         var reservation: DatabaseIntermediateReservation?
@@ -124,7 +124,7 @@ actor DatabaseCompositionQueryResultBuilder {
         }
 
         mutating func appendReserved(
-            row: DatabaseWire.QueryRow,
+            row: DatabaseKit.QueryRow,
             event: CompositionQueryRow,
             using admission: AppendAdmission
         ) {

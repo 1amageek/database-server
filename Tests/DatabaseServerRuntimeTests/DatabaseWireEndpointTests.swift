@@ -416,7 +416,6 @@ struct DatabaseWireEndpointTests {
                 "query.execute",
                 "schema.describe",
                 "shacl.execute",
-                "sql.execute",
             ]
         )
         #else
@@ -435,7 +434,6 @@ struct DatabaseWireEndpointTests {
                 "query.execute",
                 "schema.describe",
                 "shacl.execute",
-                "sql.execute",
             ]
         )
         #endif

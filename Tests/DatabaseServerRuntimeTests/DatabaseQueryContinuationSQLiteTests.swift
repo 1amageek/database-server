@@ -154,7 +154,7 @@ struct DatabaseQueryContinuationSQLiteTests {
         continuation: ByteString?
     ) -> QueryExecuteOperation.Request {
         QueryExecuteOperation.Request(
-            input: .ir(.select(query)),
+            input: .statement(.select(query)),
             page: QueryExecuteOperation.Page(
                 limit: 1,
                 continuation: continuation

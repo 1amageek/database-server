@@ -15,13 +15,13 @@ import Testing
 @testable import DatabaseServerRuntime
 
 @Suite("Complete SQL operation", .timeLimit(.minutes(2)))
-struct SQLExecuteHandlerTests {
+struct CompleteQueryHandlerTests {
     @Test("S17-SRV01 text statement and block retain ordered typed complete outcomes")
     func orderedCompleteOutcomes() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
         let endpoint = try makeEndpoint(container)
-        let response = try await execute(.text("""
+        let response = try await execute(.sql("""
             CREATE TABLE items (id integer, value text);
             COPY items FROM STDIN WITH (FORMAT csv);
             1,one
@@ -69,13 +69,13 @@ struct SQLExecuteHandlerTests {
         func sql(_ name: String) -> String {
             "CREATE TABLE \(name) (id integer, value text); INSERT INTO \(name) VALUES (1, '\(payload)') RETURNING value"
         }
-        let baseline = try await execute(.text(sql("baseline")), endpoint: makeEndpoint(container))
+        let baseline = try await execute(.sql(sql("baseline")), endpoint: makeEndpoint(container))
         let count = try DatabaseWireEncoder().measureSuccessResponse(
-            DatabaseOperationCatalog.sqlExecute, requestID: 1, response: baseline)
+            DatabaseOperationCatalog.queryExecute, requestID: 1, response: baseline)
         let exact = try makeEndpoint(container, responseLimits: wireLimits(frameBytes: count))
-        _ = try await execute(.text(sql("exact")), endpoint: exact)
+        _ = try await execute(.sql(sql("exact")), endpoint: exact)
         let short = try makeEndpoint(container, responseLimits: wireLimits(frameBytes: count - 1))
-        let refused = try await failure(.text(sql("rejected")), endpoint: short)
+        let refused = try await failure(.sql(sql("rejected")), endpoint: short)
         #expect(refused.category == .resourceLimit)
         #expect(refused.code == "RESPONSE_RESOURCE_LIMIT")
         #expect(try refused.sqlDiagnostic()?.sqlState == "54000")
@@ -83,15 +83,34 @@ struct SQLExecuteHandlerTests {
             _ = try await container.testBaseContext().executeEncodedSQLBlock(sql("native_rejected"),
                 options: SQLBlockExecutionOptions(checkpointLimits: SQLCheckpointPolicy.limits(
                     for: ExecutionBudget(), structuralLimits: .default, ceiling: nil)),
-                encoder: SQLResponseEncoder(requestID: 1, limits: wireLimits(frameBytes: count - 1)))
+                encoder: QueryResponseEncoder(requestID: 1, limits: wireLimits(frameBytes: count - 1)))
             Issue.record("Expected actual complete-frame limit failure")
         } catch let error as SQLExecutionFailure {
             #expect(error.diagnostic.sqlState == "54000")
-            guard let cause = error.underlyingError as? DatabaseResponsePreparationError else {
+            guard let cause = error.underlyingError as? QueryResponseEncodingError else {
                 Issue.record("Expected original response preparation cause"); return
             }
-            #expect(cause.wireError == .frameTooLarge(actual: count, maximum: count - 1))
+            guard case .resourceLimit(let wireError) = cause else { Issue.record("Expected Wire resource failure"); return }
+            #expect(wireError == .frameTooLarge(actual: count, maximum: count - 1))
         }
+        #if DATABASE_OPERATIONS_TEST_GRAPH_INDEXES
+        let graphPayload = String(repeating: "g", count: 2_000)
+        let triples = (0..<8).map { "<urn:s:\($0)> <urn:p> \"\(graphPayload)\" ." }.joined(separator: " ")
+        let graph = QueryInput.text(language: .sparql, statement: "CONSTRUCT { \(triples) } WHERE {}")
+        let graphContainer = try await makeContainer()
+        defer { await graphContainer.shutdown() }
+        do {
+            let prepared = try await graphContainer.testBaseContext().executeQueryEncoded(graph, requestID: 1)
+            _ = try prepared.promoteToOutput()
+        } catch {
+            Issue.record("Graph baseline failed before response limits: \(String(reflecting: error))")
+            return
+        }
+        let graphFailure = try await failure(graph,
+            endpoint: makeEndpoint(graphContainer, responseLimits: wireLimits(frameBytes: 1_024)))
+        #expect(graphFailure.category == .resourceLimit)
+        #expect(graphFailure.code == "RESPONSE_RESOURCE_LIMIT")
+        #endif
         #expect(try await container.testBaseContext().executeSQL("SELECT id FROM exact").rows.count == 1)
         await #expect(throws: (any Error).self) {
             _ = try await container.testBaseContext().executeSQL("SELECT id FROM rejected")
@@ -103,11 +122,11 @@ struct SQLExecuteHandlerTests {
         let container = try await makeContainer()
         defer { await container.shutdown() }
         let endpoint = try makeEndpoint(container)
-        _ = try await execute(.text("CREATE TABLE items (id integer UNIQUE)"), endpoint: endpoint)
-        let duplicate = try await failure(.text("INSERT INTO items VALUES (1); INSERT INTO items VALUES (1)"), endpoint: endpoint)
+        _ = try await execute(.sql("CREATE TABLE items (id integer UNIQUE)"), endpoint: endpoint)
+        let duplicate = try await failure(.sql("INSERT INTO items VALUES (1); INSERT INTO items VALUES (1)"), endpoint: endpoint)
         #expect(try duplicate.sqlDiagnostic()?.sqlState == "23505")
         #expect(try await container.testBaseContext().executeSQL("SELECT id FROM items").rows.isEmpty)
-        let rollback = try await execute(.text("BEGIN; INSERT INTO items VALUES (2); SELECT id FROM items; ROLLBACK"), endpoint: endpoint)
+        let rollback = try await execute(.sql("BEGIN; INSERT INTO items VALUES (2); SELECT id FROM items; ROLLBACK"), endpoint: endpoint)
         guard case .rows(let observed) = rollback.results[2] else { Issue.record("Expected rollback observation"); return }
         #expect(try values(observed) == [[.primitive(.int32(2))]])
         #expect(try await container.testBaseContext().executeSQL("SELECT id FROM items").rows.isEmpty)
@@ -118,17 +137,17 @@ struct SQLExecuteHandlerTests {
         let container = try await makeContainer(security: true)
         defer { await container.shutdown() }
         let endpoint = try makeEndpoint(container)
-        _ = try await execute(.text("CREATE TABLE items (id integer); INSERT INTO items VALUES (1)"), endpoint: endpoint)
+        _ = try await execute(.sql("CREATE TABLE items (id integer); INSERT INTO items VALUES (1)"), endpoint: endpoint)
         let reader = AuthorizationContext.authenticated(Principal(identifier: "reader", roles: ["reader"]))
         #if MultiBase
         try await container.grantTestBaseAccess(to: .principal("reader"), access: .read)
         #endif
-        let read = try await execute(.text("SELECT id FROM items"), endpoint: endpoint, authorization: reader)
+        let read = try await execute(.sql("SELECT id FROM items"), endpoint: endpoint, authorization: reader)
         guard case .rows(let rows) = read.results[0] else { Issue.record("Expected authorized read"); return }
         #expect(rows.rowCount == 1)
-        let write = try await failure(.text("INSERT INTO items VALUES (2)"), endpoint: endpoint, authorization: reader)
+        let write = try await failure(.sql("INSERT INTO items VALUES (2)"), endpoint: endpoint, authorization: reader)
         #expect(write.category == .authorization)
-        let anonymous = try await failure(.text("SELECT id FROM items"), endpoint: endpoint, authorization: .anonymous)
+        let anonymous = try await failure(.sql("SELECT id FROM items"), endpoint: endpoint, authorization: .anonymous)
         #if MultiBase
         #expect(anonymous.category == .authentication)
         #expect(anonymous.code == "AUTHENTICATION_REQUIRED")
@@ -137,7 +156,7 @@ struct SQLExecuteHandlerTests {
         #expect(anonymous.category == .authorization)
         #endif
         #if MultiBase
-        let ddl = try await failure(.text("CREATE TABLE denied (id integer)"), endpoint: endpoint, authorization: reader)
+        let ddl = try await failure(.sql("CREATE TABLE denied (id integer)"), endpoint: endpoint, authorization: reader)
         #expect(ddl.category == .authorization)
         #endif
         #expect(try await container.testBaseContext().executeSQL("SELECT id FROM items").rows.count == 1)
@@ -148,14 +167,14 @@ struct SQLExecuteHandlerTests {
         let container = try await makeContainer()
         defer { await container.shutdown() }
         let endpoint = try makeEndpoint(container)
-        let text = try await failure(.text("SELECT '猫';\r\nSELECT missing_column"), endpoint: endpoint)
+        let text = try await failure(.sql("SELECT '猫';\r\nSELECT missing_column"), endpoint: endpoint)
         #expect(try text.sqlDiagnostic()?.sqlState == "42703")
         #expect(try text.sqlDiagnostic()?.position == 21)
         #expect(try text.sqlDiagnostic()?.column == "missing_column")
         let semantic = try await failure(.statement(SQLParser().parse("SELECT missing_column")), endpoint: endpoint)
         #expect(try semantic.sqlDiagnostic()?.sqlState == "42703")
         #expect(try semantic.sqlDiagnostic()?.position == nil)
-        let syntax = try await failure(.text("SELECT '猫';\r\nSELECT FROM"), endpoint: endpoint)
+        let syntax = try await failure(.sql("SELECT '猫';\r\nSELECT FROM"), endpoint: endpoint)
         #expect(try syntax.sqlDiagnostic()?.sqlState == "42601")
         #expect(try syntax.sqlDiagnostic()?.position == 21)
     }
@@ -168,7 +187,7 @@ struct SQLExecuteHandlerTests {
             let instance = try await makeInstance(container)
             let endpoint = DatabaseWireEndpoint(instance: instance)
             await gate.arm()
-            let active = Task { try await execute(.text("CREATE TABLE items (id integer); INSERT INTO items VALUES (1); SELECT id FROM items"), endpoint: endpoint) }
+            let active = Task { try await execute(.sql("CREATE TABLE items (id integer); INSERT INTO items VALUES (1); SELECT id FROM items"), endpoint: endpoint) }
             await gate.waitUntilArrived()
             if cancelled {
                 active.cancel()
@@ -189,7 +208,7 @@ struct SQLExecuteHandlerTests {
                 await shutdown.value
                 #expect(finished.withLock { $0 })
                 await #expect(throws: DatabaseOperationInstanceError.shuttingDown) {
-                    _ = try await execute(.text("SELECT 1"), endpoint: endpoint)
+                    _ = try await execute(.sql("SELECT 1"), endpoint: endpoint)
                 }
             }
         }
@@ -201,23 +220,23 @@ struct SQLExecuteHandlerTests {
         let instance = try await makeInstance(container)
         defer { await instance.shutdown() }
         let endpoint = DatabaseWireEndpoint(instance: instance)
-        #expect(DatabaseOperationCapabilityCatalog.operations(includesSchemaExecution: false, includesJobs: false).contains(.sqlExecute))
+        #expect(DatabaseOperationCapabilityCatalog.operations(includesSchemaExecution: false, includesJobs: false).contains(.queryExecute))
         #expect(DatabaseOperationCapabilityCatalog.features(includesSchemaExecution: false, includesJobs: false)
-            .contains(.init(identifier: "sql.execute", version: 1)))
-        let requirement = DatabaseOperationRequirement.canonical(for: .sqlExecute)
+            .contains(.init(identifier: "query.execute", version: 1)))
+        let requirement = DatabaseOperationRequirement.canonical(for: .queryExecute)
         #expect(requirement.access == .read)
         #expect(requirement.transaction == .none)
-        let response = try await execute(.text("SELECT 1 AS one"), endpoint: endpoint)
+        let response = try await execute(.sql("SELECT 1 AS one"), endpoint: endpoint)
         guard case .rows(let rows) = response.results[0] else { Issue.record("Expected registered SQL handler"); return }
         #expect(rows.rowCount == 1)
         #if MultiBase
         #expect(!requirement.acceptedTargets.contains(.database))
-        #expect(!requirement.acceptedTargets.contains(.composition))
-        let request = try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.sqlExecute,
-            requestID: 99, target: .database, request: .init(input: .text("SELECT 1")))
+        #expect(requirement.acceptedTargets.contains(.composition))
+        let request = try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.queryExecute,
+            requestID: 99, target: .database, request: .init(input: .sql("SELECT 1")))
         let result = try await endpoint.execute(request, context: .init(authorization: TestBaseEnvironment.authorization))
         guard case .failure(let rejected) = try DatabaseWireDecoder().decodeResponse(
-            DatabaseOperationCatalog.sqlExecute, from: result, matching: 99) else {
+            DatabaseOperationCatalog.queryExecute, from: result, matching: 99) else {
             Issue.record("Expected database target rejection in MultiBase"); return
         }
         #expect(rejected.code == "TARGET_KIND_NOT_ACCEPTED")
@@ -309,6 +328,61 @@ struct SQLExecuteHandlerTests {
         #expect(limited.maximumReadPageRows == 20)
     }
 
+    @Test("SQL, IR and blocks publish exactly the Framework complete frame")
+    func completeRepresentationAgreement() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let endpoint = try makeEndpoint(container)
+        let data = container.testBaseContext()
+        for text in [
+            "SELECT 7::integer AS v, 1.2300::numeric AS v",
+            "SELECT '[0:1]={1,2}'::integer[] AS a, NULL::text AS empty",
+            "WITH c AS (SELECT 2::integer AS n) SELECT sum(n)::bigint AS total FROM c LIMIT 1",
+            "SELECT n, row_number() OVER (ORDER BY n) AS ordinal FROM (VALUES (2),(1)) AS v(n) ORDER BY n",
+        ] {
+            let statement = try SQLParser(preservesCastOutputNames: true).parse(text)
+            var expected: ByteString?
+            for input: QueryInput in [.sql(text), .statement(statement), .block(try SQLBlock(steps: [.statement(statement)]))] {
+                let local = try await data.executeQueryEncoded(input, requestID: 1)
+                let localFrame = try local.promoteToOutput()
+                let remote = try await endpoint.execute(frame(input, parameters: []),
+                    context: .init(authorization: TestBaseEnvironment.authorization))
+                #expect(remote == localFrame)
+                if let expected { #expect(remote == expected) } else { expected = remote }
+            }
+        }
+    }
+
+    @Test("Explicit pages reject mutations, writable WITH and sequence effects before execution")
+    func pagedEffectsNeverRun() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let endpoint = try makeEndpoint(container)
+        _ = try await execute(.sql("CREATE TABLE items(id integer); CREATE SEQUENCE counter"), endpoint: endpoint)
+        for input: QueryInput in [
+            .sql("INSERT INTO items VALUES (1) RETURNING id"),
+            .sql("WITH changed AS (INSERT INTO items VALUES (2) RETURNING id) SELECT id FROM changed"),
+            .sql("SELECT nextval('counter')"),
+            .block(try SQLBlock(steps: [.statement(try SQLParser().parse("INSERT INTO items VALUES (3)"))])),
+        ] {
+            let request = QueryExecuteOperation.Request(input: input, page: .init(limit: 1))
+            #if MultiBase
+            let bytes = try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.queryExecute,
+                requestID: 1, target: .base(TestBaseEnvironment.id()), request: request)
+            #else
+            let bytes = try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.queryExecute,
+                requestID: 1, request: request)
+            #endif
+            let response = try await endpoint.execute(bytes, context: .init(authorization: TestBaseEnvironment.authorization))
+            guard case .failure = try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.queryExecute,
+                from: response, matching: 1) else { Issue.record("Effectful paging was admitted"); continue }
+        }
+        let count = try await execute(.sql("SELECT count(*) FROM items"), endpoint: endpoint)
+        #expect(try values(count.rows) == [[.primitive(.int64(0))]])
+        let next = try await execute(.sql("SELECT nextval('counter')"), endpoint: endpoint)
+        #expect(try values(next.rows) == [[.primitive(.int64(1))]])
+    }
+
     private func makeContainer(engine: any StorageEngine = InMemoryEngine(), security: Bool = false) async throws -> DBContainer {
         let runtime = try DatabaseFrameworkRuntime.configuration(executionIdentity: .init(identifier: "s17-server", revision: 1),
             entityRuntimes: [], schemaDrivenAuthorizationPolicyFactory: { entity in
@@ -335,40 +409,40 @@ struct SQLExecuteHandlerTests {
     }
 
     private func makeEndpoint(_ container: DBContainer, responseLimits: DatabaseWireLimits = .default) throws -> DatabaseWireEndpoint {
-        let registry = try DatabaseOperationRegistry(handlers: [AnyDatabaseOperationHandler(SQLExecuteHandler())], requiredOperations: [.sqlExecute])
+        let registry = try DatabaseOperationRegistry(handlers: [AnyDatabaseOperationHandler(QueryExecuteHandler())], requiredOperations: [.queryExecute])
         return DatabaseWireEndpoint(container: container, registry: registry,
             admissionPolicy: AnyDatabaseOperationAdmissionPolicy(UnrestrictedDatabaseOperationAdmissionPolicy()),
             responseLimits: responseLimits)
     }
 
-    private func frame(_ input: SQLExecuteOperation.Input, parameters: [QueryParameter]) throws -> ByteString {
-        let request = SQLExecuteOperation.Request(input: input, parameters: parameters)
+    private func frame(_ input: QueryInput, parameters: [QueryParameter]) throws -> ByteString {
+        let request = QueryExecuteOperation.Request(input: input, parameters: parameters)
         #if MultiBase
-        return try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.sqlExecute, requestID: 1,
+        return try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.queryExecute, requestID: 1,
             target: .base(TestBaseEnvironment.id()), request: request)
         #else
-        return try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.sqlExecute, requestID: 1, request: request)
+        return try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.queryExecute, requestID: 1, request: request)
         #endif
     }
 
-    private func execute(_ input: SQLExecuteOperation.Input, parameters: [QueryParameter] = [],
+    private func execute(_ input: QueryInput, parameters: [QueryParameter] = [],
         endpoint: DatabaseWireEndpoint, authorization: AuthorizationContext = TestBaseEnvironment.authorization
-    ) async throws -> SQLExecuteOperation.Response {
+    ) async throws -> QueryExecuteOperation.Response {
         let bytes = try await endpoint.execute(frame(input, parameters: parameters), context: .init(authorization: authorization))
-        return try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.sqlExecute, from: bytes, matching: 1).get()
+        return try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.queryExecute, from: bytes, matching: 1).get()
     }
 
-    private func failure(_ input: SQLExecuteOperation.Input, endpoint: DatabaseWireEndpoint,
+    private func failure(_ input: QueryInput, endpoint: DatabaseWireEndpoint,
         authorization: AuthorizationContext = TestBaseEnvironment.authorization
     ) async throws -> RemoteOperationError {
         let bytes = try await endpoint.execute(frame(input, parameters: []), context: .init(authorization: authorization))
-        switch try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.sqlExecute, from: bytes, matching: 1) {
+        switch try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.queryExecute, from: bytes, matching: 1) {
         case .failure(let error): return error
         case .success: throw ExpectedSQLFailure()
         }
     }
 
-    private func values(_ rows: SQLExecuteOperation.Rows) throws -> [[QueryValue]] {
+    private func values(_ rows: QueryRowPage) throws -> [[QueryValue]] {
         var result: [[QueryValue]] = []
         var iterator = rows.makeRowIterator()
         while let row = try iterator.next() { result.append(row.values) }
@@ -385,10 +459,10 @@ struct SQLExecuteHandlerTests {
     private func mappingContext(_ container: DBContainer) throws -> DatabaseOperationContext {
         #if MultiBase
         return DatabaseOperationContext(container: container, target: .base(try TestBaseEnvironment.id()),
-            requirement: .canonical(for: .sqlExecute), requestID: 1, metadata: .init(),
+            requirement: .canonical(for: .queryExecute), requestID: 1, metadata: .init(),
             authorization: TestBaseEnvironment.authorization, requestPayload: [], wireLimits: .default)
         #else
-        return DatabaseOperationContext(container: container, requirement: .canonical(for: .sqlExecute),
+        return DatabaseOperationContext(container: container, requirement: .canonical(for: .queryExecute),
             requestID: 1, metadata: .init(), authorization: TestBaseEnvironment.authorization,
             requestPayload: [], wireLimits: .default)
         #endif

@@ -13,7 +13,7 @@ package struct DatabaseStatementAdmission: Sendable {
     }
 
     package func admit(
-        _ input: QueryExecuteOperation.Input,
+        _ input: QueryInput,
         parameters: [QueryParameter]
     ) throws -> ValidatedDatabaseStatement {
         let parsed = try statement(from: input)
@@ -43,11 +43,13 @@ package struct DatabaseStatementAdmission: Sendable {
     }
 
     private func statement(
-        from input: QueryExecuteOperation.Input
+        from input: QueryInput
     ) throws -> QueryStatement {
         switch input {
-        case .ir(let statement):
+        case .statement(let statement):
             return statement
+        case .block:
+            throw DatabaseStatementAdmissionError.featureUnavailable("A block requires complete query execution")
         case .text(let language, let statement):
             switch language {
             case .sql:

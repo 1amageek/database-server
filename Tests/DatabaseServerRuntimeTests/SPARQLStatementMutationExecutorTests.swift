@@ -1067,7 +1067,7 @@ struct SPARQLStatementMutationExecutorTests {
         )
         let payload = MutationExecuteOperation.Request(
             input: .statement(
-                .ir(
+                .statement(
                     .sparqlUpdate(
                         SPARQLUpdateRequest(
                             firstOperation: .load(
@@ -1318,7 +1318,7 @@ struct SPARQLStatementMutationExecutorTests {
         let statement = try DatabaseStatementAdmission(
             structuralLimits: structuralLimits
         ).admit(
-            .ir(.sparqlUpdate(request)),
+            .statement(.sparqlUpdate(request)),
             parameters: []
         )
         let prepared = try await executor.prepare(

@@ -132,16 +132,16 @@ struct SQLTablePolicyTests {
     }
 
     private func sql(_ source: String, runtime: DatabaseHostedRuntime, role: String? = "admin") async throws
-        -> Result<SQLExecuteOperation.Response, RemoteOperationError> {
-        let frame = try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.sqlExecute, requestID: 1,
-            request: SQLExecuteOperation.Request(input: .text(source)))
+        -> Result<QueryExecuteOperation.Response, RemoteOperationError> {
+        let frame = try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.queryExecute, requestID: 1,
+            request: QueryExecuteOperation.Request(input: .sql(source)))
         let authorization = role.map { AuthorizationContext.authenticated(Principal(identifier: "s17-policy", roles: [$0])) }
             ?? .anonymous
         let response = try await runtime.execute(frame, authorization: .init(authorization: authorization))
-        return try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.sqlExecute, from: response, matching: 1)
+        return try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.queryExecute, from: response, matching: 1)
     }
 
-    private func expectDenied(_ result: Result<SQLExecuteOperation.Response, RemoteOperationError>) throws {
+    private func expectDenied(_ result: Result<QueryExecuteOperation.Response, RemoteOperationError>) throws {
         switch result {
         case .success: Issue.record("An unconfigured native SQL target or role was permitted")
         case .failure(let error): #expect(try error.sqlDiagnostic()?.sqlState == "42501")

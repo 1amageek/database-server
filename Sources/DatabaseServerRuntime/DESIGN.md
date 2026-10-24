@@ -231,7 +231,7 @@ being repeated for every transport.
 
 ### Responsibility and Accepted Contract
 
-`SQLExecuteHandler` dispatches the Kit-owned `SQLExecuteOperation` (`0x0202`).
+`QueryExecuteHandler` dispatches the Kit-owned `QueryExecuteOperation` (`0x0201`).
 Its input is original SQL text, one semantic statement, or one immutable block,
 with canonical parameters and one caller execution budget. The handler invokes
 the Framework block kernel once. It preserves complete outcomes in step order:
@@ -242,7 +242,7 @@ block result does not provide. Wire owns its encoding and shares the existing
 column, row, and value codecs.
 
 The standard graph addresses its ordinary database. The `MultiBase` graph
-accepts only the existing data target, Base; Composition is rejected. A read
+accepts Base for complete data execution and Composition for read-only queries. A read
 requirement admits the operation without asserting that its contents are
 read-only. Framework derives actual read, write, and administration access from
 the complete block and enforces the selected root's Grants and entity/field
@@ -253,8 +253,9 @@ an anonymous principal retains the native `authentication` failure with
 `AUTHENTICATION_REQUIRED` and `never` retryability. The standard graph has no
 persisted Grant boundary and retains its entity-policy `authorization` failure.
 
-The operation has one complete bounded response. Existing query continuation
-and durable paging contracts remain owned by `queryExecute`. No transaction,
+An absent page requests one complete bounded response. An explicit page uses
+the existing read-only continuation and durable paging contract of the same
+`query.execute` operation. No transaction,
 setting, or prepared statement survives a SQL request. Server supplies neither
 automatic network replay nor an exactly-once promise. Framework retains its
 existing conflict-retry and sequence-demand replay semantics; another request
@@ -452,8 +453,49 @@ add catalog administration dispatch; SQLSTATE remains S16-owned.
 [DatabaseErrorMapperTests/databaseQueryExecutionFailures](../../Tests/DatabaseServerRuntimeTests/DatabaseErrorMapperTests.swift)
 checks the original catalog/resolution cases directly and through both wrappers,
 sanitized messages, retry policy, source position, and the recursion bound.
-`SQLExecuteHandlerTests.diagnosticPreservesUnderlyingMapping` additionally checks
+`CompleteQueryHandlerTests.diagnosticPreservesUnderlyingMapping` additionally checks
 invalid SQL ownership and protected constraint, column policy, physical column
 addition, and sequence changes directly and through `SQLExecutionFailure`.
 The native category and code remain authoritative while the wrapper retains
 Framework's diagnostic classification without inventing a source position.
+
+
+## Unified Query Execution
+
+`QueryExecuteHandler` owns the single `query.execute` endpoint for `QueryInput`.
+An absent page requests one complete outcome; explicit pages retain the existing
+read-only snapshot protocol. The complete data-target branch delegates directly
+to Framework `executeQueryEncoded`, including its precommit frame admission,
+original authority, exact meter, first-error rollback and authoritative closure.
+Server retains only the ready `EncodedQueryResponse` and promotes it once.
+No outer transaction is introduced by dispatch. Framework derives actual access
+from the block; dispatch's read admission grants no write or administration.
+
+```text
+query.execute -> validate request budget
+  -> complete Base/database -> Framework executeQueryEncoded
+       -> prepare/authorize/execute/measure/encode -> commit/close -> ready owner
+  -> explicit read page -> existing snapshot capture/load -> closed data -> publish
+  -> Composition read -> existing planner -> bounded complete buffer or page spool
+  -> response publication
+```
+
+Paged SQL is admitted by Framework's non-replaceable read-only admission before
+execution. Writable WITH, sequence effects, DDL and blocks cannot be replayed by
+a continuation. Composition remains read-only. Complete Composition results use
+the same metered builder without spooling or creating a continuation manifest;
+planner source page sizes remain bounded independently of output delivery.
+ASK retains its boolean carrier, RDF its graph carrier and provenance. Explicit
+page requests retain schema, placement, principal and snapshot identity checks.
+
+Native durable jobs register only resumable maintenance operations; query
+execution is not registered and therefore cannot replay an effectful query.
+The SQL-only endpoint, Server projection and checkpoint policy are superseded
+by the common endpoint and Framework-owned contracts and are removed with caller
+migration. No engine, data transaction or shared transport is owned by a result.
+
+Verification covers the existing complete SQL suite through `query.execute`,
+explicit paging, Composition complete/page behavior, exact frame limits before
+commit, policies, diagnostics, first-error rollback and cancellation/shutdown.
+The HTTP differential compares the same input and rich results with Framework;
+the final standard/Embedded host probes compare canonical result values.

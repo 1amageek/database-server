@@ -40,7 +40,7 @@ struct DatabaseStatementAdmissionTests {
         )
 
         do {
-            _ = try admission.admit(.ir(statement), parameters: [])
+            _ = try admission.admit(.statement(statement), parameters: [])
             Issue.record("Expected the collection limit to reject the mutation")
         } catch QueryParameterBindingError.invalidStructure(let error) {
             #expect(
@@ -76,7 +76,7 @@ struct DatabaseStatementAdmissionTests {
 
         do {
             _ = try admission.admit(
-                .ir(statement),
+                .statement(statement),
                 parameters: [
                     QueryParameter(
                         position: 1,

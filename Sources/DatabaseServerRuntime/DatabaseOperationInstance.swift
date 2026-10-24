@@ -197,12 +197,6 @@ public final class DatabaseOperationInstance: Sendable {
                     runtimeLimits: configuration.runtimeLimits
                 )
             ),
-            AnyDatabaseOperationHandler(
-                SQLExecuteHandler(
-                    runtimeLimits: configuration.runtimeLimits,
-                    checkpointLimits: configuration.sqlCheckpointLimits
-                )
-            ),
         ]
         #if DATABASE_SERVER_MULTI_BASE
         handlers.append(contentsOf: [
@@ -228,7 +222,8 @@ public final class DatabaseOperationInstance: Sendable {
             AnyDatabaseOperationHandler(
                 QueryExecuteHandler(
                     runtimeLimits: configuration.runtimeLimits,
-                    querySnapshotStore: querySnapshotStore
+                    querySnapshotStore: querySnapshotStore,
+                    checkpointLimits: configuration.sqlCheckpointLimits
                 )
             ),
         ])
@@ -237,7 +232,8 @@ public final class DatabaseOperationInstance: Sendable {
             AnyDatabaseOperationHandler(
                 QueryExecuteHandler(
                     runtimeLimits: configuration.runtimeLimits,
-                    querySnapshotStore: querySnapshotStore
+                    querySnapshotStore: querySnapshotStore,
+                    checkpointLimits: configuration.sqlCheckpointLimits
                 )
             )
         )

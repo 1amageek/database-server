@@ -36,31 +36,80 @@ private enum DatabaseSelectInitialPlan: Sendable {
     )
 }
 
-public struct QueryExecuteHandler: DatabaseOperationHandler {
+public struct QueryExecuteHandler: DatabaseOperationEndpointHandler {
     public typealias Operation = QueryExecuteOperation
 
     private let runtimeLimits: DatabaseOperationLimits
     private let querySnapshotStore: DatabaseQuerySnapshotStore?
+    private let checkpointLimits: TransactionCheckpointLimits?
 
     public init(runtimeLimits: DatabaseOperationLimits = .default) {
+        self.checkpointLimits = nil
         self.runtimeLimits = runtimeLimits
         self.querySnapshotStore = nil
     }
 
     package init(
         runtimeLimits: DatabaseOperationLimits,
-        querySnapshotStore: DatabaseQuerySnapshotStore?
+        querySnapshotStore: DatabaseQuerySnapshotStore?,
+        checkpointLimits: TransactionCheckpointLimits? = nil
     ) {
+        self.checkpointLimits = checkpointLimits
         self.runtimeLimits = runtimeLimits
         self.querySnapshotStore = querySnapshotStore
     }
 
-    public func handle(
+    public func invoke(
+        request: QueryExecuteOperation.Request,
+        context: DatabaseOperationContext,
+        limits: DatabaseWireLimits
+    ) async throws -> DatabaseOperationResult {
+        try runtimeLimits.validate(request.budget)
+        if let page = request.page, page.limit == 0 {
+            throw DatabaseQueryExecutionError.pageLimitMustBePositive
+        }
+        #if DATABASE_SERVER_MULTI_BASE
+        if case .composition = context.target {
+            return DatabaseOperationResult(QueryExecuteOperation.self,
+                response: try await handleRead(request, context: context))
+        }
+        #endif
+        if request.page != nil {
+            return DatabaseOperationResult(QueryExecuteOperation.self,
+                response: try await handleRead(request, context: context))
+        }
+        do {
+            let response = try await context.requireDataContext().executeQueryEncoded(
+                request.input, parameters: request.parameters,
+                options: QueryExecutionOptions(budget: request.budget,
+                    graphPartitions: request.graphPartitions),
+                requestID: context.requestID, limits: limits,
+                structuralLimits: runtimeLimits.queryStructuralLimits,
+                checkpointCeiling: checkpointLimits,
+                configuration: TransactionConfiguration(
+                    maximumMutationAggregateBytes: runtimeLimits.maximumMutationAggregateBytes))
+            return DatabaseOperationResult(requestID: context.requestID, queryFrame: response)
+        } catch let failure as SQLExecutionFailure where failure.underlyingError is CancellationError {
+            throw CancellationError()
+        }
+    }
+
+    /// Exposes the same endpoint behavior to typed internal callers.
+    public func handle(_ request: QueryExecuteOperation.Request,
+                       context: DatabaseOperationContext) async throws -> QueryExecuteOperation.Response {
+        if request.page != nil { return try await handleRead(request, context: context) }
+        let result = try await invoke(request: request, context: context, limits: context.wireLimits)
+        let frame = try result.encodeResponse(requestID: context.requestID, limits: context.wireLimits)
+        return try DatabaseWireDecoder(limits: context.wireLimits).decodeResponse(
+            DatabaseOperationCatalog.queryExecute, from: frame, matching: context.requestID).get()
+    }
+
+    private func handleRead(
         _ request: QueryExecuteOperation.Request,
         context: DatabaseOperationContext
     ) async throws -> QueryExecuteOperation.Response {
         try runtimeLimits.validate(request.budget)
-        guard request.page.limit > 0 else {
+        guard (request.page?.limit ?? request.budget.maximumRows) > 0 else {
             throw DatabaseQueryExecutionError.pageLimitMustBePositive
         }
         return try await DatabaseExecutionTimeout.run(
@@ -77,6 +126,12 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 request.input,
                 parameters: request.parameters
             )
+            switch admittedStatement.statement {
+            case .select:
+                try SQLReadOnlyQueryAdmission.validate(admittedStatement.statement, workMeter: workMeter)
+            case .ask, .construct, .describe: break
+            default: throw SQLBlockExecutionError.unsupportedPagedQuery
+            }
             return try await execute(
                 admittedStatement.statement,
                 request: request,
@@ -222,7 +277,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                     request: request,
                     limits: context.wireLimits
             )
-            if let continuation = request.page.continuation {
+            if let continuation = request.page?.continuation {
                 guard let querySnapshotStore else {
                     throw DatabaseQueryExecutionError
                         .querySnapshotUnavailable(
@@ -258,7 +313,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         #endif
         let databaseContext = try context.requireDataContext()
         let lease = try databaseContext.executionStorage()
-        if let continuation = request.page.continuation {
+        if let continuation = request.page?.continuation {
             guard continuation.count == DatabaseQuerySnapshotStore
                     .continuationByteCount,
                   continuation.first == DatabaseQuerySnapshotStore
@@ -518,9 +573,9 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         lease: DatabaseExecutionStorage,
         workMeter: DatabaseWorkMeter
     ) async throws -> QueryRowPage {
-        guard let pageLimit = Int(exactly: request.page.limit) else {
+        guard let pageLimit = Int(exactly: (request.page?.limit ?? request.budget.maximumRows)) else {
             throw DatabaseQueryExecutionError.pageLimitExceedsPlatformCapacity(
-                requested: request.page.limit
+                requested: (request.page?.limit ?? request.budget.maximumRows)
             )
         }
         let rowCount = rows.count
@@ -635,9 +690,9 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         monotonicClock: any StorageMonotonicClock,
         continuationSnapshotIsStable: Bool
     ) throws -> ReadExecutionContext {
-        guard let pageSize = Int(exactly: request.page.limit) else {
+        guard let pageSize = Int(exactly: (request.page?.limit ?? request.budget.maximumRows)) else {
             throw DatabaseQueryExecutionError.pageLimitExceedsPlatformCapacity(
-                requested: request.page.limit
+                requested: (request.page?.limit ?? request.budget.maximumRows)
             )
         }
         let continuationScope = try DatabaseWireWriter.encode {
@@ -703,7 +758,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
                 request: request,
                 limits: context.wireLimits
             )
-        if let continuation = request.page.continuation {
+        if let continuation = request.page?.continuation {
             let source = try context.requireCompositionExecutor()
             let readMetadata = try await source.acquireReadMetadata()
             let page = try await querySnapshotStore.loadRDFGraph(
@@ -740,7 +795,7 @@ public struct QueryExecuteHandler: DatabaseOperationHandler {
         workMeter: DatabaseWorkMeter,
         structuralLimits: QueryStructuralLimits
     ) async throws -> DatabaseQueryBooleanResponse {
-        guard request.page.continuation == nil else {
+        guard request.page?.continuation == nil else {
             throw DatabaseQueryExecutionError.continuationNotSupported("ASK")
         }
         #if DATABASE_SERVER_MULTI_BASE

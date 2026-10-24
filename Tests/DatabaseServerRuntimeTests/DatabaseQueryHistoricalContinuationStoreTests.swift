@@ -579,14 +579,14 @@ struct DatabaseQueryHistoricalContinuationStoreTests {
         )
         let page = try QueryRowPage(
             columns: [try QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)],
-            rows: [DatabaseWire.QueryRow(values: [.primitive(.string("terminal"))])],
+            rows: [DatabaseKit.QueryRow(values: [.primitive(.string("terminal"))])],
             provenance: nil,
             consistency: pageConsistency
         )
         #else
         let page = try QueryRowPage(
             columns: [try QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)],
-            rows: [DatabaseWire.QueryRow(values: [.primitive(.string("terminal"))])],
+            rows: [DatabaseKit.QueryRow(values: [.primitive(.string("terminal"))])],
             snapshotVersion: nil
         )
         #endif

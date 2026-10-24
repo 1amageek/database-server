@@ -90,14 +90,14 @@ struct DatabaseCompositionQueryAdapter {
         queryFingerprint: ByteString,
         snapshotStore: DatabaseQuerySnapshotStore?
     ) async throws -> QueryRowPage {
-        guard request.page.continuation == nil else {
+        guard request.page?.continuation == nil else {
             throw DatabaseQueryExecutionError.invalidContinuation
         }
-        guard request.page.limit > 0 else {
+        guard (request.page?.limit ?? request.budget.maximumRows) > 0 else {
             throw DatabaseQueryExecutionError.pageLimitMustBePositive
         }
         let boundedPageLimit = min(
-            request.page.limit,
+            (request.page?.limit ?? request.budget.maximumRows),
             request.budget.maximumRows
         )
         guard let pageLimit = Int(exactly: boundedPageLimit),
@@ -115,7 +115,7 @@ struct DatabaseCompositionQueryAdapter {
             queryStructuralLimits: structuralLimits
         )
         let adapter = ResultAdapter(
-            pageLimit: pageLimit,
+            pageLimit: request.page == nil ? Int.max : pageLimit,
             queryFingerprint: queryFingerprint,
             authorization: context.authorization,
             maximumIntermediateBytes: request.budget.maximumIntermediateBytes,

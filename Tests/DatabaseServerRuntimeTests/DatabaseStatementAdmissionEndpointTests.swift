@@ -43,7 +43,7 @@ struct DatabaseStatementAdmissionEndpointTests {
         )
         let request = MutationExecuteOperation.Request(
             input: .statement(
-                .ir(
+                .statement(
                     .insert(
                         InsertQuery(
                             target: TableRef(

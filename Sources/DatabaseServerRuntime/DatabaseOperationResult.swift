@@ -14,7 +14,7 @@ public struct DatabaseOperationResult: Sendable {
     private enum Body: Sendable {
         case response(DatabaseOperationResponseEncoder)
         case frame(requestID: UInt64, bytes: ByteString)
-        case sqlFrame(requestID: UInt64, owner: SQLEncodedResponse)
+        case queryFrame(requestID: UInt64, owner: EncodedQueryResponse)
     }
 
     public let operation: DatabaseOperationIdentifier
@@ -46,9 +46,9 @@ public struct DatabaseOperationResult: Sendable {
         self.body = .frame(requestID: requestID, bytes: frame)
     }
 
-    init(requestID: UInt64, sqlFrame: SQLEncodedResponse) {
-        self.operation = .sqlExecute
-        self.body = .sqlFrame(requestID: requestID, owner: sqlFrame)
+    init(requestID: UInt64, queryFrame: EncodedQueryResponse) {
+        self.operation = .queryExecute
+        self.body = .queryFrame(requestID: requestID, owner: queryFrame)
     }
 
     package func encodeResponse(
@@ -69,7 +69,7 @@ public struct DatabaseOperationResult: Sendable {
                 )
             }
             return bytes
-        case .sqlFrame(let encodedRequestID, let owner):
+        case .queryFrame(let encodedRequestID, let owner):
             guard encodedRequestID == requestID else {
                 throw DatabaseOperationError.responseRequestIDMismatch(
                     expected: requestID,

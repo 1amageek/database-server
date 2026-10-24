@@ -128,6 +128,10 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
                 mappingDepth: mappingDepth
             )
         }
+        if error is QueryResponseEncodingError {
+            return RemoteOperationError(category: .resourceLimit, code: "RESPONSE_RESOURCE_LIMIT",
+                message: "Query response exceeds the configured Wire resource limits", retryability: .never)
+        }
         if let responseError = error as? DatabaseResponsePreparationError {
             return RemoteOperationError(
                 category: .resourceLimit,

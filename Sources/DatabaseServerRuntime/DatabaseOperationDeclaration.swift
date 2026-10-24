@@ -5,6 +5,7 @@ import DatabaseGraphOperations
 import DatabaseMutationOperations
 import DatabaseQueryOperations
 import DatabaseCommandOperations
+import DatabaseKit
 import DatabaseOperationCore
 @_spi(DatabaseExecution) import DatabaseWire
 
@@ -61,12 +62,6 @@ extension GrantExecuteOperation: DatabaseOperationDeclaration {
 extension QueryExecuteOperation: DatabaseOperationDeclaration {
     public static var operation: DatabaseOperation<Request, Response> {
         DatabaseOperationCatalog.queryExecute
-    }
-}
-
-extension SQLExecuteOperation: DatabaseOperationDeclaration {
-    public static var operation: DatabaseOperation<Request, Response> {
-        DatabaseOperationCatalog.sqlExecute
     }
 }
 

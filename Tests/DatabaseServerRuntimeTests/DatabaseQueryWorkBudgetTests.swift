@@ -20,7 +20,7 @@ struct DatabaseQueryWorkBudgetTests {
             ],
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let request = QueryExecuteOperation.Request(
-            input: .ir(.select(query)),
+            input: .statement(.select(query)),
             page: QueryExecuteOperation.Page(limit: 1)
         )
         let handler = QueryExecuteHandler(
@@ -62,7 +62,7 @@ struct DatabaseQueryWorkBudgetTests {
             ],
             source: .table(TableRef(DatabaseEndpointEntity.persistableType)))
         let request = QueryExecuteOperation.Request(
-            input: .ir(.select(query)),
+            input: .statement(.select(query)),
             parameters: [
                 QueryParameter(
                     position: 1,
@@ -162,7 +162,7 @@ struct DatabaseQueryWorkBudgetTests {
             limits: structuralLimits
         )
         let request = QueryExecuteOperation.Request(
-            input: .ir(.select(query)),
+            input: .statement(.select(query)),
             page: QueryExecuteOperation.Page(limit: 1)
         )
         let handler = QueryExecuteHandler(
@@ -204,7 +204,7 @@ struct DatabaseQueryWorkBudgetTests {
                 ])
             ))
         let request = QueryExecuteOperation.Request(
-            input: .ir(.select(query)),
+            input: .statement(.select(query)),
             page: QueryExecuteOperation.Page(limit: 1)
         )
 
@@ -392,7 +392,7 @@ struct DatabaseQueryWorkBudgetTests {
     func qualifiedEqualityJoinExecutesThroughTheHandler() async throws {
         let container = try await makeContainer(seedCount: 100)
         let request = QueryExecuteOperation.Request(
-            input: .ir(.select(Self.selfEqualityJoin)),
+            input: .statement(.select(Self.selfEqualityJoin)),
             page: QueryExecuteOperation.Page(limit: 100),
             budget: ExecutionBudget(
                 maximumRows: 100,
@@ -548,7 +548,7 @@ struct DatabaseQueryWorkBudgetTests {
         budget: ExecutionBudget
     ) async throws -> QueryExecuteOperation.Response {
         let request = QueryExecuteOperation.Request(
-            input: .ir(
+            input: .statement(
                 .select(
                     SelectQuery(projection: [.wildcard()],
             source: .table(

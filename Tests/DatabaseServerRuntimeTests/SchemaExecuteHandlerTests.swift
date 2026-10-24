@@ -688,8 +688,8 @@ struct SchemaExecuteHandlerTests {
         defer { await container.shutdown() }
         let runtime = try await makeRuntime(container: container)
         _ = try await invoke(
-            DatabaseOperationCatalog.sqlExecute,
-            request: SQLExecuteOperation.Request(input: .text(
+            DatabaseOperationCatalog.queryExecute,
+            request: QueryExecuteOperation.Request(input: .sql(
                 "CREATE TABLE sql_items(value INTEGER); INSERT INTO sql_items VALUES (7);")),
             requestID: 1,
             runtime: runtime,
@@ -738,8 +738,8 @@ struct SchemaExecuteHandlerTests {
         #expect(container.schema.entity(named: sqlEntity.name) == sqlEntity)
         #expect(container.schema.entity(named: SchemaBuildAccountV1.persistableType) != nil)
         let readback = try await invoke(
-            DatabaseOperationCatalog.sqlExecute,
-            request: SQLExecuteOperation.Request(input: .text("SELECT value FROM sql_items")),
+            DatabaseOperationCatalog.queryExecute,
+            request: QueryExecuteOperation.Request(input: .sql("SELECT value FROM sql_items")),
             requestID: 61,
             runtime: runtime,
             targetsData: true
@@ -755,8 +755,8 @@ struct SchemaExecuteHandlerTests {
 
         // A same-key retry keeps the caller's identity after SQL changes the effective schema.
         _ = try await invoke(
-            DatabaseOperationCatalog.sqlExecute,
-            request: SQLExecuteOperation.Request(input: .text("CREATE TABLE sql_later(value INTEGER)")),
+            DatabaseOperationCatalog.queryExecute,
+            request: QueryExecuteOperation.Request(input: .sql("CREATE TABLE sql_later(value INTEGER)")),
             requestID: 62,
             runtime: runtime,
             targetsData: true

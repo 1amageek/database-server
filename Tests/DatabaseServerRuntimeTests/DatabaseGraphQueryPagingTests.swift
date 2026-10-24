@@ -1222,7 +1222,7 @@ struct DatabaseGraphQueryPagingTests {
         budget: ExecutionBudget? = nil
     ) -> QueryExecuteOperation.Request {
         QueryExecuteOperation.Request(
-            input: .ir(statement),
+            input: .statement(statement),
             page: QueryExecuteOperation.Page(
                 limit: limit,
                 continuation: continuation
@@ -1322,7 +1322,7 @@ struct DatabaseGraphQueryPagingTests {
                 maximumCount: page.rowCount
             ),
             continuation: page.continuation,
-            consistency: page.consistency
+            consistency: try #require(page.consistency)
         )
         #else
         return MaterializedRowPage(
@@ -1338,7 +1338,7 @@ struct DatabaseGraphQueryPagingTests {
 
     private func rowValue(
         named name: String,
-        in row: DatabaseWire.QueryRow,
+        in row: DatabaseKit.QueryRow,
         columns: [QueryColumn]
     ) -> FieldValue? {
         guard let index = columns.firstIndex(where: { $0.name == name }),
@@ -1361,7 +1361,7 @@ struct DatabaseGraphQueryPagingTests {
 
     private struct MaterializedRowPage {
         let columns: [QueryColumn]
-        let rows: [DatabaseWire.QueryRow]
+        let rows: [DatabaseKit.QueryRow]
         let continuation: ByteString?
         #if MultiBase
         let consistency: DatabaseKit.DatabaseReadConsistency

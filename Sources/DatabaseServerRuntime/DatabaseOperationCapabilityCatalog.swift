@@ -17,7 +17,6 @@ enum DatabaseOperationCapabilityCatalog {
             .capabilitiesDescribe,
             .schemaDescribe,
             .queryExecute,
-            .sqlExecute,
             .mutationExecute,
             .commandExecute,
             .maintenanceExecute,

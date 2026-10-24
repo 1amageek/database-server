@@ -132,7 +132,7 @@ struct EntityPolicyTests {
         await unconfigured.shutdown()
     }
 
-    private func expectDenied(_ result: Result<SQLExecuteOperation.Response, RemoteOperationError>) throws {
+    private func expectDenied(_ result: Result<QueryExecuteOperation.Response, RemoteOperationError>) throws {
         switch result {
         case .success: Issue.record("An unconfigured entity, operation or principal was permitted")
         case .failure(let error): #expect(try error.sqlDiagnostic()?.sqlState == "42501")
@@ -200,19 +200,19 @@ private struct PolicyRuntime {
     }
 
     func sql(_ source: String, token: String) async throws
-        -> Result<SQLExecuteOperation.Response, RemoteOperationError> {
-        try await call(DatabaseOperationCatalog.sqlExecute,
-            SQLExecuteOperation.Request(input: .text(source)), token: token)
+        -> Result<QueryExecuteOperation.Response, RemoteOperationError> {
+        try await call(DatabaseOperationCatalog.queryExecute,
+            QueryExecuteOperation.Request(input: .sql(source)), token: token)
     }
 
     func anonymousSQL(_ source: String) async throws
-        -> Result<SQLExecuteOperation.Response, RemoteOperationError> {
+        -> Result<QueryExecuteOperation.Response, RemoteOperationError> {
         let requestID = requestIDs.next()
-        let frame = try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.sqlExecute,
-            requestID: requestID, request: SQLExecuteOperation.Request(input: .text(source)))
+        let frame = try DatabaseWireEncoder().encodeRequest(DatabaseOperationCatalog.queryExecute,
+            requestID: requestID, request: QueryExecuteOperation.Request(input: .sql(source)))
         let response = try await environment.runtime.execute(frame,
             authorization: DatabaseRequestExecutionContext(authorization: .anonymous))
-        return try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.sqlExecute,
+        return try DatabaseWireDecoder().decodeResponse(DatabaseOperationCatalog.queryExecute,
             from: response, matching: requestID)
     }
 

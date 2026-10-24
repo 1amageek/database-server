@@ -2463,7 +2463,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         case .rdfGraph(let page):
             provenance = page.provenance
             next = page.continuation
-        case .boolean:
+        case .boolean, .command, .copy, .block:
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
         switch target {
@@ -2485,7 +2485,7 @@ package struct DatabaseQuerySnapshotStore: Sendable {
             next = page.continuation
         case .rdfGraph(let page):
             next = page.continuation
-        case .boolean:
+        case .boolean, .command, .copy, .block:
             throw DatabaseQueryExecutionError.querySnapshotCorrupted
         }
         guard case .database = target else {
@@ -2585,10 +2585,10 @@ package struct DatabaseQuerySnapshotStore: Sendable {
         limits: DatabaseWireLimits
     ) throws -> ByteString {
         let normalized = QueryExecuteOperation.Request(
-            input: .ir(statement),
+            input: .statement(statement),
             parameters: request.parameters,
             graphPartitions: request.graphPartitions,
-            page: QueryExecuteOperation.Page(limit: request.page.limit),
+            page: request.page.map { QueryExecuteOperation.Page(limit: $0.limit) },
             budget: request.budget
         )
         return digest(

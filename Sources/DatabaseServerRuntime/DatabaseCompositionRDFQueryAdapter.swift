@@ -107,17 +107,17 @@ package struct DatabaseCompositionRDFQueryAdapter: Sendable {
         queryFingerprint: ByteString,
         snapshotStore: DatabaseQuerySnapshotStore
     ) async throws -> RDFGraphPage {
-        guard request.page.limit <= request.budget.maximumRows,
-              let pageLimit = Int(exactly: request.page.limit),
+        guard (request.page?.limit ?? request.budget.maximumRows) <= request.budget.maximumRows,
+              let pageLimit = Int(exactly: (request.page?.limit ?? request.budget.maximumRows)),
               pageLimit > 0 else {
             throw DatabaseGraphQueryError.pageLimitExceedsMaximum(
-                requested: request.page.limit,
+                requested: (request.page?.limit ?? request.budget.maximumRows),
                 maximum: request.budget.maximumRows
             )
         }
         let source = try context.requireCompositionExecutor().dataSource
         let adapter = ResultAdapter(
-            pageLimit: pageLimit,
+            pageLimit: request.page == nil ? Int.max : pageLimit,
             maximumIntermediateBytes: request.budget.maximumIntermediateBytes,
             queryFingerprint: queryFingerprint,
             authorization: context.authorization,

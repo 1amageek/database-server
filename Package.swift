@@ -91,7 +91,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/1amageek/database-framework.git",
-            from: "26.1022.1",
+            revision: "28806aa475ab3bdd4195014ff452150b7c2e0c67",
             traits: frameworkTraits
         ),
         .package(
@@ -104,7 +104,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.1021.0",
+            revision: "1bf2fdc3a874fddccf305c4902b5a16383d3369d",
             traits: databaseKitTraits
         ),
         .package(
@@ -579,6 +579,8 @@ let package = Package(
         .testTarget(
             name: "DatabaseServerHostTests",
             dependencies: [
+                .product(name: "Database", package: "database-framework"),
+                .product(name: "QueryAST", package: "database-framework"),
                 "DatabaseServerHost",
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "DatabaseWire", package: "database-kit"),

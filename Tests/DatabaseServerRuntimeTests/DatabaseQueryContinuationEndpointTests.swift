@@ -517,7 +517,7 @@ struct DatabaseQueryContinuationEndpointTests {
         continuation: ByteString? = nil
     ) -> QueryExecuteOperation.Request {
         QueryExecuteOperation.Request(
-            input: .ir(.select(query)),
+            input: .statement(.select(query)),
             graphPartitions: graphPartitions,
             page: QueryExecuteOperation.Page(
                 limit: pageLimit,
@@ -617,7 +617,7 @@ struct DatabaseQueryContinuationEndpointTests {
     }
 
     private func identifier(
-        from row: DatabaseWire.QueryRow,
+        from row: DatabaseKit.QueryRow,
         columns: [QueryColumn]
     ) throws -> String {
         guard let index = columns.firstIndex(where: { $0.name == "id" }),

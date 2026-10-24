@@ -394,3 +394,7 @@ Materialized views use their visible SQL name; internal backing identifiers are
 not configuration targets. Ordinary views retain underlying-table invoker policy.
 Host configuration tests own closed input validation; native production-factory
 SQL tests own configured allow, default deny and exact logical-target behavior.
+
+## IR-centered Execution Integration
+
+[Runtime](Sources/DatabaseServerRuntime/DESIGN.md) owns the directly consumed contract for the accepted QueryStatement/SQLBlock unification. Existing authorization, exact work budgets, first-error rollback, retained ownership and authoritative shutdown remain required. Runtime state and publication do not move into Kit declarations.

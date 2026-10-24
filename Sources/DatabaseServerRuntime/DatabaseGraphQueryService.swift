@@ -106,9 +106,9 @@ struct DatabaseGraphQueryService: Sendable {
             _ requestFingerprint: ByteString
         ) async throws -> DatabaseRetainedRDFGraph
     ) async throws -> RDFGraphPage {
-        guard request.page.limit <= request.budget.maximumRows else {
+        guard (request.page?.limit ?? request.budget.maximumRows) <= request.budget.maximumRows else {
             throw DatabaseGraphQueryError.pageLimitExceedsMaximum(
-                requested: request.page.limit,
+                requested: (request.page?.limit ?? request.budget.maximumRows),
                 maximum: request.budget.maximumRows
             )
         }
@@ -123,12 +123,12 @@ struct DatabaseGraphQueryService: Sendable {
             request: request,
             limits: wireLimits
         )
-        guard let pageLimit = Int(exactly: request.page.limit) else {
+        guard let pageLimit = Int(exactly: (request.page?.limit ?? request.budget.maximumRows)) else {
             throw DatabaseGraphQueryError.pageLimitExceedsPlatformCapacity(
-                requested: request.page.limit
+                requested: (request.page?.limit ?? request.budget.maximumRows)
             )
         }
-        if let continuation = request.page.continuation {
+        if let continuation = request.page?.continuation {
             guard continuation.count == DatabaseQuerySnapshotStore
                     .continuationByteCount,
                   continuation.first == DatabaseQuerySnapshotStore
@@ -557,10 +557,10 @@ struct DatabaseGraphQueryService: Sendable {
         request: QueryExecuteOperation.Request
     ) throws -> ByteString {
         let normalized = QueryExecuteOperation.Request(
-            input: .ir(statement),
+            input: .statement(statement),
             graphPartitions: request.graphPartitions,
             page: QueryExecuteOperation.Page(
-                limit: request.page.limit,
+                limit: (request.page?.limit ?? request.budget.maximumRows),
                 continuation: nil
             ),
             budget: request.budget
