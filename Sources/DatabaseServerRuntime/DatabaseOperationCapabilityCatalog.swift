@@ -167,8 +167,6 @@ enum DatabaseOperationCapabilityCatalog {
         #endif
         case .queryExecute:
             "query.execute"
-        case .sqlExecute:
-            "sql.execute"
         case .mutationExecute:
             "mutation.execute"
         case .graphAlgorithm:
