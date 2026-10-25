@@ -398,3 +398,14 @@ SQL tests own configured allow, default deny and exact logical-target behavior.
 ## IR-centered Execution Integration
 
 [Runtime](Sources/DatabaseServerRuntime/DESIGN.md) owns the directly consumed contract for the accepted QueryStatement/SQLBlock unification. Existing authorization, exact work budgets, first-error rollback, retained ownership and authoritative shutdown remain required. Runtime state and publication do not move into Kit declarations.
+
+## Coordinated Release Contract
+
+The 26.1026.0 native server consumes the published 26.1026.0 framework,
+Kit, Client and Storage releases through URL dependency resolution. Only direct
+semantic dependencies are declared by this package. The canonical executable
+version remains the source for companion and server compatibility checks.
+Distribution acceptance requires matching database, database-fdb and
+database-server candidates, real authenticated operation and all-backend
+round trips, link separation, authoritative shutdown and negative readiness.
+This update adds no authority, retry, resource-budget or transaction policy.

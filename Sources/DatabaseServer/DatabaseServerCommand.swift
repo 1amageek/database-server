@@ -695,7 +695,7 @@ private func writeBootstrapResponse(
 }
 
 private enum DatabaseServerBuild {
-    static let version = "26.1022.1"
+    static let version = "26.1026.0"
 }
 
 private struct LocalProcessAuthenticator: DatabaseServerAuthenticator {

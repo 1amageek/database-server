@@ -1,5 +1,5 @@
 {
-  "originHash" : "178643edc841688c89aaaf6cffb2c928b6d3ea4069f8ea7662963fa9ea3876c9",
+  "originHash" : "8d3e38ddb8095f1c0ca2b96764051782303dbc4ca7f93345fa791cd628f5c2d1",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -20,11 +20,21 @@
       }
     },
     {
+      "identity" : "database-client",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/database-client.git",
+      "state" : {
+        "revision" : "fac7de5225cd417320138d3034f852c9ed65efeb",
+        "version" : "26.1026.0"
+      }
+    },
+    {
       "identity" : "database-framework",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-framework.git",
       "state" : {
-        "revision" : "4fe236dc47d7d7ded0921caafb3d7e317d81b504"
+        "revision" : "22f9ca3b61b3408a24b43abeb8682abd36ff0f0f",
+        "version" : "26.1026.0"
       }
     },
     {
@@ -32,7 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-kit.git",
       "state" : {
-        "revision" : "b325109676a4b9b3431e2e306ca8c0dcf1d9a7bf"
+        "revision" : "678b70daee9ef9d72966f147d6e6bb4110a7da95",
+        "version" : "26.1026.0"
       }
     },
     {
@@ -72,6 +83,15 @@
       }
     },
     {
+      "identity" : "javascriptkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/JavaScriptKit.git",
+      "state" : {
+        "revision" : "8067be4d2f907ab4a25614272f9e531fddd2ecfe",
+        "version" : "0.57.2"
+      }
+    },
+    {
       "identity" : "postgres-nio",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/vapor/postgres-nio.git",
@@ -85,8 +105,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "b55927070a91dc044701308bfe502dad9328c466",
-        "version" : "26.1021.0"
+        "revision" : "80b796d8e0b3878e1deb2aa06d9edbb25a25fedd",
+        "version" : "26.1026.0"
       }
     },
     {
